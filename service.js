@@ -438,7 +438,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '3.2.0';
+  var VERSION = '1.0.0';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
 
   var SHARE = '/home/owner/share';

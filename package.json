@@ -1,9 +1,9 @@
 {
   "name": "tv-sito",
-  "version": "3.2.0",
+  "version": "1.0.0",
   "description": "Home per il TV Samsung: app installate, il mio sito, browser con blocco della pubblicità",
   "packageType": "mods",
-  "appName": "Home",
+  "appName": "Home TV",
   "websiteURL": "https://btc4fun.github.io/tv-sito/",
   "main": "main.js",
   "serviceFile": "service.js",

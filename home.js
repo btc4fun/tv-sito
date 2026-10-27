@@ -14,7 +14,7 @@
 
   var $ = UI.$;
   var DEMO = UI.DEMO;
-  var VERSIONE = '3.2.0';
+  var VERSIONE = '1.0.0';
 
   /* ============================================================ dati */
 
@@ -584,11 +584,12 @@
     if (key === heroKey) return;
     heroKey = key;
     clearTimeout(fadeTimer);
+    // si cambia solo quello che cambia (le scritte uguali non si ridisegnano)
     function put() {
-      heroCap.textContent = d[0];
-      heroTitle.textContent = d[1];
-      heroSub.textContent = d[2];
-      heroChips.innerHTML = d[3];
+      if (heroCap.textContent !== d[0]) heroCap.textContent = d[0];
+      if (heroTitle.textContent !== d[1]) heroTitle.textContent = d[1];
+      if (heroSub.textContent !== d[2]) heroSub.textContent = d[2];
+      if (heroChips.__html !== d[3]) { heroChips.__html = d[3]; heroChips.innerHTML = d[3]; }
       heroText.className = 'hero-text';
     }
     if (instant) { put(); return; }

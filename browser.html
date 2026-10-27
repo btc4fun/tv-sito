@@ -55,11 +55,18 @@
   }
   .g-card {
     display: inline-block; vertical-align: top; position: relative; width: 54.4rem; margin: 0 4rem 4.8rem 0;
-    border-radius: 2.8rem; background: var(--surface); overflow: hidden; cursor: pointer;
-    transition: transform .22s var(--ease), box-shadow .22s ease;
+    border-radius: 2.8rem; background: var(--surface); cursor: pointer;
+    transition: transform .22s var(--ease);
   }
+  /* anello e ombra della carta scelta: compaiono sfumando (un'ombra che cambia si ridisegnerebbe a ogni fotogramma) */
+  .g-card:before {
+    content: ""; position: absolute; left: 0; top: 0; right: 0; bottom: 0; border-radius: 2.8rem; pointer-events: none;
+    box-shadow: 0 0 0 .5rem var(--text), 0 2.4rem 6rem rgba(0, 0, 0, .5);
+    opacity: 0; transition: opacity .22s ease;
+  }
+  .g-card.f:before { opacity: 1; }
   .g-card:nth-child(3n) { margin-right: 0; }
-  .g-img { position: relative; height: 30.6rem; background: #000 center / cover no-repeat; }
+  .g-img { position: relative; height: 30.6rem; background: #000 center / cover no-repeat; border-radius: 2.8rem 2.8rem 0 0; overflow: hidden; }
   .g-img b {
     position: absolute; left: 0; right: 0; top: 9.3rem; text-align: center;
     font-size: 10rem; line-height: 12rem; font-weight: 700; color: rgba(255, 255, 255, .92);
@@ -84,7 +91,7 @@
     content: 'In uso'; position: absolute; left: 2rem; top: 2rem; padding: .6rem 1.4rem; border-radius: 99rem;
     background: rgba(0, 0, 0, .62); font-size: 1.9rem; font-weight: 600; color: #fff;
   }
-  .g-card.f { transform: scale(1.05); box-shadow: 0 0 0 .5rem var(--text), 0 2.4rem 6rem rgba(0, 0, 0, .5); }
+  .g-card.f { transform: scale(1.05); }
 
   .search {
     position: relative; margin-top: 16.4rem; width: 140rem; height: 10rem;
@@ -110,7 +117,7 @@
     font-size: 2.8rem; font-weight: 600; color: var(--text-2); white-space: nowrap;
   }
   .block-title span { margin-left: 1.6rem; font-size: 2.2rem; font-weight: 500; color: var(--text-3); }
-  #favs, #tabs { position: relative; height: 17.28rem; white-space: nowrap; font-size: 0; transition: transform .36s var(--ease); }
+  #favs, #tabs { position: relative; height: 17.28rem; white-space: nowrap; font-size: 0; transition: transform .36s var(--ease); will-change: transform; }
   #tabs .card { background: var(--surface); }
   /* titoli lunghi: una riga sola (sotto l'icona, mai sopra); il titolo intero e' nella galleria */
   #tabs .label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 2.6rem; }

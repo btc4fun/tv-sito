@@ -399,7 +399,7 @@
   ProfiloTV.ripara(window);
   var MOTORE = ProfiloTV.motore(window);
 
-  var VERSIONE = '3.2.0';
+  var VERSIONE = '1.0.0';
   var SERVIZIO = 'http://127.0.0.1:8090';
   var IN_FRAME = false;
   try { IN_FRAME = window.top !== window.self; } catch (e) { IN_FRAME = true; }
@@ -631,6 +631,7 @@
     if (typeof origOmbra === 'function') {
       Element.prototype.attachShadow = comeOriginale(function () {
         var r = origOmbra.apply(this, arguments);
+        try { this.__hometvOmbra = true; } catch (e) {} // ha dentro una parte nascosta: non e' uno strato vuoto
         try {
           ascoltaSicuro(r, 'loadedmetadata', function (ev) {
             var v = ev.target;
@@ -2295,53 +2296,320 @@
   }
 
   var cambiamenti = false;
-  /* Pannelli truffa sopra i video ("Confirm you're not a robot - Scan the qr-code with your phone"): sono pubblicita'
-   * finte e a schermo intero non si chiudono. Si tolgono appena compaiono. I veri controlli "non sono un robot" dei
-   * moduli non chiedono di inquadrare un codice QR, e le pagine di accesso col QR non parlano di robot: restano */
+  /* Pannelli pubblicitari sopra la pagina e sopra il video. Si tolgono appena nascono, prima che si vedano, in ogni
+   * pagina e in ogni riquadro; se il sito li rimette si tolgono di nuovo:
+   * - i pannelli truffa ("Confirm you're not a robot - Scan the qr-code with your phone", "premi Consenti"): pubblicita'
+   *   finte che a schermo intero non si chiudono. I veri "non sono un robot" dei moduli non chiedono di inquadrare un
+   *   codice QR, e le pagine di accesso col QR non parlano di robot: restano;
+   * - i riquadri senza indirizzo che uno script riempie e allarga sopra tutto (e' cosi' che il pannello truffa arriva
+   *   nel lettore di un sito): i riquadri veri (lettori, accessi, pagamenti, consensi) hanno un indirizzo loro, e uno con
+   *   dentro un video o un modulo da compilare resta;
+   * - gli strati vuoti e trasparenti a tutto schermo sopra tutto, che rubano il clic per aprire pubblicita'.
+   * Lo stesso pannello rimesso dal sito (stesse classi) si toglie subito, anche prima che arrivi il testo */
   var TRUFFA_ROBOT = /robot|not human|sei umano|human verification|verifica umana/i;
-  var TRUFFA_QR = /(scan|scansiona|inquadra)[\s\S]{0,40}q\s*r|q\s*r[\s-]*code[\s\S]{0,40}(phone|telefono|cellulare)/i;
-  var truffeTolte = 0;
+  var TRUFFA_QR = /(scan|scansiona|inquadra)[\s\S]{0,40}q\s*r|q\s*r[\s-]*code[\s\S]{0,40}(phone|telefono|cellulare)|(click|press|tap|clicca|premi|tocca)[\s\S]{0,20}(allow|consenti)/i;
+  var TRUFFA_PEZZO = /\brobot|\bhuman\b|\bumano\b|\bq\s?r\b|\ballow\b|\bconsenti\b/i;
+  // a schermo intero: le domande del sito che vogliono una risposta ("sei ancora li'?") non si nascondono mai
+  var ANCORA_LI = /ancora l[i\u00ec]|sei ancora|stai ancora|still watching|are you (still )?there|keep watching|continua(re)? a guardare/i;
+  var SOTTOTITOLI_DISEGNATI = /libass|jassub|octopus|subtitles?-canvas/i;
+  var Z_SOPRA = 1000000;
+  var truffeTolte = 0, firme = [], lotta = { n: 0, t: 0 };
   function eTruffa(t) { return t.length < 1200 && TRUFFA_ROBOT.test(t) && TRUFFA_QR.test(t); }
+  // il video a schermo intero e quello che lo tiene, e le cose nostre: mai toccati
+  function intoccabile(el) {
+    if (el === fsEl || (fsEl && el.contains(fsEl))) return true;
+    if (el.id && el.id.indexOf('hometv-') === 0) return true;
+    return /(^|\s)hometv-fs(-anc|-cc)?(\s|$)/.test(typeof el.className === 'string' ? el.className : '');
+  }
+  function firmaDi(el) {
+    var c = typeof el.className === 'string' ? el.className.replace(/(^|\s)hometv-\S+/g, ' ').replace(/\s+/g, ' ').replace(/^ | $/g, '') : '';
+    return c || el.id ? el.tagName + '|' + c + '|' + (el.id || '') : '';
+  }
+  function zDi(cs) { var z = parseInt(cs.zIndex, 10); return isFinite(z) ? z : 0; }
+  function copreSchermo(el, quota) {
+    var r = el.getBoundingClientRect();
+    return r.width * r.height >= (window.innerWidth || 1) * (window.innerHeight || 1) * quota;
+  }
+  // fisso e sopra tutto (prima lo stile scritto nell'elemento, che non costa niente)
+  function fissoSopra(el, z) {
+    var st = el.style;
+    if (st && st.position === 'fixed' && (parseInt(st.zIndex, 10) || 0) >= z) return true;
+    var cs = window.getComputedStyle(el);
+    return cs.position === 'fixed' && zDi(cs) >= z;
+  }
+  function riquadroPubblicita(el) {
+    if (el.__hometvVideo) return '';
+    var s = el.getAttribute('src');
+    if (s && !/^\s*(about:|javascript:)/i.test(s)) return '';
+    // (una pubblicita' fermata dalle liste resta un riquadro vuoto: se copre la pagina, via anche lei)
+    if (!fissoSopra(el, el.__hometvAd ? 1000 : Z_SOPRA)) return '';
+    var d = null;
+    try { d = el.contentDocument; } catch (e) { d = null; }
+    // il riquadro e' andato su un altro sito (un pagamento, un accesso): resta, salvo che sia una pubblicita' delle liste
+    if ((!d || !d.body) && !el.__hometvAd) return '';
+    if (d && d.body) {
+      // ancora vuoto (lo script lo riempira' tra un attimo): lo si riguarda subito dopo, a contenuto arrivato
+      if (!d.body.firstChild) {
+        if (!el.__hometvRiprova) {
+          el.__hometvRiprova = 1;
+          [120, 700].forEach(function (t) { setTimeout(function () { var x = pannelloPubblicita(el); if (x) togliPannello(el, x); }, t); });
+        }
+        return '';
+      }
+      if (d.querySelector('video, audio, object, embed, input, textarea, select, form')) return '';
+      var t = testoSenzaCodice(d.body).replace(/\s+/g, ' ');
+      if (t.length < 4000 && eTruffa(t)) return 'truffa'; // (il codice QR puo' essere disegnato)
+      // una finestra con qualcosa da leggere (consenso, eta', domanda) o con dentro un altro riquadro o un disegno: resta
+      if (t.length >= 150 || d.querySelector('iframe, canvas')) return '';
+    }
+    // gia' a tutto schermo, o pronto per esserlo (largo il 100%, attaccato ai quattro lati)
+    if (copreSchermo(el, el.__hometvAd ? 0.3 : 0.4) || /(^|;)\s*(width:\s*100%|inset:\s*0)/i.test(el.getAttribute('style') || '')) return 'riquadro';
+    return '';
+  }
+  // strato vuoto e trasparente a tutto schermo sopra tutto: c'e' solo per rubare il clic
+  function tappo(el) {
+    var tag = el.tagName;
+    if (el.firstElementChild || el.shadowRoot || el.__hometvOmbra || /^(IFRAME|VIDEO|CANVAS|IMG|svg|OBJECT|EMBED)$/.test(tag)) return false;
+    if (!(el.style && el.style.position === 'fixed') && el.parentNode !== document.documentElement && el.parentNode !== document.body) return false;
+    if ((el.textContent || '').replace(/\s+/g, '').length) return false;
+    var cs = window.getComputedStyle(el);
+    if (cs.position !== 'fixed' || zDi(cs) < Z_SOPRA || cs.pointerEvents === 'none' || cs.display === 'none') return false;
+    if (cs.backgroundImage && cs.backgroundImage !== 'none') return false;
+    var bg = cs.backgroundColor || '';
+    if (bg !== 'transparent' && !/^rgba\(.*,\s*0(\.0*)?\)$/.test(bg)) return false;
+    if (!copreSchermo(el, 0.8)) return false;
+    // appena nato: si riguarda tra un attimo (se il sito ci mette dentro qualcosa, non e' piu' uno strato vuoto)
+    if (!el.__hometvTappoVisto) {
+      el.__hometvTappoVisto = Date.now();
+      [150, 700].forEach(function (t) { setTimeout(function () { var x = pannelloPubblicita(el); if (x) togliPannello(el, x); }, t); });
+      return false;
+    }
+    return Date.now() - el.__hometvTappoVisto >= 120;
+  }
+  // '' se va bene, altrimenti che pannello e'
+  function pannelloPubblicita(el) {
+    if (!bloccoAttivo || YT_TV || !el || el.nodeType !== 1 || !el.parentNode || el.__hometvLasciato) return '';
+    if (el.__hometvTolto) return window.getComputedStyle(el).display === 'none' ? '' : 'di nuovo'; // rimostrato dal sito
+    var tag = el.tagName;
+    if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'LINK' || tag === 'META' || tag === 'BODY' || tag === 'HEAD' || tag === 'HTML') return '';
+    if (intoccabile(el)) return '';
+    if (tag === 'IFRAME') return riquadroPubblicita(el);
+    if (firme.length && (el.parentNode === document.body || el.parentNode === document.documentElement)) {
+      // lo stesso pannello rimesso (stessa firma, appeso alla pagina, fisso sopra tutto, senza niente di utile dentro)
+      var f = firmaDi(el);
+      if (f && firme.indexOf(f) !== -1 && !el.querySelector('video, audio, iframe, canvas, object, embed, input, textarea, select, form') &&
+        fissoSopra(el, 1000)) return 'di nuovo';
+    }
+    return tappo(el) ? 'tappo' : '';
+  }
+  // il contenitore rimasto senza pubblicita' (lo sfondo scuro, la scritta, la X): via anche lui
+  function togliGuscio(p) {
+    for (var k = 0; p && p.nodeType === 1 && k < 3 && p !== document.body && p !== document.documentElement; k++) {
+      if (intoccabile(p) || p.__hometvTolto) return;
+      // quello che resta dentro e' tutto nascosto da noi? (il riquadro appena nascosto non conta)
+      var resto = p.querySelectorAll('video, iframe, input, textarea, select, canvas');
+      for (var i = 0; i < resto.length; i++) if (!resto[i].__hometvTolto) return;
+      if ((p.textContent || '').replace(/\s+/g, ' ').length > 120 || !fissoSopra(p, 1000) || !copreSchermo(p, 0.3)) return;
+      var su = p.parentNode;
+      togliPannello(p, 'guscio');
+      p = su;
+    }
+  }
+  function nascondiPannello(el) {
+    el.__hometvTolto = true;
+    el.style.setProperty('display', 'none', 'important');
+    el.style.setProperty('pointer-events', 'none', 'important');
+  }
+  function togliPannello(el, tipo) {
+    var ora = Date.now();
+    if (ora - lotta.t > 3000) { lotta.n = 0; lotta.t = ora; }
+    if (++lotta.n > 60) {
+      // il sito lo rimette di continuo: per un po' resta solo nascosto (mai una lotta che blocca la pagina)
+      el.__hometvLasciato = true;
+      el.style.setProperty('display', 'none', 'important');
+      return;
+    }
+    if ((tipo === 'truffa' || tipo === 'di nuovo') && el.tagName !== 'IFRAME') {
+      var f = firmaDi(el);
+      if (f && firme.indexOf(f) === -1 && firme.length < 30) firme.push(f);
+    }
+    if (fsEl === el) esciSchermoIntero(true);
+    var padre = el.parentNode;
+    nascondiPannello(el);
+    conta('pannello', tipo + ' ' + ((typeof el.className === 'string' && el.className) || el.tagName));
+    if (tipo === 'truffa' && ++truffeTolte === 1) toast('Tolto un pannello truffa (finto controllo "non sei un robot")', 3500);
+    if (tipo !== 'tappo' && tipo !== 'guscio') togliGuscio(padre);
+  }
+  // il testo che si legge (senza il codice degli script e degli stili, che nel testo di un elemento ci finisce)
+  function testoSenzaCodice(el) {
+    var t = el.textContent || '';
+    if (t.length > 20000) return t;
+    var c = el.querySelectorAll('script, style, noscript, template');
+    for (var i = 0; i < c.length && i < 30; i++) { var x = c[i].textContent; if (x) t = t.split(x).join(' '); }
+    return t;
+  }
+  // sopra la pagina: fisso, o messo sopra con un livello (i pannelli truffa lo sono; una pagina di accesso no)
+  function inPrimoPiano(el) {
+    for (var a = el, k = 0; a && a.nodeType === 1 && k < 5 && a !== document.body && a !== document.documentElement; a = a.parentElement, k++) {
+      var cs = window.getComputedStyle(a);
+      if (cs.position === 'fixed' || (cs.position === 'absolute' && zDi(cs) >= 10)) return true;
+    }
+    return false;
+  }
+  var NON_PANNELLO = /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE|HEAD|TITLE|META|LINK|BODY|HTML|VIDEO|AUDIO|IFRAME|svg)$/;
   function togliTruffa(n) {
-    if (!bloccoAttivo || !n || n.nodeType !== 1 || n.__hometvTruffa) return false;
+    if (!bloccoAttivo || YT_TV || !n || n.nodeType !== 1 || !n.parentNode || NON_PANNELLO.test(n.tagName)) return false;
+    if (n.__hometvTruffa) { if (!intoccabile(n)) togliPannello(n, 'di nuovo'); return true; } // rimesso dal sito
     var t = n.textContent || '';
-    if (t.length > 4000 || !/robot|human|umano/i.test(t) || !/q\s*r/i.test(t)) return false;
+    if (t.length > 4000 || !/robot|human|umano/i.test(t) || !/q\s*r|allow|consenti/i.test(t)) return false;
     // il pannello: il piu' piccolo che dice tutte e due le cose, poi su finche' il testo resta quello (lo sfondo scuro)
     var pan = null, l = [n].concat(Array.prototype.slice.call(n.querySelectorAll('div, section, aside, dialog, form, span, p')));
     for (var i = l.length - 1; i >= 0; i--) if (eTruffa(l[i].textContent || '')) { pan = l[i]; break; }
-    if (!pan || pan.querySelector('video')) return false; // mai il video
+    // mai il video, mai un modulo da compilare (i veri "non sono un robot" stanno nei moduli), mai il codice della pagina
+    if (!pan || pan.querySelector('video, input, textarea, select, form') || !eTruffa(testoSenzaCodice(pan).replace(/\s+/g, ' '))) return false;
     var cima = pan;
     for (var a = pan.parentElement, k = 0; a && k < 8 && a !== document.body && a !== document.documentElement; a = a.parentElement, k++) {
       if (a.querySelector('video, iframe, canvas') && !pan.contains(a.querySelector('video, iframe, canvas'))) break; // il lettore resta
       if ((a.textContent || '').replace(/\s+/g, '').length > (pan.textContent || '').replace(/\s+/g, '').length + 40) break;
       cima = a;
     }
-    cima.__hometvTruffa = true;
-    cima.style.setProperty('display', 'none', 'important');
-    conta('truffa', (cima.className || cima.tagName) + '');
-    if (++truffeTolte === 1) toast('Tolto un pannello truffa (finto controllo "non sei un robot")', 3500);
-    // un riquadro tutto suo (la pagina dentro e' solo il pannello): lo toglie la pagina di sopra
-    if (IN_FRAME && !tuttiIVideo().length && (document.body.textContent || '').replace(/\s+/g, '').length <= (pan.textContent || '').replace(/\s+/g, '').length + 80) {
-      try { window.parent.postMessage({ hometv: 'truffa' }, '*'); } catch (e) {}
+    if (intoccabile(cima)) return false;
+    var sopra = inPrimoPiano(cima);
+    for (var b = pan; !sopra && b && b !== cima; b = b.parentElement) {
+      var cb = window.getComputedStyle(b);
+      if (cb.position === 'fixed' || (cb.position === 'absolute' && zDi(cb) >= 10)) sopra = true;
     }
+    if (!sopra) return false;
+    cima.__hometvTruffa = true;
+    togliPannello(cima, 'truffa');
     return true;
   }
-  // ogni tanto (anche a schermo intero): i pannelli fissi appesi alla pagina, e quelli il cui testo arriva dopo
-  function togliTruffeFisse() {
-    if (!bloccoAttivo || !document.body) return;
-    var f = document.body.children;
-    for (var i = 0; i < f.length && i < 80; i++) if (!f[i].__hometvTruffa && f[i].childElementCount < 80) togliTruffa(f[i]);
+  // un riquadro che e' tutto un pannello truffa (la pagina dentro e' solo il pannello): lo toglie la pagina di sopra
+  var riquadroDetto = false, riquadroPieno = false;
+  function riquadroTruffa() {
+    if (!IN_FRAME || riquadroDetto || riquadroPieno || !bloccoAttivo || YT_TV || !document.body) return false;
+    var t = testoSenzaCodice(document.body).replace(/\s+/g, ' ');
+    if (t.length > 5000) { riquadroPieno = true; return false; }
+    if (!eTruffa(t) || tuttiIVideo().length || document.getElementsByTagName('*').length > 150 ||
+      document.querySelector('video, audio, iframe, object, embed, input, textarea, select, form')) return false;
+    riquadroDetto = true;
+    try { window.parent.postMessage({ hometv: 'truffa' }, '*'); } catch (e) {}
+    return true;
+  }
+  // un pezzo di testo nuovo che potrebbe essere di un pannello truffa (il testo arriva a pezzi): si guarda intorno
+  function truffaDa(el) {
+    for (var a = el, k = 0; a && a.nodeType === 1 && k < 6; a = a.parentElement, k++) {
+      if (a === document.body || a === document.documentElement) return riquadroTruffa();
+      if (a === document.head || NON_PANNELLO.test(a.tagName) || a.childElementCount > 80) return false;
+      var t = a.textContent || '';
+      if (t.length > 4000) return false;
+      if (TRUFFA_ROBOT.test(t) && TRUFFA_QR.test(t)) return togliTruffa(a);
+    }
+    return false;
+  }
+  // ogni tanto (anche a schermo intero): quello che fosse scappato
+  function pulisciPannelli() {
+    if (fsEl) controllaTardivi();
+    if (!bloccoAttivo || YT_TV || !document.body || paginaDiCasa()) return;
+    var l = [], i, r, radici = [document.body, document.documentElement];
+    for (r = 0; r < radici.length; r++) for (i = 0; i < radici[r].children.length && i < 80; i++) l.push(radici[r].children[i]);
+    var fr = document.getElementsByTagName('iframe');
+    for (i = 0; i < fr.length && i < 40; i++) l.push(fr[i]);
+    for (i = 0; i < l.length; i++) {
+      var el = l[i];
+      if (!el.parentNode || el === document.body || el === document.head) continue;
+      var tipo = pannelloPubblicita(el);
+      if (tipo) { togliPannello(el, tipo); continue; }
+      guardaStile(el);
+      if (el.tagName !== 'IFRAME' && !el.__hometvGrande && el.childElementCount < 80) {
+        // i contenitori di tutta la pagina non si rileggono ogni volta (un pannello nuovo li' dentro lo vede l'osservatore)
+        if ((el.textContent || '').length > 20000) el.__hometvGrande = true;
+        else togliTruffa(el);
+      }
+    }
+    riquadroTruffa();
+  }
+  // stili cambiati: un riquadro vuoto che diventa grande e sopra tutto, uno strato che si allarga. Si guardano solo i
+  // riquadri senza indirizzo e quello che sta appeso direttamente alla pagina (non tutta la pagina: costerebbe)
+  var osservaStili = null;
+  function guardaStile(el) {
+    if (!osservaStili || el.__hometvGuardato || (el.id && el.id.indexOf('hometv-') === 0)) return;
+    if (el.tagName === 'IFRAME') { var s = el.getAttribute('src'); if (s && !/^\s*(about:|javascript:)/i.test(s)) return; }
+    else if (el.parentNode !== document.body && el.parentNode !== document.documentElement) return;
+    el.__hometvGuardato = true;
+    try { osservaStili.observe(el, { attributes: true, attributeFilter: ['style', 'class', 'hidden'] }); } catch (e) {}
+  }
+  function suStili(lista) {
+    for (var i = 0; i < lista.length; i++) {
+      var el = lista[i].target, tipo = pannelloPubblicita(el);
+      if (tipo) togliPannello(el, tipo);
+    }
+  }
+  // A schermo intero si vedono solo il video e il nostro lettore: quello che il sito aggiunge dopo accanto al video o
+  // sopra la pagina (i suoi comandi, i suoi avvisi, le pubblicita') resta nascosto come il resto, tranne i sottotitoli
+  function nuovoNelloSchermoIntero(n) {
+    var tag = n.tagName;
+    if (!fsEl || n === fsEl || tag === 'STYLE' || tag === 'SCRIPT' || tag === 'LINK' || tag === 'META' || tag === 'HEAD' || tag === 'BODY') return;
+    if (n.id && n.id.indexOf('hometv-') === 0) return;
+    var p = n.parentNode;
+    if (!p || n.contains(fsEl) || tag === 'VIDEO' || (n.querySelector && n.querySelector('video'))) return; // un video nuovo del sito: mai
+    if (p !== document.body && p !== document.documentElement && !(p.classList && p.classList.contains('hometv-fs-anc'))) return;
+    if (tag === 'CANVAS' || (n.querySelector && n.querySelector('canvas'))) return; // sottotitoli disegnati
+    var nome = (typeof n.className === 'string' ? n.className : '') + ' ' + n.id;
+    if (SOTTOTITOLI_DISEGNATI.test(nome)) return;
+    if (n.childElementCount < 200 && domandaDelSito(n)) return; // "riprendi la visione?", "sei ancora li'?"
+    if (fsEl.tagName === 'VIDEO' && SOTTOTITOLI.test(nome)) { classeFs(n, 'hometv-fs-cc'); return; }
+    classeFs(n, 'hometv-fs-hide');
+    tardivi.push(n);
+    if (classati.length > 600) classati = classati.filter(function (c) { return c[0].isConnected; });
+  }
+  function domandaDelSito(n) { var t = n.textContent || ''; return t.length < 2000 && (CHIEDE_RIPRESA.test(t) || ANCORA_LI.test(t)); }
+  // quelli nascosti a schermo intero: se ora sono una domanda del sito (il testo arriva dopo), si fanno vedere
+  var tardivi = [];
+  function controllaTardivi() {
+    var tenuti = [];
+    for (var i = 0; i < tardivi.length; i++) {
+      var n = tardivi[i];
+      if (!n.isConnected || !n.classList.contains('hometv-fs-hide')) continue;
+      if (n.childElementCount < 200 && domandaDelSito(n)) {
+        n.classList.remove('hometv-fs-hide');
+        classati = classati.filter(function (c) { return c[0] !== n; }); // (se no la guardia la rinasconde)
+      } else tenuti.push(n);
+    }
+    tardivi = tenuti;
   }
 
   function suMutazioni(lista) {
     if (paginaDiCasa()) return;
-    if (bloccoAttivo) {
-      // pannelli truffa (anche quando il testo arriva dopo, in un nodo di testo nuovo)
+    if (bloccoAttivo && !YT_TV) {
+      // pannelli pubblicitari e truffa: via appena nascono, prima che si vedano (anche col testo che arriva dopo, a pezzi)
       for (var q = 0; q < lista.length; q++) {
         var agg = lista[q].addedNodes;
         for (var r = 0; r < agg.length; r++) {
-          var el = agg[r].nodeType === 1 ? agg[r] : agg[r].parentElement;
-          if (el && el !== document.body && !el.__hometvTruffa && el.childElementCount < 80) togliTruffa(el);
+          try {
+            var nodo = agg[r];
+            if (nodo.nodeType === 3) {
+              var pe = nodo.parentElement;
+              if (pe && pe !== document.head && !NON_PANNELLO.test(pe.tagName) && TRUFFA_PEZZO.test(nodo.data || '')) truffaDa(pe);
+              continue;
+            }
+            if (nodo.nodeType !== 1 || !nodo.parentNode) continue; // gia' tolto
+            var tipo = pannelloPubblicita(nodo);
+            if (tipo) { togliPannello(nodo, tipo); continue; }
+            guardaStile(nodo);
+            if (nodo.firstElementChild && nodo.tagName !== 'IFRAME') {
+              // un blocco aggiunto tutto insieme: i riquadri che ha dentro
+              var fr = Array.prototype.slice.call(nodo.getElementsByTagName('iframe'), 0, 20);
+              for (var f = 0; f < fr.length; f++) {
+                var tf = pannelloPubblicita(fr[f]);
+                if (tf) togliPannello(fr[f], tf); else guardaStile(fr[f]);
+              }
+            }
+            if (nodo.parentNode && !NON_PANNELLO.test(nodo.tagName) && nodo.parentNode !== document.head && nodo.childElementCount < 80) {
+              var tn = nodo.textContent || '';
+              if (tn.length <= 4000 && TRUFFA_PEZZO.test(tn) && !togliTruffa(nodo)) truffaDa(nodo.parentElement);
+            }
+          } catch (e) {}
         }
       }
     }
@@ -2351,8 +2619,9 @@
       var nuovi = lista[a].addedNodes;
       for (var b = 0; b < nuovi.length; b++) {
         var n = nuovi[b];
-        if (n.nodeType !== 1) continue;
+        if (n.nodeType !== 1 || !n.parentNode) continue;
         modaliSporche = true;
+        if (fsEl) nuovoNelloSchermoIntero(n);
         if (n.__hometvFuori) rimetti(n);
         if (!navSporca && (n.matches(SEL_NAV) || (n.firstElementChild && n.querySelector(SEL_NAV)))) navSporca = true;
         if (scansioneAvviata) daScansionare(n); // prima dell'avvio ci pensa la scansione di tutta la pagina
@@ -2787,9 +3056,11 @@
       ultimoOk = chiestoPlayA = Date.now();
       premutoAiRiquadri();
     } else if (d.hometv === 'truffa' && frame && bloccoAttivo) {
-      frame.__hometvTruffa = true;
-      frame.style.setProperty('display', 'none', 'important');
-      if (fsEl === frame) esciSchermoIntero(true);
+      // un riquadro che e' tutto un pannello truffa, messo sopra la pagina: via il riquadro (mai un lettore)
+      if (!frame.__hometvVideo && !eLettore(frame) && !intoccabile(frame) && inPrimoPiano(frame)) {
+        frame.__hometvTruffa = true;
+        togliPannello(frame, 'truffa');
+      }
     } else if (d.hometv === 'video' && frame) {
       frame.__hometvVideo = true;
     } else if (d.hometv === 'playing' && frame) {
@@ -5887,7 +6158,7 @@
    * viene tagliato dai riquadri. L'alone e' fatto a fasce, senza sfocatura: sul TV una
    * sfocatura grande intorno a una riga larga quanto lo schermo rallenta le frecce.
    */
-  var anello = null, anelloRaf = 0, anelloFino = 0, anelloDa = null, anelloVia = 0, anelloOra = null;
+  var anello = null, anelloRaf = 0, anelloFino = 0, anelloDa = null, anelloVia = 0, anelloOra = null, anelloFermo = 0;
   var SVG_ANELLO = '<svg><defs><linearGradient id="hometv-colori" x1="0" y1="0" x2="1" y2="1">' +
     '<stop offset="0" stop-color="#19d3b7"/><stop offset=".55" stop-color="#3b82f6"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient></defs>' +
     '<rect x="0" y="0" width="100%" height="100%" rx="12" ry="12" fill="none" stroke="#fff" stroke-opacity=".92" stroke-width="7"/>' +
@@ -5946,7 +6217,9 @@
   }
   function nuoviIngranditi(el) {
     anelloExtra = { el: el, lista: [] };
-    [80, 400, 900].forEach(function (t) { setTimeout(function () { try { cercaIngranditi(el); } catch (e) {} }, t); });
+    [80, 400, 900].forEach(function (t) {
+      setTimeout(function () { try { cercaIngranditi(el); } catch (e) {} if (corrente === el) seguiAnello(false); }, t);
+    });
   }
   function rettangoloAnello(el) {
     var r = rettangolo(el);
@@ -6035,11 +6308,17 @@
     if (cambia) { anelloDa = anelloOra; anelloVia = Date.now(); }
     // anche mentre la pagina scorre per portarla in vista, e mentre il sito la ingrandisce (spesso dopo un attimo)
     anelloFino = Date.now() + (cambia ? 1700 : 900);
+    anelloFermo = 0;
     if (anelloRaf) return;
     var raf = window.requestAnimationFrame || function (f) { return setTimeout(f, 16); };
     (function passo() {
+      var prima = anelloOra;
       try { disegnaAnello(); } catch (e) {}
-      anelloRaf = Date.now() < anelloFino ? raf(passo) : 0;
+      // ferma da una dozzina di fotogrammi: non serve piu' ridisegnarla a ogni fotogramma (sul TV e' lavoro tolto alla
+      // pagina). Se la pagina scorre o il sito la ingrandisce dopo, si riparte (scorrimento e controlli qui sotto)
+      var q = anelloOra;
+      anelloFermo = prima && q && !anelloDa && prima.l === q.l && prima.t === q.t && prima.w === q.w && prima.h === q.h ? anelloFermo + 1 : 0;
+      anelloRaf = Date.now() < anelloFino && anelloFermo < 12 ? raf(passo) : 0;
     })();
   }
 
@@ -7423,6 +7702,7 @@
     try {
       osservatore = new MutationObserver(suMutazioni);
       osservatore.observe(document.documentElement || document, { childList: true, subtree: true });
+      osservaStili = new MutationObserver(suStili);
     } catch (e) { osservatore = null; }
   }
   osserva();
@@ -7483,7 +7763,7 @@
       riquadroNascosto = 0;
       if (!corrente.isConnected || !siVede(corrente)) { try { riprendiFuoco(); } catch (e) {} }
     }, 700);
-    setInterval(function () { try { controllaVideo(); } catch (e) {} try { togliTruffeFisse(); } catch (e) {} }, 1500);
+    setInterval(function () { try { controllaVideo(); } catch (e) {} try { pulisciPannelli(); } catch (e) {} }, 1500);
     if (!IN_FRAME) avviaDopoProssimo();
     if (!IN_FRAME) {
       // il promemoria dei tasti: una volta sola per sito, non a ogni pagina
