@@ -50,6 +50,7 @@ h1, h2, p, ul { margin: 0; padding: 0; }
   position: absolute; left: 0; top: 0; width: 100%; height: 100%;
   opacity: 0;
   transition: opacity .5s ease;
+  will-change: opacity;
 }
 .wash.on { opacity: 1; }
 
@@ -85,7 +86,8 @@ h1, h2, p, ul { margin: 0; padding: 0; }
   position: fixed; left: 9.6rem; top: 15.6rem; z-index: 3;
   width: 120rem;
 }
-.hero-text { transition: opacity .16s ease; }
+/* il titolo resta su un livello suo: la dissolvenza non fa ridisegnare il resto dello schermo */
+.hero-text { transition: opacity .16s ease; will-change: opacity; }
 .hero-text.fade { opacity: 0; }
 #hero-cap {
   font-size: 2.4rem; font-weight: 600; letter-spacing: .02em; color: var(--text-2);

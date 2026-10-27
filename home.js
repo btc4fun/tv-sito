@@ -596,13 +596,51 @@
     fadeTimer = setTimeout(put, 140);
   }
 
+  // La luce si disegna in piccolo (192 x 108) e il TV la allarga a tutto schermo: si vede uguale (e' una sfumatura), ma a
+  // ogni scelta il TV disegna 20 mila punti invece di 2 milioni (la sfumatura a tutto schermo faceva scattare la home).
+  // Dove il disegno non c'e', la luce resta uno sfondo come prima
   var washA = $('wash-a'), washB = $('wash-b'), washOnA = true, lastWash = '';
+  var LW = 192, LH = 108;
+  function ellisse(x, cx, cy, rx, ry, rgb, a) {
+    x.save();
+    x.translate(cx, cy);
+    x.scale(1, ry / rx);
+    var g = x.createRadialGradient(0, 0, 0, 0, 0, rx);
+    g.addColorStop(0, 'rgba(' + rgb + ',' + a + ')');
+    g.addColorStop(0.7, 'rgba(' + rgb + ',0)');
+    g.addColorStop(1, 'rgba(' + rgb + ',0)');
+    x.fillStyle = g;
+    x.fillRect(-cx, -cy * rx / ry, LW, LH * rx / ry);
+    x.restore();
+  }
+  // come washCss: sotto il colore del tema, poi le due luci (140x80 rem in alto a destra, 110x70 rem a sinistra), sopra l'ombra
+  function disegnaLuce(cv, c, bg) {
+    var x = null;
+    // senza trasparenza: il TV sa che copre tutto lo sfondo e non lo ridisegna sotto
+    try { x = cv.getContext && cv.getContext('2d', { alpha: false }); } catch (e) { x = null; }
+    if (!x) return false;
+    var luce = opt('luce'), k = luce === 'tenue' ? 0.5 : 1;
+    x.fillStyle = bg;
+    x.fillRect(0, 0, LW, LH);
+    if (luce !== 'spenta') {
+      ellisse(x, 0, 0.6 * LH, 110 / 192 * LW, 70 / 108 * LH, c.b, 0.32 * k);
+      ellisse(x, 0.84 * LW, 0, 140 / 192 * LW, 80 / 108 * LH, c.a, 0.55 * k);
+    }
+    var g = x.createLinearGradient(0, 0, 0, LH);
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.38, 'rgba(0,0,0,0)');
+    g.addColorStop(0.7, 'rgba(0,0,0,.5)'); g.addColorStop(1, 'rgba(0,0,0,.78)');
+    x.fillStyle = g;
+    x.fillRect(0, 0, LW, LH);
+    return true;
+  }
   function setAmbient(item) {
-    var css = washCss(colorsFor(item));
-    if (css === lastWash) return;
-    lastWash = css;
+    var c = colorsFor(item), bg = '';
+    try { bg = getComputedStyle(document.body).backgroundColor || ''; } catch (e) {}
+    var key = [opt('luce'), c.a, c.b, bg].join('|');
+    if (key === lastWash) return;
+    lastWash = key;
     var next = washOnA ? washB : washA, now = washOnA ? washA : washB;
-    next.style.background = css;
+    if (!disegnaLuce(next, c, bg || '#0b0c10')) next.style.background = washCss(c);
     next.className = 'wash on';
     now.className = 'wash';
     washOnA = !washOnA;

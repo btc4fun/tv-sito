@@ -56,7 +56,7 @@ Tutto gira dentro **TizenBrew**: la home non cambia il sistema del TV e si togli
 ## Fase B – Prepara il TV (5 minuti)
 
 1. **IP del Mac**: menu  → **Impostazioni di Sistema** → **Wi-Fi** → **Dettagli…** → *Indirizzo IP*. Segnatelo.
-2. Sul TV premi **Home** → **App**. Premi il tasto **123** del telecomando e digita **1 2 3 4 5**.
+2. Sul TV premi **Home** → **App** e apri **Impostazioni app** (l'ingranaggio della schermata App). Lì premi il tasto **123** del telecomando e digita **1 2 3 4 5** (su alcuni TV basta la schermata App; se non succede niente, è perché non sei in *Impostazioni app*).
 3. *Developer mode* → **On**, in *Host PC IP* scrivi l'IP del Mac → **OK**.
 4. Tieni premuto il **tasto di accensione** finché il TV si riavvia.
 5. **IP del TV**: **Impostazioni** → **Tutte le impostazioni** → **Generali e privacy** → **Rete** → **Stato rete** → **Impostazioni IP**. Segnatelo.
@@ -73,7 +73,7 @@ Tutto gira dentro **TizenBrew**: la home non cambia il sistema del TV e si togli
 
 TizenBrew, per far funzionare blocco pubblicità, schermo intero e cronologia, ha bisogno che la modalità sviluppatore punti al TV stesso:
 
-1. **App** → **1 2 3 4 5** → *Host PC IP*: scrivi **`127.0.0.1`** → **OK**.
+1. **App** → **Impostazioni app** → **1 2 3 4 5** → *Host PC IP*: scrivi **`127.0.0.1`** → **OK**.
 2. Riavvia il TV tenendo premuto il tasto di accensione.
 
 Da qui in poi il Mac non serve più.
@@ -81,7 +81,7 @@ Da qui in poi il Mac non serve più.
 ## Fase E – Aggiungi la Home a TizenBrew (TV, 3 minuti)
 
 1. **App** → apri **TizenBrew** (è in fondo alla lista).
-2. Nella fila di **pulsanti tondi in alto** di TizenBrew scegli con le frecce il **gestore dei moduli** (Module Manager) e premi **OK** → **Add GitHub Module** (aggiungi modulo GitHub) → scrivi `tuonomeutente/tv-sito` (il repository deve chiamarsi proprio `tv-sito`). Per scrivere comodo usa l'app **SmartThings** sul telefono: telecomando del TV → tastiera. (Solo nel vecchio TizenBrew 1.x il gestore si apriva col tasto **Verde**: dalla 2.0 il Verde non fa niente.)
+2. Nella fila di **pulsanti tondi in alto** di TizenBrew scegli con le frecce il **gestore dei moduli** (Module Manager) e premi **OK** → **Aggiungi modulo GitHub** (Add GitHub Module) → scrivi `tuonomeutente/tv-sito`, chiudi la tastiera e premi la **freccia giù**: il modulo si aggiunge quando esci dalla casella (Invio da solo non basta) e compare *Home TV* tra i moduli (il repository deve chiamarsi proprio `tv-sito`). Per scrivere comodo usa l'app **SmartThings** sul telefono: telecomando del TV → tastiera. (Solo nel vecchio TizenBrew 1.x il gestore si apriva col tasto **Verde**: dalla 2.0 il Verde non fa niente.)
 3. Sempre tra i pulsanti tondi in alto scegli le **impostazioni** di TizenBrew (Settings; nel vecchio 1.x era il tasto **Blu**):
    - **Impostazioni Autoavvio** → scegli **Home**: aprendo TizenBrew parte subito la tua home;
    - **Impostazioni di Autoavvio per i servizi** → scegli **Home**: il "ponte" con il TV parte sempre insieme a TizenBrew (serve per la riaccensione e per il telefono). Attenzione: in TizenBrew 2.0.5 questa voce, scelta dal telecomando, si salva male e non ha effetto (il ponte parte comunque appena si apre la Home); l'app per Mac la scrive giusta.
@@ -373,7 +373,7 @@ Rispetta virgolette e virgole come nell'esempio: un errore in `config.json` fa u
 - **In "Collega un telefono" il TV dice che non è disponibile**: il TV non ha lasciato aprire la porta 8091 al servizio. Tutto il resto funziona lo stesso; per il telefono usa SmartThings.
 - **Volume e tasti dentro Netflix non vanno dal telefono**: manca il permesso del TV. Tasto **Blu** → **Telefono** → **Tasti del TV dal telefono** → OK, poi **Consenti** sul TV. Se dice *Non disponibili su questo TV*, il tuo TV non offre quell'ingresso: il resto del telefono funziona.
 - **L'icona Telecomando dice "TV non raggiungibile"**: il TV è spento, il telefono non è sulla Wi-Fi di casa, oppure il TV ha cambiato indirizzo (vedi sopra: rifai *Collega un telefono*).
-- **Voglio togliere tutto**: in TizenBrew togli il modulo dal Module Manager, disinstalla TizenBrew dalle App, spegni la modalità sviluppatore (App → 12345 → Off).
+- **Voglio togliere tutto**: in TizenBrew togli il modulo dal Module Manager, disinstalla TizenBrew dalle App, spegni la modalità sviluppatore (App → Impostazioni app → 12345 → Off).
 
 ## Quali TV
 

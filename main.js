@@ -2295,8 +2295,56 @@
   }
 
   var cambiamenti = false;
+  /* Pannelli truffa sopra i video ("Confirm you're not a robot - Scan the qr-code with your phone"): sono pubblicita'
+   * finte e a schermo intero non si chiudono. Si tolgono appena compaiono. I veri controlli "non sono un robot" dei
+   * moduli non chiedono di inquadrare un codice QR, e le pagine di accesso col QR non parlano di robot: restano */
+  var TRUFFA_ROBOT = /robot|not human|sei umano|human verification|verifica umana/i;
+  var TRUFFA_QR = /(scan|scansiona|inquadra)[\s\S]{0,40}q\s*r|q\s*r[\s-]*code[\s\S]{0,40}(phone|telefono|cellulare)/i;
+  var truffeTolte = 0;
+  function eTruffa(t) { return t.length < 1200 && TRUFFA_ROBOT.test(t) && TRUFFA_QR.test(t); }
+  function togliTruffa(n) {
+    if (!bloccoAttivo || !n || n.nodeType !== 1 || n.__hometvTruffa) return false;
+    var t = n.textContent || '';
+    if (t.length > 4000 || !/robot|human|umano/i.test(t) || !/q\s*r/i.test(t)) return false;
+    // il pannello: il piu' piccolo che dice tutte e due le cose, poi su finche' il testo resta quello (lo sfondo scuro)
+    var pan = null, l = [n].concat(Array.prototype.slice.call(n.querySelectorAll('div, section, aside, dialog, form, span, p')));
+    for (var i = l.length - 1; i >= 0; i--) if (eTruffa(l[i].textContent || '')) { pan = l[i]; break; }
+    if (!pan || pan.querySelector('video')) return false; // mai il video
+    var cima = pan;
+    for (var a = pan.parentElement, k = 0; a && k < 8 && a !== document.body && a !== document.documentElement; a = a.parentElement, k++) {
+      if (a.querySelector('video, iframe, canvas') && !pan.contains(a.querySelector('video, iframe, canvas'))) break; // il lettore resta
+      if ((a.textContent || '').replace(/\s+/g, '').length > (pan.textContent || '').replace(/\s+/g, '').length + 40) break;
+      cima = a;
+    }
+    cima.__hometvTruffa = true;
+    cima.style.setProperty('display', 'none', 'important');
+    conta('truffa', (cima.className || cima.tagName) + '');
+    if (++truffeTolte === 1) toast('Tolto un pannello truffa (finto controllo "non sei un robot")', 3500);
+    // un riquadro tutto suo (la pagina dentro e' solo il pannello): lo toglie la pagina di sopra
+    if (IN_FRAME && !tuttiIVideo().length && (document.body.textContent || '').replace(/\s+/g, '').length <= (pan.textContent || '').replace(/\s+/g, '').length + 80) {
+      try { window.parent.postMessage({ hometv: 'truffa' }, '*'); } catch (e) {}
+    }
+    return true;
+  }
+  // ogni tanto (anche a schermo intero): i pannelli fissi appesi alla pagina, e quelli il cui testo arriva dopo
+  function togliTruffeFisse() {
+    if (!bloccoAttivo || !document.body) return;
+    var f = document.body.children;
+    for (var i = 0; i < f.length && i < 80; i++) if (!f[i].__hometvTruffa && f[i].childElementCount < 80) togliTruffa(f[i]);
+  }
+
   function suMutazioni(lista) {
     if (paginaDiCasa()) return;
+    if (bloccoAttivo) {
+      // pannelli truffa (anche quando il testo arriva dopo, in un nodo di testo nuovo)
+      for (var q = 0; q < lista.length; q++) {
+        var agg = lista[q].addedNodes;
+        for (var r = 0; r < agg.length; r++) {
+          var el = agg[r].nodeType === 1 ? agg[r] : agg[r].parentElement;
+          if (el && el !== document.body && !el.__hometvTruffa && el.childElementCount < 80) togliTruffa(el);
+        }
+      }
+    }
     // per il telecomando contano solo le cose nuove che si possono scegliere (non il testo che
     // cambia, ne' i riquadri che il sito aggiunge di continuo; quelle tolte si scartano da sole)
     for (var a = 0; a < lista.length; a++) {
@@ -2738,6 +2786,10 @@
     } else if (d.hometv === 'premuto' && IN_FRAME && ev.source === window.parent) {
       ultimoOk = chiestoPlayA = Date.now();
       premutoAiRiquadri();
+    } else if (d.hometv === 'truffa' && frame && bloccoAttivo) {
+      frame.__hometvTruffa = true;
+      frame.style.setProperty('display', 'none', 'important');
+      if (fsEl === frame) esciSchermoIntero(true);
     } else if (d.hometv === 'video' && frame) {
       frame.__hometvVideo = true;
     } else if (d.hometv === 'playing' && frame) {
@@ -4547,6 +4599,60 @@
   // quando si e' premuto il Play del sito, e per quale video (quello che hai chiesto tu): vale anche per i tentativi dopo
   // sullo stesso video (OK o Play di nuovo), perche' due pressioni vicine spengono i lettori che fanno da interruttore
   var premutoA = 0, premutoPer = null;
+  // La finestrella del sito "Vuoi riprendere la visione? Hai interrotto a 2:36" (Riprendi / Dall'inizio) mentre la home
+  // fa partire il video: risponde la home come hai chiesto (Continua a guardare: Riprendi; "Ricomincia dall'inizio" o la
+  // puntata dopo: Dall'inizio). Si cerca il testo che chiede di riprendere e, nel suo riquadro, il pulsante giusto
+  var CHIEDE_RIPRESA = /riprendere la visione|riprendi(re)? (la )?visione|vuoi riprendere|vuoi continuare|hai interrotto|interrotto (a|al)|continuare a guardare|resume (watching|playback|the video)|continue watching|you (stopped|left off)|pick up where/i;
+  var PULS_DA_CAPO = /dall'?\s*inizio|ricomincia|da capo|start over|from (the )?(start|beginning)|restart/i;
+  var PULS_RIPRENDI = /riprendi|continua|resume|continue|^s[i\u00ec]$|^yes$/i;
+  var ripreseRisposte = [];
+  function testoDi(el) { return String(el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, ''); }
+  function boxRipresa() {
+    var b = document.body;
+    if (!b || !CHIEDE_RIPRESA.test(b.textContent || '')) return null; // quasi sempre si esce qui
+    var w, t;
+    try { w = document.createTreeWalker(b, NodeFilter.SHOW_TEXT, null, false); } catch (e) { return null; }
+    while ((t = w.nextNode())) {
+      if (!CHIEDE_RIPRESA.test(t.nodeValue || '')) continue;
+      for (var n = t.parentElement, k = 0; n && k < 7 && n !== b; n = n.parentElement, k++) {
+        if ((n.textContent || '').length > 600) break;
+        if (ripreseRisposte.indexOf(n) === -1 && siVede(n) && pulsantiRipresa(n).length >= 1) return n;
+      }
+    }
+    return null;
+  }
+  // i pulsanti del riquadro: le cose cliccabili, o le foglie con un testo corto (pulsanti fatti di <div>)
+  function pulsantiRipresa(box) {
+    var out = [], l = box.querySelectorAll('*');
+    for (var i = 0; i < l.length && i < 300; i++) {
+      var e = l[i], cl = e.tagName === 'BUTTON' || e.tagName === 'A' || e.getAttribute('role') === 'button' || e.hasAttribute('tabindex') ||
+        e.hasAttribute('onclick') || (!e.firstElementChild && testoDi(e).length && testoDi(e).length <= 30);
+      if (!cl || !siVede(e)) continue;
+      var dentro = false;
+      for (var j = 0; j < out.length; j++) if (out[j].contains(e) || e.contains(out[j])) dentro = true;
+      if (!dentro) out.push(e);
+    }
+    return out;
+  }
+  function rispondiRipresa() {
+    var box = boxRipresa();
+    if (!box) return false;
+    var c = CFG.continua, daCapo = !!(c && c.fresco === true && c.posizione === 0 && !c.riproduci);
+    var p = pulsantiRipresa(box), scelto = null, altro = null;
+    for (var i = 0; i < p.length; i++) {
+      var t = testoDi(p[i]);
+      if (PULS_DA_CAPO.test(t)) { if (daCapo) scelto = p[i]; }
+      else if (PULS_RIPRENDI.test(t)) { if (!daCapo && !scelto) scelto = p[i]; }
+      else if (!altro && !CHIEDE_RIPRESA.test(t)) altro = p[i];
+    }
+    if (!scelto && !daCapo) scelto = altro; // "Riprendi" fatto con un'icona: l'altro pulsante
+    if (!scelto) return false;
+    ripreseRisposte.push(box);
+    cliccaDavvero(scelto);
+    log('il sito chiedeva se riprendere:', daCapo ? "dall'inizio" : 'riprendi');
+    return true;
+  }
+
   function avviaDopoProssimo(subito, prima, voluto) {
     if (YT_TV) return; // YouTube per la TV fa partire da solo il video di #/watch
     if (!subito && Date.now() - leggiProssimo() > 30000) return;
@@ -4567,6 +4673,10 @@
     }
     (function giro() {
       if (mio !== avvioInCorso || Date.now() > avviaProssimoFinoA) return;
+      // il sito chiede se riprendere: si risponde e si lascia al sito il tempo di partire
+      var risposto = false;
+      try { risposto = rispondiRipresa(); } catch (e) {}
+      if (risposto) { setTimeout(giro, 900); return; }
       // il video che hai scelto tu (OK su un video), se c'e' ancora; se no il lettore principale della pagina
       var p = voluto && voluto.isConnected ? voluto : trovaPlayer(), v = p && p.tagName === 'VIDEO' ? p : null;
       // da solo non si prende un'anteprima in ripetizione o dentro un link: si preme il Play del sito (piu' sotto)
@@ -7373,7 +7483,7 @@
       riquadroNascosto = 0;
       if (!corrente.isConnected || !siVede(corrente)) { try { riprendiFuoco(); } catch (e) {} }
     }, 700);
-    setInterval(function () { try { controllaVideo(); } catch (e) {} }, 1500);
+    setInterval(function () { try { controllaVideo(); } catch (e) {} try { togliTruffeFisse(); } catch (e) {} }, 1500);
     if (!IN_FRAME) avviaDopoProssimo();
     if (!IN_FRAME) {
       // il promemoria dei tasti: una volta sola per sito, non a ogni pagina
