@@ -1,0 +1,19 @@
+{
+  "nomeSito": "Il mio sito",
+  "url": "https://indirizzo-del-sito.esempio/",
+  "preferite": ["Netflix", "Disney+", "Prime Video", "YouTube", "Apple TV", "DAZN", "RaiPlay", "Mediaset Infinity", "NOW", "Spotify"],
+  "nascoste": [],
+  "browser": {
+    "ricerca": "https://duckduckgo.com/?q=",
+    "preferiti": [
+      { "nome": "Google", "url": "https://www.google.com/" },
+      { "nome": "Wikipedia", "url": "https://it.wikipedia.org/" },
+      { "nome": "Meteo", "url": "https://www.ilmeteo.it/" }
+    ]
+  },
+  "dominiConsentiti": [],
+  "paroleBloccate": [],
+  "selettoriExtra": [],
+  "schermoInteroAutomatico": true,
+  "apriHomeAllAccensione": true
+}

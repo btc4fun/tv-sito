@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Browser</title>
+<script>
+  // 1rem = 10px su uno schermo largo 1920 (prima del primo disegno)
+  document.documentElement.style.fontSize = (10 * Math.min((window.innerWidth || 1920) / 1920, (window.innerHeight || 1080) / 1080)) + 'px';
+  try { var t = JSON.parse(localStorage.getItem('tvh-prefs') || '{}').tema; if (t) document.documentElement.setAttribute('data-tema', t); } catch (e) {}
+</script>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="home.css">
+<style>
+  #wash-a {
+    background: linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0) 38%, rgba(0,0,0,.5) 70%, rgba(0,0,0,.78) 100%),
+                radial-gradient(140rem 80rem at 84% 0%, rgba(34,195,174,.42) 0%, rgba(34,195,174,0) 70%),
+                radial-gradient(110rem 70rem at 0% 60%, rgba(11,87,98,.3) 0%, rgba(11,87,98,0) 70%), var(--bg);
+  }
+  #stage {
+    position: relative; z-index: 2; padding: 0 9.6rem;
+    transition: transform .36s var(--ease); will-change: transform;
+  }
+  #greeting { font-size: 3.4rem; font-weight: 700; letter-spacing: -.02em; }
+
+  #riga-cerca { position: relative; margin-top: 16.4rem; height: 10rem; }
+  .tondo {
+    position: absolute; top: 0; width: 10rem; height: 10rem; border-radius: 50%; background: rgba(255, 255, 255, .1);
+    transition: transform .22s var(--ease), background-color .2s ease; cursor: pointer;
+  }
+  #btn-schede { left: 137.6rem; }
+  #btn-nuova { left: 150.4rem; }
+  .tondo svg { position: absolute; left: 2.8rem; top: 2.8rem; width: 4.4rem; height: 4.4rem; fill: var(--text-2); }
+  .tondo b {
+    position: absolute; right: -.4rem; top: -.4rem; min-width: 3.4rem; height: 3.4rem; padding: 0 .8rem; border-radius: 99rem;
+    background: var(--text); color: var(--bg); font-size: 2rem; line-height: 3.4rem; text-align: center; font-weight: 700;
+  }
+  .tondo b:empty { display: none; }
+  .tondo.f { background: var(--pill); transform: scale(1.08); }
+  .tondo.f svg { fill: rgba(11, 12, 16, .75); }
+
+  #galleria {
+    position: fixed; left: 0; top: 0; right: 0; bottom: 0; z-index: 40; background: var(--bg); overflow: hidden;
+    opacity: 0; transition: opacity .22s ease;
+  }
+  #galleria.aperta { opacity: 1; }
+  .g-testa { position: absolute; left: 9.6rem; top: 6.4rem; font-size: 4.4rem; font-weight: 700; letter-spacing: -.02em; white-space: nowrap; }
+  .g-testa span { margin-left: 1.6rem; font-size: 2.8rem; font-weight: 500; color: var(--text-2); }
+  .g-aiuto { position: absolute; right: 9.6rem; top: 8.2rem; font-size: 2.2rem; color: var(--text-3); white-space: nowrap; }
+  #g-vista { position: absolute; left: 0; right: 0; top: 16rem; bottom: 0; overflow: hidden; }
+  #g-griglia {
+    position: relative; padding: 2rem 9.6rem 12rem; font-size: 0; white-space: normal;
+    transition: transform .36s var(--ease); will-change: transform;
+  }
+  .g-card {
+    display: inline-block; vertical-align: top; position: relative; width: 54.4rem; margin: 0 4rem 4.8rem 0;
+    border-radius: 2.8rem; background: var(--surface); overflow: hidden; cursor: pointer;
+    transition: transform .22s var(--ease), box-shadow .22s ease;
+  }
+  .g-card:nth-child(3n) { margin-right: 0; }
+  .g-img { position: relative; height: 30.6rem; background: #000 center / cover no-repeat; }
+  .g-img b {
+    position: absolute; left: 0; right: 0; top: 9.3rem; text-align: center;
+    font-size: 10rem; line-height: 12rem; font-weight: 700; color: rgba(255, 255, 255, .92);
+  }
+  .g-img img {
+    position: absolute; left: 50%; top: 50%; width: 9.6rem; height: 9.6rem; margin: -4.8rem 0 0 -4.8rem;
+    padding: 1.6rem; border-radius: 2.4rem; background: #fff; box-sizing: border-box;
+  }
+  .g-img svg { position: absolute; left: 50%; top: 50%; width: 8rem; height: 8rem; margin: -4rem 0 0 -4rem; fill: var(--text-2); }
+  .g-nuova .g-img { background: rgba(255, 255, 255, .06); }
+  .g-testo { height: 11.2rem; padding: 2.2rem 2.8rem 0; }
+  .g-testo strong {
+    display: block; font-size: 2.6rem; font-weight: 600; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .g-testo span {
+    display: block; margin-top: 1rem; font-size: 2.1rem; font-weight: 500; color: var(--text-2);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .g-testo span img { width: 2.4rem; height: 2.4rem; vertical-align: -.5rem; margin-right: 1rem; border-radius: .5rem; }
+  .g-card.attiva .g-img::after {
+    content: 'In uso'; position: absolute; left: 2rem; top: 2rem; padding: .6rem 1.4rem; border-radius: 99rem;
+    background: rgba(0, 0, 0, .62); font-size: 1.9rem; font-weight: 600; color: #fff;
+  }
+  .g-card.f { transform: scale(1.05); box-shadow: 0 0 0 .5rem var(--text), 0 2.4rem 6rem rgba(0, 0, 0, .5); }
+
+  .search {
+    position: relative; margin-top: 16.4rem; width: 140rem; height: 10rem;
+    border-radius: 99rem; background: rgba(255, 255, 255, .1);
+    transition: transform .22s var(--ease), background-color .2s ease;
+    cursor: pointer;
+  }
+  .search svg { position: absolute; left: 3.6rem; top: 3rem; width: 4rem; height: 4rem; fill: var(--text-2); }
+  .search input {
+    position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+    padding: 0 4rem 0 10.4rem; border: 0; outline: 0; background: transparent;
+    font: inherit; font-size: 3.6rem; font-weight: 500; color: var(--text);
+  }
+  .search input::placeholder { color: var(--text-2); }
+  #riga-cerca .search { position: absolute; left: 0; top: 0; margin-top: 0; width: 134rem; }
+  .search.f { background: var(--pill); transform: scale(1.025); }
+  .search.f input { color: var(--pill-text); }
+  .search.f input::placeholder { color: rgba(11, 12, 16, .55); }
+  .search.f svg { fill: rgba(11, 12, 16, .6); }
+
+  .block-title {
+    margin: 5.6rem 0 2.4rem; height: 3.6rem;
+    font-size: 2.8rem; font-weight: 600; color: var(--text-2); white-space: nowrap;
+  }
+  .block-title span { margin-left: 1.6rem; font-size: 2.2rem; font-weight: 500; color: var(--text-3); }
+  #favs, #tabs { position: relative; height: 17.28rem; white-space: nowrap; font-size: 0; transition: transform .36s var(--ease); }
+  #tabs .card { background: var(--surface); }
+  /* titoli lunghi: una riga sola (sotto l'icona, mai sopra); il titolo intero e' nella galleria */
+  #tabs .label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 2.6rem; }
+  #tabs .tile.attiva .card { box-shadow: inset 0 0 0 .4rem var(--text-2); }
+  .tab-ico {
+    position: absolute; left: 2.4rem; top: 2.4rem; width: 6.4rem; height: 6.4rem; border-radius: 1.6rem;
+    font-size: 3.2rem; line-height: 6.4rem; text-align: center; font-weight: 700; color: #fff;
+  }
+
+  .fav-ico {
+    position: absolute; left: 2.4rem; top: 2.4rem; width: 6.4rem; height: 6.4rem;
+    border-radius: 1.6rem; background: #fff;
+  }
+  .fav-ico img { position: absolute; left: 1.2rem; top: 1.2rem; width: 4rem; height: 4rem; }
+  .fav-ico b {
+    position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+    font-size: 3.2rem; line-height: 6.4rem; text-align: center; color: #0b0c10; font-weight: 700;
+  }
+
+  #history { list-style: none; }
+  .h-row {
+    position: relative; height: 8.4rem; padding: 0 3.2rem; margin-bottom: .4rem; width: 160rem;
+    border-radius: 2rem; cursor: pointer;
+  }
+  .h-row strong {
+    position: absolute; left: 3.2rem; right: 54rem; top: 0; line-height: 8.4rem;
+    font-size: 2.8rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .h-row span {
+    position: absolute; right: 3.2rem; top: 0; max-width: 48rem; line-height: 8.4rem;
+    font-size: 2.3rem; font-weight: 500; color: var(--text-2);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .h-row.f { background: var(--pill); color: var(--pill-text); }
+  .h-row.f span { color: rgba(11, 12, 16, .6); }
+  .empty { font-size: 2.6rem; line-height: 1.4; color: var(--text-3); max-width: 110rem; }
+</style>
+</head>
+<body>
+  <div id="ambient"><div class="wash on" id="wash-a"></div></div>
+
+  <header id="topbar">
+    <div id="greeting">Browser</div>
+    <div id="topright">
+      <span id="date"></span><span id="time"></span><span class="iconbtn" id="homebtn" title="Torna alla home">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M24 6l18 15.5-2.6 3L37 22.4V40a2 2 0 0 1-2 2h-8V30h-6v12h-8a2 2 0 0 1-2-2V22.4l-2.4 2.1-2.6-3z"/></svg>
+      </span>
+    </div>
+  </header>
+
+  <main id="stage">
+    <div id="riga-cerca">
+      <div class="search" id="search">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M20 6a14 14 0 0 1 11.1 22.5l9.7 9.7a2 2 0 0 1-2.8 2.8l-9.7-9.7A14 14 0 1 1 20 6zm0 4a10 10 0 1 0 0 20 10 10 0 0 0 0-20z"/></svg>
+        <input id="q" type="text" autocomplete="off" spellcheck="false" placeholder="Cerca o scrivi un indirizzo">
+      </div>
+      <div class="tondo" id="btn-schede" title="Schede aperte">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M16 6h24a4 4 0 0 1 4 4v20a4 4 0 0 1-4 4h-2v-4h2V10H16v2h-4v-2a4 4 0 0 1 4-4zM8 16h22a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4V20a4 4 0 0 1 4-4zm0 4v18h22V20z"/></svg>
+        <b id="n-schede"></b>
+      </div>
+      <div class="tondo" id="btn-nuova" title="Nuova scheda">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M22 10h4v12h12v4H26v12h-4V26H10v-4h12z"/></svg>
+      </div>
+    </div>
+
+    <div id="tabs-blocco" hidden>
+      <div class="block-title">Schede aperte<span id="tabs-count"></span></div>
+      <div id="tabs"></div>
+    </div>
+
+    <div class="block-title">Preferiti</div>
+    <div id="favs"></div>
+
+    <div class="block-title">Cronologia<span id="hist-count"></span></div>
+    <ul id="history"></ul>
+  </main>
+
+  <!-- le schede in grande, come in Safari: si sceglie guardando le pagine -->
+  <div id="galleria" hidden>
+    <div class="g-testa">Schede aperte<span id="g-conta"></span></div>
+    <div class="g-aiuto">OK apre &middot; tieni premuto OK per chiudere &middot; Indietro esce</div>
+    <div id="g-vista"><div id="g-griglia"></div></div>
+  </div>
+
+  <div id="sheet"></div>
+  <div id="editor"></div>
+  <div id="toast"></div>
+
+  <script src="profilo.js"></script>
+  <script src="ui.js"></script>
+  <script>window.addEventListener('resize', UI.fitScreen);</script>
+  <script src="browser.js"></script>
+</body>
+</html>

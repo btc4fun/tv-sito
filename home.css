@@ -1,0 +1,360 @@
+/*
+ * Home TV - stile condiviso da home e browser.
+ *
+ * Idea: un salotto al buio. Sfondo quasi nero, la luce arriva dall'app
+ * selezionata; una sola fila attiva sempre allo stesso punto dello schermo.
+ * 1rem = 10px su uno schermo largo 1920 (lo imposta ui.js).
+ * Per la fluidita' sul TV si animano solo transform e opacity; niente blur,
+ * niente flex gap, inset o aspect-ratio (il browser del TV e' datato).
+ */
+
+:root {
+  color-scheme: dark;
+  --bg: #07080b;
+  --surface: #14161b;
+  --surface-2: #1c1f26;
+  --line: rgba(255, 255, 255, .09);
+  --text: #f4f5f7;
+  --text-2: rgba(232, 235, 242, .64);
+  --text-3: rgba(232, 235, 242, .42);
+  --pill: #f4f5f7;
+  --pill-text: #0b0c10;
+  --ring: #ffffff;
+  --sito-a: #ff7b47;
+  --sito-b: #a8321b;
+  --web-a: #22c3ae;
+  --web-b: #0b5762;
+  --font: "Instrument Sans", "SamsungOneUI", "SamsungOne", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --ease: cubic-bezier(.2, .8, .2, 1);
+}
+html[data-tema="grafite"] { --bg: #121315; --surface: #1c1d21; --surface-2: #25272c; }
+html[data-tema="blu"] { --bg: #060b17; --surface: #0e1527; --surface-2: #162039; }
+html[data-tema="nero"] { --bg: #000000; --surface: #101012; --surface-2: #19191c; }
+
+html { font-size: 10px; background: var(--bg); }
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, p, ul { margin: 0; padding: 0; }
+
+/* ---------------------------------------------------------- luce dell'app */
+#ambient { position: fixed; left: 0; top: 0; width: 100%; height: 100%; z-index: 0; }
+.wash {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+  opacity: 0;
+  transition: opacity .5s ease;
+}
+.wash.on { opacity: 1; }
+
+/* ---------------------------------------------------------- barra in alto */
+#topbar {
+  position: fixed; left: 9.6rem; right: 9.6rem; top: 4.8rem; z-index: 6;
+  height: 6.4rem;
+}
+#greeting {
+  position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  font-size: 3rem; font-weight: 600; letter-spacing: -.01em; color: var(--text);
+  white-space: nowrap;
+}
+#topright { position: absolute; right: 0; top: 0; height: 6.4rem; white-space: nowrap; }
+#date, #time {
+  display: inline-block; vertical-align: middle; line-height: 6.4rem;
+}
+#date { font-size: 2.6rem; font-weight: 500; color: var(--text-2); margin-right: 1.6rem; }
+#time { font-size: 3rem; font-weight: 600; font-variant-numeric: tabular-nums; margin-right: 3.2rem; }
+.iconbtn {
+  display: inline-block; vertical-align: middle; position: relative;
+  width: 6.4rem; height: 6.4rem; border-radius: 50%;
+  background: rgba(255, 255, 255, .08);
+  transition: transform .2s var(--ease), background-color .2s ease;
+  cursor: pointer;
+}
+.iconbtn svg { position: absolute; left: 1.6rem; top: 1.6rem; width: 3.2rem; height: 3.2rem; fill: var(--text); }
+.iconbtn.f { background: var(--pill); transform: scale(1.12); }
+.iconbtn.f svg { fill: var(--pill-text); }
+
+/* ---------------------------------------------------------- titolo grande */
+#hero {
+  position: fixed; left: 9.6rem; top: 15.6rem; z-index: 3;
+  width: 120rem;
+}
+.hero-text { transition: opacity .16s ease; }
+.hero-text.fade { opacity: 0; }
+#hero-cap {
+  font-size: 2.4rem; font-weight: 600; letter-spacing: .02em; color: var(--text-2);
+  height: 3rem; white-space: nowrap;
+}
+#hero-title {
+  margin-top: .8rem;
+  font-size: 9.2rem; font-weight: 700; line-height: 1.02; letter-spacing: -.035em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#hero-sub {
+  margin-top: 1.4rem;
+  font-size: 3rem; font-weight: 500; line-height: 1.3; color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110rem;
+}
+#hero-chips { margin-top: 3.2rem; height: 4.8rem; white-space: nowrap; }
+.chip {
+  display: inline-block; vertical-align: middle;
+  height: 4.8rem; line-height: 4.8rem; padding: 0 2rem 0 .8rem; margin-right: 1.2rem;
+  border-radius: 99rem; background: rgba(255, 255, 255, .08);
+  font-size: 2.1rem; font-weight: 600; color: var(--text-2);
+}
+.chip b {
+  display: inline-block; vertical-align: top; margin: .7rem 1.2rem 0 0;
+  min-width: 3.4rem; height: 3.4rem; line-height: 3.4rem; padding: 0 .9rem;
+  border-radius: 99rem; background: var(--text); color: var(--pill-text);
+  font-size: 1.7rem; font-weight: 700; text-align: center;
+}
+
+/* ---------------------------------------------------------- file di app */
+#rows {
+  position: fixed; left: 0; right: 0; top: 0; z-index: 2;
+  transition: transform .42s var(--ease);
+  will-change: transform;
+}
+.row {
+  position: absolute; left: 0; right: 0;
+  padding-left: 9.6rem;
+  transition: opacity .3s ease;
+}
+.row.past { opacity: 0; }
+.row.far { opacity: .55; }
+.row-title {
+  height: 3.6rem; margin-bottom: 2.2rem;
+  font-size: 2.8rem; font-weight: 600; letter-spacing: -.005em; color: var(--text-2);
+  white-space: nowrap;
+}
+.row.active .row-title { color: var(--text); }
+.track {
+  position: relative; height: 17.28rem; white-space: nowrap; font-size: 0;
+  transition: transform .36s var(--ease);
+  will-change: transform;
+}
+
+/* ---------------------------------------------------------- riquadri */
+.tile {
+  display: inline-block; vertical-align: top; position: relative;
+  width: 28.8rem; height: 17.28rem; margin-right: 3.2rem;
+  cursor: pointer;
+}
+.lift {
+  position: relative; width: 100%; height: 100%;
+  transition: transform .22s var(--ease);
+}
+/* anello bianco di selezione: fuori dal riquadro, appare solo su quello scelto */
+.lift:before {
+  content: ""; position: absolute; left: -.9rem; top: -.9rem; right: -.9rem; bottom: -.9rem;
+  border: .45rem solid var(--ring); border-radius: 2.7rem;
+  opacity: 0; transition: opacity .18s ease;
+}
+.lift:after {
+  content: ""; position: absolute; left: 6%; right: 6%; top: 20%; bottom: -6%; z-index: -1;
+  border-radius: 2.4rem; box-shadow: 0 2.6rem 5rem rgba(0, 0, 0, .7);
+  opacity: 0; transition: opacity .22s ease;
+}
+.card {
+  position: relative; width: 100%; height: 100%;
+  overflow: hidden; border-radius: 1.8rem;
+  background: var(--surface-2);
+}
+.card img {
+  position: absolute; left: 50%; top: 50%;
+  max-width: 82%; max-height: 82%;
+  transform: translate(-50%, -50%);
+}
+.card img.full { max-width: 100%; max-height: 100%; }
+.card svg.glyph { position: absolute; left: 2.6rem; top: 2.6rem; width: 6.4rem; height: 6.4rem; fill: #fff; }
+.card .label {
+  position: absolute; left: 2.6rem; right: 2.6rem; bottom: 2.2rem;
+  font-size: 3rem; font-weight: 700; line-height: 1.08; letter-spacing: -.02em; color: #fff;
+  white-space: normal;
+}
+.card .label small {
+  display: block; margin-top: .4rem;
+  font-size: 2rem; font-weight: 600; letter-spacing: 0; color: rgba(255, 255, 255, .72);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.card.sito { background: linear-gradient(140deg, var(--sito-a) 0%, var(--sito-b) 100%); }
+/* Continua a guardare: l'immagine del film, il titolo, quanto ne hai visto */
+.card .cont-foto {
+  left: 0; top: 0; width: 100%; height: 100%; max-width: none; max-height: none;
+  transform: none; object-fit: cover;
+}
+.card .cont-velo {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 78%;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, .5) 42%, rgba(0, 0, 0, .86) 100%);
+}
+.card.continua .label { bottom: 3.4rem; font-size: 2.6rem; text-shadow: 0 .2rem 1.2rem rgba(0, 0, 0, .55); }
+.card.continua .label b {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-weight: 700;
+}
+.cont-barra {
+  position: absolute; left: 2.6rem; right: 2.6rem; bottom: 1.8rem; height: .7rem; border-radius: .35rem;
+  background: rgba(255, 255, 255, .26); overflow: hidden;
+}
+.cont-barra i { display: block; height: 100%; border-radius: .35rem; background: linear-gradient(90deg, #19d3b7, #3b82f6 55%, #8b5cf6); }
+.card.web { background: linear-gradient(140deg, var(--web-a) 0%, var(--web-b) 100%); }
+.card.add { background: transparent; box-shadow: inset 0 0 0 .3rem var(--line); }
+.card.add svg.glyph { left: 50%; top: 36%; margin: -3.2rem 0 0 -3.2rem; fill: var(--text-2); }
+
+.tile.f .lift { transform: scale(1.1); }
+.tile.f .lift:before, .tile.f .lift:after { opacity: 1; }
+/* col puntatore del telefono la scheda indicata e' quella scelta (si ingrandisce come con le frecce); quella scelta
+   con le frecce torna normale finche' il puntatore si vede (una freccia lo nasconde e la selezione torna li') */
+.ui-pt-on .tile.f .lift { transform: none; }
+.ui-pt-on .tile.f .lift:before, .ui-pt-on .tile.f .lift:after { opacity: 0; }
+.ui-pt-on .tile.pt-sopra .lift { transform: scale(1.1); }
+.ui-pt-on .tile.pt-sopra .lift:before, .ui-pt-on .tile.pt-sopra .lift:after { opacity: 1; }
+
+/* spostamento: il riquadro si alza e mostra le frecce */
+.tile.moving .lift, .ui-pt-on .tile.moving .lift { transform: scale(1.1) translateY(-1.6rem); }
+.tile .arrows { display: none; }
+.tile.moving .arrows {
+  display: block; position: absolute; left: -4.4rem; right: -4.4rem; top: 50%; margin-top: -2.4rem; height: 4.8rem;
+}
+.arrows i {
+  position: absolute; top: 0; width: 3.2rem; height: 4.8rem;
+  font-style: normal; font-size: 4rem; line-height: 4.8rem; text-align: center; color: var(--text);
+}
+.arrows i:first-child { left: 0; }
+.arrows i:last-child { right: 0; }
+
+/* ---------------------------------------------------------- menu laterale */
+#sheet {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 30;
+  display: -webkit-flex; display: flex; -webkit-flex-direction: column; flex-direction: column;
+  width: 66rem; padding: 9.6rem 6.4rem 6.4rem;
+  background: var(--surface);
+  border-radius: 3.6rem 0 0 3.6rem;
+  box-shadow: -2rem 0 8rem rgba(0, 0, 0, .55);
+  transform: translateX(110%);
+  transition: transform .28s var(--ease);
+}
+#sheet.open { transform: translateX(0); }
+.sheet-head h2 { font-size: 4.8rem; font-weight: 700; letter-spacing: -.025em; line-height: 1.1; }
+.sheet-head p { margin-top: 1.2rem; font-size: 2.4rem; color: var(--text-2); }
+#sheet ul { list-style: none; margin-top: 4.8rem; -webkit-flex: 1 1 auto; flex: 1 1 auto; min-height: 0; overflow: hidden; }
+#sheet li {
+  height: 7.6rem; line-height: 7.6rem; padding: 0 3.2rem; margin-bottom: .8rem;
+  border-radius: 99rem; font-size: 2.9rem; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer;
+}
+#sheet li em { float: right; font-style: normal; font-weight: 500; color: var(--text-2); }
+#sheet li.sel { background: var(--pill); color: var(--pill-text); }
+#sheet li.sel em { color: rgba(11, 12, 16, .6); }
+#sheet li.off { color: var(--text-3); }
+
+/* ---------------------------------------------------------- finestra per scrivere */
+#editor {
+  position: fixed; left: 0; top: 0; width: 100%; height: 100%; z-index: 40;
+  background: rgba(0, 0, 0, .72);
+  display: none;
+}
+#editor.open { display: block; }
+.editor-card {
+  position: absolute; left: 50%; top: 30%; width: 120rem; margin-left: -60rem;
+  padding: 5.6rem 6.4rem; border-radius: 3.6rem; background: var(--surface);
+}
+.editor-card h2 { font-size: 4.2rem; font-weight: 700; letter-spacing: -.02em; }
+.editor-card input {
+  display: block; width: 100%; height: 9.6rem; margin-top: 3.2rem; padding: 0 3.2rem;
+  border: .4rem solid var(--ring); border-radius: 2rem; outline: 0;
+  background: var(--bg); color: var(--text);
+  font: inherit; font-size: 3.6rem; font-weight: 500;
+}
+.editor-card p { margin-top: 2.4rem; font-size: 2.3rem; line-height: 1.4; color: var(--text-2); }
+
+/* ---------------------------------------------------------- collega un telefono */
+#pair {
+  position: fixed; left: 0; top: 0; width: 100%; height: 100%; z-index: 35;
+  display: none; background: rgba(5, 6, 8, .94);
+}
+#pair.open { display: block; }
+.pair-card {
+  position: absolute; left: 50%; top: 50%; width: 136rem; height: 72rem; margin: -36rem 0 0 -68rem;
+  border-radius: 3.6rem; background: var(--surface);
+}
+.pair-qr {
+  position: absolute; left: 6.4rem; top: 9.4rem; width: 53.2rem; height: 53.2rem;
+  border-radius: 2.4rem; background: #fff; padding: 2.4rem;
+}
+.pair-qr svg, .pair-qr img { display: block; width: 100%; height: 100%; }
+.pair-qr .vuoto { color: #111; font-size: 2.4rem; line-height: 1.4; padding: 4rem 2rem; text-align: center; }
+.pair-text { position: absolute; left: 66rem; top: 6.4rem; right: 6.4rem; }
+.pair-text h2 { font-size: 5rem; font-weight: 700; letter-spacing: -.025em; line-height: 1.05; }
+.pair-text ol { margin: 2.8rem 0 0 3rem; font-size: 2.4rem; line-height: 1.4; color: var(--text-2); }
+.pair-text li { margin-bottom: .9rem; }
+.pair-text li b { color: var(--text); font-weight: 600; }
+.pair-text p { margin-top: 2.8rem; font-size: 2.4rem; line-height: 1.4; color: var(--text-2); }
+.pair-addr, .pair-pin { position: absolute; left: 66rem; right: 6.4rem; font-size: 2rem; color: var(--text-3);
+  text-transform: uppercase; letter-spacing: .08em; }
+.pair-addr { top: 41rem; }
+.pair-pin { top: 50rem; }
+.pair-addr strong { display: block; margin-top: .6rem; font-size: 3.6rem; color: var(--text); text-transform: none; letter-spacing: 0; }
+.pair-pin strong { display: block; margin-top: .4rem; font-size: 7.2rem; line-height: 1; color: var(--text); letter-spacing: .14em; }
+.pair-foot { position: absolute; left: 66rem; right: 6.4rem; bottom: 5.2rem; font-size: 2rem; color: var(--text-3); }
+
+/* ---------------------------------------------------------- impostazioni */
+#settings {
+  position: fixed; left: 0; top: 0; width: 100%; height: 100%; z-index: 20;
+  background: var(--bg);
+  opacity: 0; visibility: hidden;
+  transition: opacity .22s ease, visibility 0s linear .22s;
+}
+#settings.open { opacity: 1; visibility: visible; transition: opacity .22s ease, visibility 0s; }
+#settings-head { position: absolute; left: 9.6rem; top: 9.6rem; width: 50rem; }
+#settings-head h1 { font-size: 7.2rem; font-weight: 700; letter-spacing: -.035em; line-height: 1; }
+#settings-head p { margin-top: 2rem; font-size: 2.6rem; line-height: 1.4; color: var(--text-2); }
+#settings-list {
+  position: absolute; left: 68rem; right: 9.6rem; top: 0;
+  transition: transform .3s var(--ease);
+}
+.set-group {
+  height: 8.4rem; padding-top: 4.4rem;
+  font-size: 2.3rem; font-weight: 600; letter-spacing: .02em; color: var(--text-3);
+}
+.set-row {
+  position: relative; height: 8rem; line-height: 8rem; padding: 0 3.2rem; margin-bottom: .6rem;
+  border-radius: 2rem; font-size: 2.9rem; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer;
+}
+.set-row em {
+  position: absolute; right: 3.2rem; top: 0; max-width: 46rem;
+  font-style: normal; font-weight: 500; color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.set-row.f { background: var(--pill); color: var(--pill-text); }
+.set-row.f em { color: rgba(11, 12, 16, .62); }
+.set-row.info { color: var(--text-2); cursor: default; }
+
+/* ---------------------------------------------------------- avvisi */
+#toast {
+  position: fixed; left: 50%; bottom: 6.4rem; z-index: 50;
+  max-width: 130rem;
+  padding: 1.8rem 3.6rem;
+  border-radius: 99rem;
+  background: var(--pill); color: var(--pill-text);
+  font-size: 2.5rem; font-weight: 600; line-height: 1.3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  opacity: 0;
+  transform: translate(-50%, 2rem);
+  transition: opacity .22s ease, transform .22s ease;
+  pointer-events: none;
+}
+#toast.show { opacity: 1; transform: translate(-50%, 0); }
+#toast.lungo { width: 120rem; white-space: normal; text-align: center; border-radius: 3.2rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  #rows, .track, .lift, .wash, .row, #sheet, .hero-text { transition-duration: .01s; }
+}
