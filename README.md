@@ -4,10 +4,24 @@ Una schermata principale per i **TV Samsung** con **TizenBrew**: in alto le app 
 tutte le altre app installate, un browser con il blocco della pubblicità, il telefono come telecomando
 e la home che si riapre da sola all'accensione. Si comanda tutto dal telecomando; la home non cambia il sistema del TV.
 
-Questa cartella è il **modulo** da mettere su GitHub (repository pubblico `tv-sito`, con GitHub Pages attivo). La
-guida completa, con l'uso di tutti i giorni, è in [LEGGIMI.md](LEGGIMI.md).
+## Metterla sul tuo TV
 
-## In breve
+Ti serve un **Mac** sulla stessa Wi-Fi del TV. Scarica l'app **Installa Home TV** dalla pagina
+[**Release**](../../releases/latest) (il file `Installa-Home-TV.zip`), aprila e segui i passi: fa quasi tutto lei e ti
+mostra cosa premere sul telecomando, anche quello senza tasti numerici. Non serve un account GitHub.
+
+1. Apri lo zip e trascina **Installa Home TV** nella cartella **Applicazioni**.
+2. La prima volta: tasto destro sull'app, **Apri**, poi **Apri**. Se macOS non la apre: **Impostazioni di Sistema**,
+   **Privacy e sicurezza**, in fondo **Apri comunque** (l'app non è firmata da uno sviluppatore Apple a pagamento).
+3. Se macOS chiede di trovare dispositivi sulla rete locale, scegli **Consenti**.
+4. Accendi il TV e segui l'app (circa 20 minuti, una volta sola).
+
+La guida completa, con l'uso di tutti i giorni, è in [LEGGIMI.md](LEGGIMI.md).
+
+## Una tua copia del modulo (facoltativo)
+
+Questa cartella è il **modulo** da mettere su GitHub (repository pubblico `tv-sito`, con GitHub Pages attivo). Serve
+solo se vuoi una copia tutta tua invece di usare quella già pronta.
 
 1. Crea un repository **pubblico** chiamato `tv-sito` e caricaci **tutti i file** di questa cartella.
 2. **Settings → Pages**: branch **main**, cartella **/(root)** → **Save**.
