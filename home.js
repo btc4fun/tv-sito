@@ -14,7 +14,7 @@
 
   var $ = UI.$;
   var DEMO = UI.DEMO;
-  var VERSIONE = '1.0.0';
+  var VERSIONE = '1.1.0';
 
   /* ============================================================ dati */
 
@@ -48,7 +48,8 @@
   var DEFAULTS = {
     tema: 'notte', luce: 'vivace', categorie: true, nome: '', ricerca: 'duckduckgo',
     nomeSito: 'Il mio sito', url: '',
-    bloccoPubblicita: true, bloccoAvanzato: false, schermoInteroAutomatico: true, apriHomeAllAccensione: true
+    bloccoPubblicita: true, bloccoAvanzato: false, schermoInteroAutomatico: true, apriHomeAllAccensione: true,
+    decorazioni: true // le decorazioni delle feste (Halloween, Natale): si possono spegnere in Impostazioni
   };
 
   // valore effettivo: scelta fatta sul TV, altrimenti config.json, altrimenti predefinito
@@ -400,6 +401,7 @@
       html += '</div></section>';
     }
     rowsEl.innerHTML = html;
+    festaTeschio(); // Halloween
     measure();
 
     cur = null;
@@ -627,17 +629,19 @@
       ellisse(x, 0, 0.6 * LH, 110 / 192 * LW, 70 / 108 * LH, c.b, 0.32 * k);
       ellisse(x, 0.84 * LW, 0, 140 / 192 * LW, 80 / 108 * LH, c.a, 0.55 * k);
     }
+    festaLuce(x); // Halloween
     var g = x.createLinearGradient(0, 0, 0, LH);
     g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.38, 'rgba(0,0,0,0)');
     g.addColorStop(0.7, 'rgba(0,0,0,.5)'); g.addColorStop(1, 'rgba(0,0,0,.78)');
     x.fillStyle = g;
     x.fillRect(0, 0, LW, LH);
+    festaVignetta(x); // Halloween
     return true;
   }
   function setAmbient(item) {
     var c = colorsFor(item), bg = '';
     try { bg = getComputedStyle(document.body).backgroundColor || ''; } catch (e) {}
-    var key = [opt('luce'), c.a, c.b, bg].join('|');
+    var key = [opt('luce'), c.a, c.b, bg, festaAccese()].join('|'); // (accendere o spegnere le decorazioni la ridisegna)
     if (key === lastWash) return;
     lastWash = key;
     var next = washOnA ? washB : washA, now = washOnA ? washA : washB;
@@ -842,6 +846,7 @@
       { label: 'Il tuo nome nel saluto', text: 'nome', title: 'Il tuo nome', placeholder: 'Per esempio Anna' },
       { label: 'App nascoste', value: nasc ? nasc + ' (OK per mostrarle)' : 'Nessuna', action: nasc ? mostraNascoste : null },
       { label: 'Ripristina i preferiti', value: '', action: ripristinaPreferiti },
+      { label: 'Decorazioni delle feste', bool: 'decorazioni', on: 'Accese', off: 'Spente' }, // spente: la home e' leggera come senza
       { label: 'Continua a guardare', value: Math.max(vistiTotale, visti.length) ? Math.max(vistiTotale, visti.length) + ' video (OK per svuotare)' : 'Vuoto',
         action: Math.max(vistiTotale, visti.length) ? svuotaContinua : null },
       { group: 'Il mio sito' },
@@ -862,7 +867,7 @@
       { label: 'Tasti del TV dal telefono', value: TASTI_STATO[telStato.tasti] || TASTI_STATO.mai,
         action: telStato.tasti === 'ok' ? null : chiediPermessoTasti },
       { group: 'Questo TV' }
-    ].concat(righeQuestoTv(), [{ label: 'Versione di Home TV', info: VERSIONE }]);
+    ].concat(righeQuestoTv(), [{ label: 'Versione di Home TV', info: VERSIONE }]).filter(function (x) { return !!x; });
   }
 
   // "Questo TV": chi e' il TV e cosa sa fare, dal profilo del TV (profilo.js); OK su una voce dice cosa fare
@@ -1251,6 +1256,7 @@
 
   function applyPrefs() {
     document.documentElement.setAttribute('data-tema', opt('tema'));
+    festa(); // Halloween
     salvaPrefs();
     lastWash = '';
     render(true);
@@ -1630,7 +1636,59 @@
     if (cur && cur.area === 'rows') { var c = cur; cur = null; focus(c.r, c.i, true); }
   });
 
+  /* ===== Halloween: da togliere dopo il 2 novembre (qui andranno anche le decorazioni di Natale) =====
+   * La scenografia (luna, albero, cimitero, ragnatele, ghirlanda, zucche, pipistrelli, fantasma, foglie: in index.html,
+   * nascosta) e il teschio si vedono da subito e fino al 2 novembre compreso, secondo la data del TV; poi spariscono da
+   * soli. In Impostazioni > Home si possono spegnere.
+   * (?halloween nell'indirizzo le mostra sempre, per provarle) */
+  var FESTA_FINE = new Date(2026, 10, 3).getTime(); // il 3 novembre 2026 alle 0 (i mesi partono da 0)
+  function festaAttiva() { return /[?&]halloween\b/.test(location.search) || Date.now() < FESTA_FINE; }
+  function festaAccese() { return festaAttiva() && opt('decorazioni') !== false; }
+  function festa() {
+    var el = $('festa'), si = festaAccese();
+    if (el) el.hidden = !si;
+    document.documentElement.classList.toggle('festa-on', si);
+    // spente: via anche il teschio dalle schede (la home torna leggera come senza decorazioni); riaccese: si rimette
+    if (!si) {
+      var t = document.querySelectorAll('.festa-teschio, .festa-dita');
+      for (var i = 0; i < t.length; i++) if (t[i].parentNode) t[i].parentNode.removeChild(t[i]);
+    } else if (!document.querySelector('.festa-teschio')) festaTeschio();
+    // e la luce dell'app si ridisegna subito (con o senza la tinta della festa)
+    if (cur) { lastWash = ''; try { setAmbient(itemInVista()); } catch (e) {} }
+  }
+  // il teschio va nella terza scheda (o la prima dopo) della prima fila che ha uno sfondo pieno: dietro la scheda la
+  // testa, davanti le mani sul bordo. Si rimette ogni volta che le file si ridisegnano
+  function festaTeschio() {
+    var m = $('festa-teschio'), track = trackEl(0);
+    if (!festaAccese() || !m || !m.content || !track) return;
+    for (var i = 2; i < track.children.length; i++) {
+      var lift = track.children[i].querySelector('.lift'), card = lift && lift.querySelector('.card');
+      if (!card || card.classList.contains('add')) continue;
+      var pezzi = document.importNode(m.content, true), dita = pezzi.querySelectorAll('.festa-dita');
+      lift.insertBefore(pezzi.querySelector('.festa-teschio'), card); // la testa dietro la scheda
+      for (var k = 0; k < dita.length; k++) lift.appendChild(dita[k]);  // le dita davanti, sul bordo
+      return;
+    }
+  }
+  // la luce dell'app tinta di viola notte (verso la luna) e arancio zucca, piu' buia ai bordi: si disegna nella stessa
+  // tela piccola della luce, non costa niente
+  function festaLuce(x) {
+    if (!festaAccese()) return;
+    ellisse(x, 0.78 * LW, 0.18 * LH, 80 / 192 * LW, 52 / 108 * LH, '118,64,196', 0.46);
+    ellisse(x, 0.86 * LW, 0.5 * LH, 54 / 192 * LW, 34 / 108 * LH, '255,124,32', 0.36);
+  }
+  function festaVignetta(x) {
+    if (!festaAccese()) return;
+    var g = x.createRadialGradient(LW / 2, LH * 0.45, LH * 0.42, LW / 2, LH * 0.45, LW * 0.6);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(1, 'rgba(8,4,16,.6)');
+    x.fillStyle = g;
+    x.fillRect(0, 0, LW, LH);
+  }
+  /* ===== fine Halloween ===== */
+
   document.documentElement.setAttribute('data-tema', opt('tema'));
+  festa(); // Halloween
   render(true);
   getConfig();
   getApps();

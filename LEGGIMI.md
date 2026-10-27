@@ -134,6 +134,7 @@ Sotto i preferiti c'è la fila **Continua a guardare**: i film e le serie che ha
 | **Home** → Riapri la home all'accensione | **Avvio automatico**: Sì = quando accendi il TV torna la home (ovunque fossi) e, nei siti, anche quando torni al TV dopo più di 10 minuti; No = il TV resta dove lo lasci. Vedi *Limiti* |
 | Tema | Notte, Grafite, Blu notte, Nero (sinistra/destra per cambiare) |
 | Luce dell'app selezionata | Quanto lo sfondo prende il colore dell'app: Vivace, Tenue, Spenta |
+| Decorazioni delle feste | Accese (di base) o Spente. Nei giorni delle feste la home si addobba da sola (a Halloween: luna, zucche con le candele, ragnatele, un teschio che sbuca dalle schede); spente, la home torna leggera come sempre |
 | Raggruppa le app per tipo | Sì: file per tipo. No: un'unica fila *Tutte le app* |
 | Il tuo nome nel saluto | "Buonasera, Anna" |
 | App nascoste / Ripristina i preferiti | Rimostra le app nascoste, rimette i preferiti di partenza |
