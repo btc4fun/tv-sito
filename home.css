@@ -198,6 +198,11 @@ h1, h2, p, ul { margin: 0; padding: 0; }
   background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, .5) 42%, rgba(0, 0, 0, .86) 100%);
 }
 .card.continua .label { bottom: 3.4rem; font-size: 2.6rem; text-shadow: 0 .2rem 1.2rem rgba(0, 0, 0, .55); }
+/* stagione e puntata (o il riferimento della pagina) sopra il titolo, ben leggibili: cambiando sito si sa cosa cercare */
+.card.continua .label small {
+  margin: 0 0 .5rem; font-size: 1.9rem; font-weight: 700; line-height: 1.15; color: #9df0e2;
+  white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
 .card.continua .label b {
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-weight: 700;
 }
@@ -207,15 +212,18 @@ h1, h2, p, ul { margin: 0; padding: 0; }
 }
 .cont-barra i { display: block; height: 100%; border-radius: .35rem; background: linear-gradient(90deg, #19d3b7, #3b82f6 55%, #8b5cf6); }
 .card.web { background: linear-gradient(140deg, var(--web-a) 0%, var(--web-b) 100%); }
-/* YouTube senza pubblicita': si distingue da YouTube a colpo d'occhio, "NO ADS" in grande */
+/* YouTube per la TV (solo col blocco avanzato acceso): come il Browser, col suo colore */
 .card.yt { background: linear-gradient(140deg, var(--yt-a) 0%, var(--yt-b) 100%); }
-.card.yt svg.glyph { top: 2.4rem; width: 4.4rem; height: 4.4rem; }
-.card.yt .yt-nome {
+/* <solo-completa> */
+/* la tua versione: "NO ADS" in grande, si distingue dall'app YouTube a colpo d'occhio */
+.card.yt.noads svg.glyph { top: 2.4rem; width: 4.4rem; height: 4.4rem; }
+.card.yt.noads .yt-nome {
   position: absolute; left: 7.8rem; top: 2.4rem;
   font-size: 3rem; font-weight: 700; line-height: 4.4rem; letter-spacing: -.02em; color: #fff;
 }
-.card.yt .label { bottom: 1.6rem; }
-.card.yt .label b { display: block; font-size: 6rem; font-weight: 800; line-height: 1; letter-spacing: -.01em; white-space: nowrap; }
+.card.yt.noads .label { bottom: 1.6rem; }
+.card.yt.noads .label b { display: block; font-size: 6rem; font-weight: 800; line-height: 1; letter-spacing: -.01em; white-space: nowrap; }
+/* </solo-completa> */
 .card.add { background: transparent; box-shadow: inset 0 0 0 .3rem var(--line); }
 .card.add svg.glyph { left: 50%; top: 36%; margin: -3.2rem 0 0 -3.2rem; fill: var(--text-2); }
 

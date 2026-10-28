@@ -438,7 +438,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.2.0';
+  var VERSION = '1.2.1';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
 
   var SHARE = '/home/owner/share';
@@ -1079,7 +1079,11 @@
     su: 'KEY_UP', giu: 'KEY_DOWN', sx: 'KEY_LEFT', dx: 'KEY_RIGHT', ok: 'KEY_ENTER', indietro: 'KEY_RETURN',
     rosso: 'KEY_RED', verde: 'KEY_GREEN', giallo: 'KEY_YELLOW', blu: 'KEY_CYAN',
     playpausa: 'KEY_PLAY', avanti: 'KEY_FF', indietroVeloce: 'KEY_REWIND',
-    volSu: 'KEY_VOLUP', volGiu: 'KEY_VOLDOWN', muto: 'KEY_MUTE', spegni: 'KEY_POWER', sorgente: 'KEY_SOURCE', homeTv: 'KEY_HOME'
+    volSu: 'KEY_VOLUP', volGiu: 'KEY_VOLDOWN', muto: 'KEY_MUTE', spegni: 'KEY_POWER', sorgente: 'KEY_SOURCE', homeTv: 'KEY_HOME',
+    // come il telecomando vero: canali, numeri e i menu del televisore
+    canaleSu: 'KEY_CHUP', canaleGiu: 'KEY_CHDOWN', canalePrima: 'KEY_PRECH', listaCanali: 'KEY_CH_LIST', guida: 'KEY_GUIDE',
+    menuTv: 'KEY_MENU', info: 'KEY_INFO', esci: 'KEY_EXIT',
+    n0: 'KEY_0', n1: 'KEY_1', n2: 'KEY_2', n3: 'KEY_3', n4: 'KEY_4', n5: 'KEY_5', n6: 'KEY_6', n7: 'KEY_7', n8: 'KEY_8', n9: 'KEY_9'
   };
 
   var remoto = leggiJson(FILE_REMOTO, {});
@@ -1269,6 +1273,9 @@
     playpausa: 1, avanti: 1, indietroVeloce: 1, volSu: 1, volGiu: 1, muto: 1, spegni: 1, homeTv: 1 };
   // questi esistono solo come tasti veri del TV (homeTv: la home di Samsung, la barra con le app)
   var SOLO_TV = { volSu: 1, volGiu: 1, muto: 1, spegni: 1, homeTv: 1 };
+  // canali, numeri e menu del televisore: anche loro solo come tasti veri
+  ['sorgente', 'canaleSu', 'canaleGiu', 'canalePrima', 'listaCanali', 'guida', 'menuTv', 'info', 'esci',
+    'n0', 'n1', 'n2', 'n3', 'n4', 'n5', 'n6', 'n7', 'n8', 'n9'].forEach(function (k) { TASTI_TELEFONO[k] = 1; SOLO_TV[k] = 1; });
   var MAX_TELEFONI = 6;
 
   var tel = {
@@ -1407,17 +1414,30 @@
     return s && Date.now() - s.at < 10 * 60 * 1000 ? { etichetta: s.etichetta, tipo: s.tipo } : null;
   }
   /* ---------------------------------------------------------- continua a guardare
-   * Il TV ricorda cosa guardi nei siti (film, puntate delle serie) per riprendere da dove eri, anche
-   * cambiando sito: una scheda per film o per serie (l'ultima puntata), la home ne mostra al massimo 10.
+   * Il TV ricorda cosa guardi nei siti (film, puntate delle serie) per riprendere da dove eri: una scheda
+   * per film o per serie (l'ultima puntata) su ogni sito, la home ne mostra al massimo 10. Anche cambiando
+   * sito solo con "Riprendi anche su un altro sito" (Impostazioni della home, spenta all'inizio): allora la
+   * scheda passa al sito nuovo e un altro sito propone il punto. Lo stesso sito lo decide solo stessoSito.
    * La stessa opera si riconosce dal nome (ripulito da nome del sito, "HD", "4K", accenti,
    * articoli), da stagione e puntata e dalla durata. Le regole, per non sbagliare mai:
    *  - si riprende da soli solo lo stesso video (stessa pagina e stessa durata) o una scheda scelta
-   *    nella home; su un altro sito si propone e basta ("Eri a 22:15 su ...: OK per riprendere");
+   *    nella home; su un'altra pagina (o su un altro sito, con l'opzione) si propone e basta
+   *    ("Eri a 22:15 su ...: OK per riprendere");
    *  - nel dubbio non si unisce e non si propone niente: meglio una scheda in piu' che una sbagliata;
    *  - un video si ricorda dopo un minuto che lo guardi, e solo se dura almeno 5 minuti (non trailer).
    */
   var FILE_VISTI = pathLib.join(CACHE_DIR, 'hometv-visti.json');
   var MAX_SCHEDE = 10, MAX_VISTI = 30, MIN_DURATA = 300, MIN_VISTO = 60;
+  // lo stesso sito? Per ora lo stesso nome, con o senza "www." davanti. E' l'unico posto che lo decide (proposta
+  // "Eri a ...", schede, pagina riaperta dalla home)
+  function stessoSito(a, b) {
+    a = String(a || '').toLowerCase().replace(/^www\./, '');
+    b = String(b || '').toLowerCase().replace(/^www\./, '');
+    return !!a && a === b;
+  }
+  // "Riprendi anche su un altro sito" (spenta all'inizio): se no proposta e schede restano del loro sito
+  function riprendiAltrove() { return !!prefs && prefs.riprendiAltroSito === true; }
+  function sitoBuono(e, p) { return riprendiAltrove() || stessoSito(hostLink(e.url), hostLink(p.url)); }
   var visti = leggiJson(FILE_VISTI, []);
   if (!Array.isArray(visti)) visti = [];
   var intentoContinua = null;
@@ -1678,7 +1698,8 @@
       if (!stessoPosto(e, p)) continue;
       if (id.episodio == null ? Math.abs((e.durata || 0) - id.durata) <= 3 : (e.episodio === id.episodio && stessaStagione(e, id))) return e;
     }
-    for (i = 0; i < visti.length; i++) if (stessaOpera(visti[i], id)) return visti[i];
+    // la stessa opera su un'altra pagina: dello stesso sito (con l'opzione anche di un altro, e la scheda passa a lui)
+    for (i = 0; i < visti.length; i++) if (sitoBuono(visti[i], p) && stessaOpera(visti[i], id)) return visti[i];
     return null;
   }
   function registraVisto(b) {
@@ -1705,7 +1726,7 @@
       visti.splice(visti.indexOf(e), 1);
       visti.unshift(e);
     }
-    // stessa puntata di prima (anche su un altro sito): vale la puntata dopo saputa prima
+    // stessa puntata di prima (anche su un altro sito, con l'opzione): vale la puntata dopo saputa prima
     var stessaDiPrima = !!e.url && id.episodio != null && e.episodio === id.episodio && stessaStagione(e, id);
     if (e.chiave && e.chiave !== id.chiave && (e.chiavi || []).indexOf(e.chiave) === -1) e.chiavi = (e.chiavi || []).concat([e.chiave]).slice(-4);
     e.chiave = id.chiave;
@@ -1721,13 +1742,17 @@
     e.finito = finito;
     e.quando = Date.now();
     if (p.immagine) e.immagine = p.immagine;
+    // il titolo della pagina senza il nome del sito: un riferimento scritto sulla scheda quando stagione e puntata non si
+    // riconoscono (cambiando sito si sa almeno cosa cercare)
+    e.rif = nomePulito(p.og || p.titolo, frasiSito(p)).slice(0, 90);
     // la puntata dopo (solo per le serie): se questa volta il sito non la mostra, vale quella saputa prima
     var prossimo = id.episodio != null && p.prossimo && urlNorm(p.prossimo) !== urlNorm(p.url) ? p.prossimo : '';
     if (prossimo || !stessaDiPrima) { e.prossimo = prossimo; e.prossimoSito = prossimo ? nomeSito(p) : ''; }
     if (visti.length > MAX_VISTI) visti.length = MAX_VISTI;
     scriviJson(FILE_VISTI, visti);
   }
-  // quando parte un video: riprendere? (stesso video: da solo; stessa opera altrove: si propone)
+  // quando parte un video: riprendere? (stesso video: da solo; stessa opera su un'altra pagina dello stesso sito, o di un
+  // altro sito con l'opzione: si propone)
   function cercaVisto(b) {
     var out = { ok: true }, p = b && typeof b === 'object' ? paginaPulita(b.pagina) : null;
     if (!p) return out;
@@ -1748,7 +1773,7 @@
         out.stesso = { posizione: e.posizione };
         return out;
       }
-      if (id.episodio != null ? stessaPuntata(e, id) : stessaOpera(e, id)) buoni.push(e);
+      if (sitoBuono(e, p) && (id.episodio != null ? stessaPuntata(e, id) : stessaOpera(e, id))) buoni.push(e);
     }
     // una sola possibilita' (o tutte allo stesso punto): si propone; se no, niente
     if (buoni.length && buoni.every(function (x) { return Math.abs(x.posizione - buoni[0].posizione) < 30; })) {
@@ -1767,7 +1792,7 @@
       return it.prossima || (Math.abs((it.durata || 0) - dur) <= 3 && !(it.video && p.video && it.video !== p.video));
     }
     if (Date.now() - it.creato > 60000 || !isFinite(dur) || dur < MIN_DURATA) return false;
-    if (hostLink(it.url).replace(/^www\./, '') !== hostLink(p.url).replace(/^www\./, '')) return false;
+    if (!stessoSito(hostLink(it.url), hostLink(p.url))) return false;
     for (i = 0; i < visti.length; i++) if (visti[i].id === it.id) e = visti[i];
     var id = identita(p, dur);
     if (!e || !id.chiave) return false;
@@ -1795,13 +1820,15 @@
     for (var i = 0; i < visti.length && out.length < MAX_SCHEDE; i++) {
       var e = visti[i];
       var s = { id: e.id, nome: e.titoloMio || e.nome, stagione: e.stagione, episodio: e.episodio, anno: e.anno || null, sito: e.sito,
-        immagine: e.immagine || '', posizione: e.posizione, durata: e.durata, url: e.url, quando: e.quando, rinominato: !!e.titoloMio };
+        immagine: e.immagine || '', posizione: e.posizione, durata: e.durata, url: e.url, quando: e.quando, rinominato: !!e.titoloMio,
+        rif: e.rif || '' };
       if (e.finito) {
         if (!e.prossimo) continue;
         // puntata finita: la scheda propone la prossima
         s.url = e.prossimo;
         s.posizione = 0;
         s.prossima = true;
+        s.rif = '';
         s.sito = e.prossimoSito || hostLink(e.prossimo).replace(/^www\./, '');
         var dopo = puntataDopo(e);
         s.stagione = dopo ? dopo.s : null;
@@ -3189,6 +3216,13 @@
     '    display: flex; align-items: center; justify-content: center; transition: background-color .08s ease; }',
     '  .colori i { display: block; width: 20px; height: 20px; border-radius: 50%; }',
     '  .colori .press { background: var(--surface-3); }',
+    '  .bilanciere b { font-size: 15px; font-weight: 700; }',
+    '  .tastierino { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }',
+    '  .tastierino button { height: 48px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--line);',
+    '    font-size: 21px; font-weight: 600; transition: background-color .08s ease; }',
+    '  .tastierino button.piccolo { font-size: 13px; }',
+    '  .tastierino .press { background: var(--surface-3); }',
+    '  .coppia + .coppia { margin-top: 10px; }',
     '  .secondario { display: block; width: 100%; height: 46px; margin-top: 10px; border-radius: 14px; font-weight: 600; font-size: 15px;',
     '    border: 1.5px solid transparent; background: linear-gradient(var(--surface-2), var(--surface-2)) padding-box, var(--grad) border-box; }',
     '  .secondario.press, .secondario:active { opacity: .8; }',
@@ -3333,10 +3367,32 @@
     '    </div>',
     '  </div>',
     '  <div class="gruppo">',
+    '    <div class="etichetta">Canali</div>',
+    '    <div class="bilanciere">',
+    '      <button data-tasto="canaleGiu" aria-label="Canale gi&ugrave;"><b>CH &minus;</b></button>',
+    '      <button data-tasto="canalePrima" aria-label="Canale di prima"><b>Prima</b></button>',
+    '      <button data-tasto="canaleSu" aria-label="Canale su"><b>CH +</b></button>',
+    '    </div>',
+    '  </div>',
+    '  <div class="gruppo">',
+    '    <div class="etichetta">Numeri</div>',
+    '    <div class="tastierino">',
+    '      <button data-tasto="n1">1</button><button data-tasto="n2">2</button><button data-tasto="n3">3</button>',
+    '      <button data-tasto="n4">4</button><button data-tasto="n5">5</button><button data-tasto="n6">6</button>',
+    '      <button data-tasto="n7">7</button><button data-tasto="n8">8</button><button data-tasto="n9">9</button>',
+    '      <button class="piccolo chiude" data-tasto="listaCanali">Lista canali</button><button data-tasto="n0">0</button>',
+    '      <button class="piccolo chiude" data-tasto="guida">Guida</button>',
+    '    </div>',
+    '  </div>',
+    '  <div class="gruppo">',
     '    <div class="etichetta">Televisore</div>',
     '    <div class="coppia">',
     '      <button class="pillola chiude" data-tasto="blu"><svg viewBox="0 0 24 24"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>Menu</button>',
     '      <button class="pillola chiude" data-tasto="homeTv" aria-label="Home del TV (Samsung)"><svg viewBox="0 0 24 24"><path d="M3 5h18v11H3zm2 2v7h14V7zm4 11h6v2H9z"/></svg>Home del TV</button>',
+    '      <button class="pillola chiude" data-tasto="sorgente" aria-label="Sorgente (HDMI, antenna)"><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4zm2 2v6h12V9zM9 3l3 3 3-3z"/></svg>Sorgente</button>',
+    '      <button class="pillola chiude" data-tasto="menuTv" aria-label="Impostazioni del TV"><svg viewBox="0 0 24 24"><path d="M12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7zM10.6 2h2.8l.5 2.6 1.8.8 2.2-1.5 2 2-1.5 2.2.8 1.8 2.6.5v2.8l-2.6.5-.8 1.8 1.5 2.2-2 2-2.2-1.5-1.8.8-.5 2.6h-2.8l-.5-2.6-1.8-.8-2.2 1.5-2-2 1.5-2.2-.8-1.8L2 13.4v-2.8l2.6-.5.8-1.8-1.5-2.2 2-2 2.2 1.5 1.8-.8z"/></svg>Impostazioni TV</button>',
+    '      <button class="pillola chiude" data-tasto="info" aria-label="Info"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm-1 8v7h2v-7zm0-4v2h2V6z"/></svg>Info</button>',
+    '      <button class="pillola chiude" data-tasto="esci" aria-label="Esci"><svg viewBox="0 0 24 24"><path d="M6.4 5L12 10.6 17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4z"/></svg>Esci</button>',
     '    </div>',
     '  </div>',
     '  <div class="gruppo">',
@@ -3506,7 +3562,7 @@
     '    var tasto = el.getAttribute(\'data-tasto\'), tipo = el.getAttribute(\'data-tipo\');',
     '    var freccia = /^(su|giu|sx|dx)$/.test(tasto || \'\');',
     '    function manda() { if (tipo) invia({ tipo: tipo }); else invia({ tipo: \'tasto\', tasto: tasto }); }',
-    '    var ripetibile = freccia || tasto === \'volSu\' || tasto === \'volGiu\';',
+    '    var ripetibile = freccia || tasto === \'volSu\' || tasto === \'volGiu\' || tasto === \'canaleSu\' || tasto === \'canaleGiu\';',
     '    var lungo = tasto === \'spegni\', spento = false; // spegnere: solo tenendo premuto (niente tocchi per sbaglio)',
     '    // OK: un tocco e\' OK; tenuto premuto apre il menu della cosa scelta, come sul telecomando (o il tasto destro)',
     '    var conMenu = tasto === \'ok\', tenuto = false;',

@@ -4,7 +4,7 @@ Funziona sui Samsung con TizenBrew: i TV dal 2018 in poi del tutto, quelli del 2
 
 Una schermata principale pulita e semplice, che si modifica **direttamente dal telecomando**:
 
-- **In alto i preferiti**: il tuo sito, il Browser e le app che usi di più (Netflix, Disney+, Prime Video, YouTube…). Si aprono le **app vere** del TV. Accanto a YouTube c'è anche **YouTube NO ADS**, senza pubblicità e col tuo account (vedi sotto).
+- **In alto i preferiti**: il tuo sito, il Browser e le app che usi di più (Netflix, Disney+, Prime Video, YouTube…). Si aprono le **app vere** del TV.
 - **Sotto, le altre app installate**, divise per tipo: *Film e serie*, *Sport*, *Video e musica*, *Giochi*, *Altre app*.
 - **Impostazioni sul TV** (tasto **Blu** o l'ingranaggio in alto a destra): tema, nome nel saluto, link del sito, motore di ricerca e altro. Non serve più GitHub per le modifiche di tutti i giorni.
 - **Il tuo sito** con il **blocco della pubblicità**: le pubblicità spariscono senza rompere la pagina. Usa le **stesse liste di filtri degli adblocker più diffusi** (EasyList ed EasyList Italy), che il TV scarica da solo e aggiorna ogni giorno. Il **blocco avanzato**, per i siti che bloccano chi usa un adblock, è spento all'inizio: se accenderlo lo decidi tu (vedi *Le impostazioni*).
@@ -116,22 +116,14 @@ Si cambia quando vuoi: **OK tenuto premuto** sul riquadro → *Blocco della pubb
 
 I tasti colorati sul telecomando SolarCell compaiono premendo **123** (una o due volte).
 
-### YouTube senza pubblicità
-
-Nei preferiti, subito dopo l'app YouTube del TV, c'è il riquadro rosso **YouTube NO ADS** (si riconosce subito dall'app normale): apre YouTube nella sua versione per la TV (la stessa dell'app, fatta per il telecomando), dentro la home e senza pubblicità. L'app YouTube del TV resta com'è.
-
-- **Il tuo account**: in YouTube scegli *Accedi*. Sul TV compare un codice: sul telefono (o sul computer) apri **yt.be/activate** (o inquadra il QR), scrivi il codice e scegli il tuo account Google. Lo fai **una volta sola**: resti collegato anche spegnendo il TV o chiudendo TizenBrew (lo ricorda il TV, come l'app).
-- I tasti li usa YouTube, come nell'app. **Verde** torna alla home, **Blu** apre il menu rapido (da lì puoi anche lasciare la pubblicità su YouTube, *Blocco pubblicità su questo sito*).
-- Non lo vuoi tra i preferiti? **OK tenuto premuto** → *Togli dai preferiti*. Lo ritrovi nella fila *Video e musica*, accanto a YouTube, e da lì lo rimetti.
-
 ### Continua a guardare
 
-Sotto i preferiti c'è la fila **Continua a guardare**: i film e le serie che hai lasciato a metà, l'ultimo per primo (al massimo 10). Ogni scheda ha l'immagine che il sito mostra per quel film o quella serie, il nome, la puntata (*S1 E3*) e una barra con quanto ne hai visto. Finita una puntata, la scheda propone la **prossima puntata**.
+Sotto i preferiti c'è la fila **Continua a guardare**: i film e le serie che hai lasciato a metà, l'ultimo per primo (al massimo 10). Ogni scheda ha l'immagine che il sito mostra per quel film o quella serie, sopra il nome **stagione e puntata** scritte per esteso (*Stagione 1 · Episodio 3*; senza stagione e puntata, il titolo della pagina o l'anno) e una barra con quanto ne hai visto. Finita una puntata, la scheda propone la **prossima puntata**.
 
 - **OK** apre la pagina dove lo stavi guardando: il video parte da solo e riprende da dove eri.
 - **OK tenuto premuto**: *Riprendi*, *Ricomincia dall'inizio*, *Segna come visto* (la serie passa alla puntata dopo, il film sparisce), *Rinomina*, *Togli da Continua a guardare*.
-- **Una scheda sola** per ogni film o serie: se riprendi la stessa serie da un altro dei tuoi siti, la scheda passa a quel sito (e alla puntata nuova) invece di raddoppiare. Una scheda nasce, o cambia sito, solo dopo un minuto che guardi davvero (saltare avanti non conta): un video aperto per sbaglio non conta, e nemmeno pubblicità e trailer (sotto i 5 minuti). Se un sito riprende da solo da un suo punto più indietro, la scheda tiene quello più avanti visto altrove e il TV te lo propone.
-- **Su un altro sito**: se apri la stessa puntata (o lo stesso film) su un altro sito, sul video compare *Eri a 22:15 su AltroSito · OK per riprendere*. **OK** riprende da lì, **Indietro** no.
+- **Una scheda sola** per ogni film o serie sullo stesso sito: la scheda segue la serie alla puntata nuova invece di raddoppiare. All'inizio ogni sito tiene la sua scheda; solo con *Riprendi anche su un altro sito* acceso (in *Impostazioni*), se riprendi la stessa serie da un altro sito, la scheda passa a quel sito. Una scheda nasce, o cambia, solo dopo un minuto che guardi davvero (saltare avanti non conta): un video aperto per sbaglio non conta, e nemmeno pubblicità e trailer (sotto i 5 minuti). Con l'opzione accesa, se un sito riprende da solo da un suo punto più indietro, la scheda tiene quello più avanti visto altrove e il TV te lo propone.
+- **Su un altro sito**: è un'opzione di *Impostazioni*, *Riprendi anche su un altro sito*, spenta all'inizio. Accesa, se apri la stessa puntata (o lo stesso film) su un altro sito, sul video compare *Eri a 22:15 su AltroSito · OK per riprendere*: **OK** riprende da lì, **Indietro** no. Spenta, la proposta compare solo sullo stesso sito (per esempio la stessa puntata su un'altra pagina).
 - **Mai confuso**: i titoli si riconoscono anche scritti in modo diverso (*S01E03*, *1x03*, *Stagione 1 Episodio 3*, accenti, maiuscole, parole aggiunte come «HD» o «4K», il nome del sito, numeri romani), ma nel dubbio il TV non propone niente. Un'altra puntata, un'altra stagione, il seguito (*Il Gladiatore II*), un remake o la versione estesa non si scambiano mai. Un titolo tradotto (*Money Heist* invece di *La casa di carta*) non si può riconoscere: se ti serve, **Rinomina** la scheda col nome che usa l'altro sito.
 - Tutto resta sul TV, senza servizi esterni. In Impostazioni → *Continua a guardare* lo svuoti.
 
@@ -147,6 +139,7 @@ Sotto i preferiti c'è la fila **Continua a guardare**: i film e le serie che ha
 | Il tuo nome nel saluto | "Buonasera, Anna" |
 | App nascoste / Ripristina i preferiti | Rimostra le app nascoste, rimette i preferiti di partenza |
 | Continua a guardare | Quanti video ricorda; **OK** per svuotarlo (chiede conferma) |
+| Riprendi anche su un altro sito | **No** all'inizio: la proposta *Eri a …* e le schede di *Continua a guardare* restano del sito dove guardi. Sì: la stessa puntata o lo stesso film si riprende anche da un altro sito, con una scheda sola |
 | **Il mio sito** → Nome, Link | Il riquadro del tuo sito e il suo indirizzo. **Quando il sito cambia indirizzo, lo cambi qui** |
 | Blocco pubblicità | Acceso o spento per tutti i siti |
 | Blocco avanzato | **Spento** all'inizio, e va bene così quasi sempre. Acceso: toglie anche gli avvisi «disattiva l'adblock» di alcuni siti e la pubblicità che il blocco normale lascia passare. Alcuni siti lo vietano nelle loro condizioni d'uso: se accenderlo lo decidi tu |
@@ -204,7 +197,7 @@ Su GitHub c'è solo il codice della home, uguale per tutti. Le cose tue restano 
 | Croce e OK (tenendo premuta una freccia si ripete) | Come il telecomando vero, **ovunque**: home, siti, Netflix, YouTube, menu Samsung. **OK tenuto premuto** apre il menu della scheda scelta (*Apri*, *Sposta*, *Nascondi*…), come sul telecomando o col tasto destro del mouse |
 | In basso **Indietro**, **Home**, **Play/pausa** | Indietro e Play/pausa come il telecomando. **Home** torna alla **tua** home, anche da Netflix e dalle altre app |
 | In alto **Riproduci un video** (il TV con il triangolo) | Incolli il link di una pagina con un video (dal browser del telefono: Condividi → Copia): il TV apre la pagina e fa partire **da solo il video principale**, a schermo intero e con l'audio. Non è lo schermo del telefono: il video lo prende il TV, il telefono resta il telecomando. Banner, anteprime mute e pubblicità non partono. Lo stesso dalla tastiera in alto: incolli un link e scegli *Riproduci il video sul TV* |
-| In basso **Altro** | Un pannello con **Volume** (−, muto, +; tenendo premuto si ripete), **−30 s / +30 s**, **Menu** (= tasto Blu), **Home del TV** (la barra con le app di Samsung, come il tasto Home del telecomando) e i **tasti colorati**. Volume e Home del TV vogliono il permesso *Tasti del TV dal telefono* (vedi sotto) |
+| In basso **Altro** | Un pannello con **Volume** (−, muto, +; tenendo premuto si ripete), **−30 s / +30 s**, **Canali** (CH −, CH +, il canale di prima), **Numeri** (0-9, *Lista canali*, *Guida*), **Menu** (= tasto Blu), **Home del TV** (la barra con le app di Samsung), **Sorgente** (HDMI, antenna), **Impostazioni TV**, **Info**, **Esci** e i **tasti colorati**: col permesso il telefono sostituisce il telecomando in tutto, tranne l'accensione. Volume, canali, numeri e i tasti del televisore vogliono il permesso *Tasti del TV dal telefono* (vedi sotto) |
 | **Tastiera** in alto | Scende una casella: il testo va nel campo selezionato sul TV. Nella home e nel browser, senza un campo, diventa una ricerca; in un sito va nella sua casella di ricerca; nelle altre app va nella tastiera di Samsung, quando è aperta |
 | Un link nella casella + **Apri** | Il TV apre quel sito **dentro Home TV**, come il tuo sito (frecce, blocco della pubblicità, lettore TV), anche se c'era un'altra app aperta. Non apre il browser di Samsung né le app del TV. Un sito aperto così non è trattato come una pagina esterna: resta aperto anche se prima eri sul tuo sito |
 | Un link nella casella + **Usa come link del mio sito** | Il riquadro del tuo sito apre da ora quel link (resta salvato) |

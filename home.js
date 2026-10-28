@@ -14,7 +14,7 @@
 
   var $ = UI.$;
   var DEMO = UI.DEMO;
-  var VERSIONE = '1.2.0';
+  var VERSIONE = '1.2.1';
 
   /* ============================================================ dati */
 
@@ -49,6 +49,7 @@
     tema: 'notte', luce: 'vivace', categorie: true, nome: '', ricerca: 'google',
     nomeSito: 'Il mio sito', url: '',
     bloccoPubblicita: true, bloccoAvanzato: false, schermoInteroAutomatico: true, apriHomeAllAccensione: true,
+    riprendiAltroSito: false, // Continua a guardare: ogni sito tiene le sue schede (acceso: anche da un altro sito)
     decorazioni: true // le decorazioni delle feste (Halloween, Natale): si possono spegnere in Impostazioni
   };
 
@@ -247,10 +248,21 @@
     return { key: 'sito:' + s.id, kind: 'sito', sid: s.id, name: s.nome || UI.hostOf(s.url) || 'Sito', url: s.url, blocco: bloccoDi(s) };
   }
   function webItem() { return { key: 'web', kind: 'web', name: 'Browser' }; }
-  // YouTube per la TV dentro la home, senza pubblicita' e col tuo account (l'accesso lo ricorda il TV). Il segno
-  // nell'indirizzo lo legge main.js su youtube.com
+  // <solo-completa>
+  // YouTube per la TV dentro la home, col tuo account (l'accesso lo ricorda il TV). C'e' solo col blocco avanzato
+  // acceso: spento, il riquadro non c'e' da nessuna parte (preferiti, file delle app, "+"). Il segno nell'indirizzo lo
+  // legge main.js su youtube.com
   var YT_SENZA_SPOT = 'https://www.youtube.com/tv?hometv=senza-spot';
-  function ytItem() { return { key: 'yt', kind: 'yt', name: 'YouTube senza pubblicità', cat: 'video' }; }
+  function conYt() { return opt('bloccoAvanzato') === true; }
+  // config.json con "youtubeNoAds": true (la tua versione): il riquadro dice "NO ADS" in grande; se no resta neutro
+  function ytNoAds() { return cfg.youtubeNoAds === true; }
+  function ytItem() { return { key: 'yt', kind: 'yt', name: ytNoAds() ? 'YouTube senza pubblicità' : 'YouTube per la TV', cat: 'video' }; }
+  // </solo-completa>
+  /* <solo-pubblica>
+  // nella versione per il pubblico il riquadro di YouTube per la TV non c'e'
+  function conYt() { return false; }
+  function ytItem() { return { key: 'yt', kind: 'yt', name: 'YouTube', cat: 'video' }; }
+  </solo-pubblica> */
   var AGGIUNGI = { key: 'aggiungi', kind: 'aggiungi', name: 'Aggiungi' };
 
   function nascosta(a) {
@@ -282,8 +294,9 @@
   var rows = []; // [{ id, titolo, items }]
 
   function build() {
-    var list = appVisibili();
-    var byKey = { sito: sitoItem(), web: webItem(), yt: ytItem() };
+    var list = appVisibili(), yt = conYt();
+    var byKey = { sito: sitoItem(), web: webItem() };
+    if (yt) byKey.yt = ytItem();
     altriSiti().forEach(function (s) { var it = altroSitoItem(s); byKey[it.key] = it; });
     var items = list.map(appItem);
     for (var i = 0; i < items.length; i++) byKey[items[i].key] = items[i];
@@ -294,8 +307,9 @@
     if (favKeys.indexOf('web') === -1) favKeys.splice(1, 0, 'web');
     // i siti che hai aggiunto stanno sempre nei preferiti, come il tuo sito
     altriSiti().forEach(function (s) { if (favKeys.indexOf('sito:' + s.id) === -1) favKeys.push('sito:' + s.id); });
-    // YouTube senza pubblicita': nei preferiti subito dopo l'app YouTube (o in fondo), finche' non lo togli tu
-    if (favKeys.indexOf('yt') === -1 && !prefs.ytTolto) {
+    // YouTube per la TV (col blocco avanzato acceso): nei preferiti subito dopo l'app YouTube (o in fondo), finche' non
+    // lo togli tu
+    if (yt && favKeys.indexOf('yt') === -1 && !prefs.ytTolto) {
       var ytApp = findByName(list, 'YouTube'), dopo = ytApp ? favKeys.indexOf('app:' + ytApp.id) : -1;
       if (dopo !== -1) favKeys.splice(dopo + 1, 0, 'yt'); else favKeys.push('yt');
     }
@@ -306,10 +320,12 @@
     rows = [{ id: 'preferiti', titolo: 'Preferiti', items: fav }];
     // subito sotto i preferiti: quello che stavi guardando (al massimo 10, una scheda per film o serie)
     if (visti.length) rows.push({ id: 'continua', titolo: 'Continua a guardare', items: visti.map(continuaItem) });
-    // YouTube senza pubblicita' c'e' anche tra le app, accanto a YouTube: da li' si rimette nei preferiti
+    // YouTube per la TV c'e' anche tra le app, accanto a YouTube: da li' si rimette nei preferiti
     var tutte = items.slice(), y = 0;
-    while (y < tutte.length && !/^youtube$/i.test(tutte[y].nomeVero)) y++;
-    tutte.splice(y < tutte.length ? y + 1 : 0, 0, byKey.yt);
+    if (yt) {
+      while (y < tutte.length && !/^youtube$/i.test(tutte[y].nomeVero)) y++;
+      tutte.splice(y < tutte.length ? y + 1 : 0, 0, byKey.yt);
+    }
     if (opt('categorie')) {
       var gruppi = {};
       for (var j = 0; j < tutte.length; j++) (gruppi[tutte[j].cat] = gruppi[tutte[j].cat] || []).push(tutte[j]);
@@ -317,7 +333,7 @@
         var g = gruppi[ORDINE_FILE[o]];
         if (g && g.length) rows.push({ id: ORDINE_FILE[o], titolo: TITOLI[ORDINE_FILE[o]], items: g });
       }
-    } else {
+    } else if (tutte.length) {
       rows.push({ id: 'tutte', titolo: 'Tutte le app', items: tutte });
     }
   }
@@ -343,18 +359,26 @@
     var h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
     return (h ? h + ':' + (m < 10 ? '0' : '') : '') + m + ':' + (x < 10 ? '0' : '') + x;
   }
+  // per la scheda: stagione e puntata per esteso; senza, il riferimento scritto della pagina (se dice altro dal nome) o l'anno
+  function riferimento(v) {
+    var se = v.episodio == null ? '' : (v.stagione ? 'Stagione ' + v.stagione + ' \u00b7 ' : '') + 'Episodio ' + v.episodio;
+    if (v.prossima) return 'Prossima puntata' + (se ? ' \u00b7 ' + se : '');
+    if (se) return se;
+    if (v.rif && norm(v.rif) !== norm(v.nome)) return v.rif;
+    return v.anno ? String(v.anno) : '';
+  }
   function puntataDi(v) {
     if (v.episodio == null) return v.anno ? String(v.anno) : '';
     return v.stagione ? 'S' + v.stagione + ' E' + v.episodio : 'Puntata ' + v.episodio;
   }
   // l'immagine che il sito mostra per quel film o quella serie (se non si carica resta il colore)
   function continuaHTML(item) {
-    var v = item.v, se = puntataDi(v), sotto = v.prossima ? 'Prossima puntata' + (se ? ' · ' + se : '') : se;
+    var v = item.v, sotto = riferimento(v);
     var quota = v.durata && !v.prossima ? Math.max(3, Math.min(100, Math.round(v.posizione / v.durata * 100))) : 0;
     var foto = /^https?:\/\//i.test(v.immagine || '') ?
       '<img class="cont-foto" alt="" decoding="async" referrerpolicy="no-referrer" src="' + UI.esc(v.immagine) + '">' : '';
     return '<div class="tile" data-key="' + UI.esc(item.key) + '"><div class="lift"><div class="card continua" style="background:' + cardBg(item) + '">' +
-      foto + '<div class="cont-velo"></div><div class="label"><b>' + UI.esc(v.nome) + '</b>' + (sotto ? '<small>' + UI.esc(sotto) + '</small>' : '') + '</div>' +
+      foto + '<div class="cont-velo"></div><div class="label">' + (sotto ? '<small>' + UI.esc(sotto) + '</small>' : '') + '<b>' + UI.esc(v.nome) + '</b></div>' +
       (quota ? '<div class="cont-barra"><i style="width:' + quota + '%"></i></div>' : '') +
       '</div><div class="arrows"><i>‹</i><i>›</i></div></div></div>';
   }
@@ -369,10 +393,13 @@
       cls += item.kind === 'sito' ? ' sito' : ' web';
       var sotto = item.kind === 'sito' ? (UI.validUrl(item.url) ? UI.hostOf(item.url) : 'Imposta il link') : 'Cerca e naviga';
       inner = GLYPH[item.kind] + '<div class="label">' + UI.esc(item.name) + '<small>' + UI.esc(sotto) + '</small></div>';
+    // <solo-completa>
     } else if (item.kind === 'yt') {
-      // si distingue da YouTube a colpo d'occhio: "NO ADS" in grande
-      cls += ' yt';
-      inner = GLYPH.yt + '<div class="yt-nome">YouTube</div><div class="label"><b>NO ADS</b></div>';
+      // come il Browser, col suo colore: si distingue dall'app YouTube a colpo d'occhio
+      cls += ytNoAds() ? ' yt noads' : ' yt';
+      inner = GLYPH.yt + (ytNoAds() ? '<div class="yt-nome">YouTube</div><div class="label"><b>NO ADS</b></div>' :
+        '<div class="label">YouTube<small>Per la TV</small></div>');
+    // </solo-completa>
     } else {
       style = ' style="background:' + cardBg(item) + '"';
       if (item.icon && !DEMO) {
@@ -578,11 +605,15 @@
       return ['Preferiti', 'Aggiungi', 'Un sito come app (anche da un preferito del browser), un\'app del TV, le app nascoste', chip('OK', 'Scegli')];
     }
     if (it.kind === 'web') return ['Navigazione', 'Browser', 'Preferiti, cronologia e ricerca, senza pubblicità', chips];
-    if (it.kind === 'yt') return ['Video e musica', it.name, 'YouTube per la TV col tuo account: accedi una volta e resta collegato', chips];
+    // <solo-completa>
+    if (it.kind === 'yt') return ['Video e musica', it.name, ytNoAds() ? 'YouTube per la TV senza pubblicità, col tuo account: accedi una volta e resta collegato' :
+      'Dentro la home, col tuo account: accedi una volta e resta collegato', chips];
+    // </solo-completa>
     if (it.kind === 'continua') {
       var v = it.v, se = puntataDi(v);
       var dove = v.prossima ? 'La prossima puntata' : (v.durata ? 'Sei a ' + tempo(v.posizione) + ' di ' + tempo(v.durata) : '');
-      return ['Continua a guardare', v.nome + (se ? ' · ' + se : ''), [dove, v.sito].filter(function (x) { return !!x; }).join(' · ') || ' ',
+      var rif = v.episodio == null && !v.prossima && v.rif && norm(v.rif) !== norm(v.nome) ? v.rif : '';
+      return ['Continua a guardare', v.nome + (se ? ' · ' + se : ''), [rif, dove, v.sito].filter(function (x) { return !!x; }).join(' · ') || ' ',
         chip('OK', v.prossima ? 'Guarda' : 'Riprendi') + chip('OK', 'Tieni premuto per le opzioni')];
     }
     return [TITOLI[it.cat] || 'App', it.name, descr(it.nomeVero || it.name) || ' ', chips];
@@ -696,7 +727,9 @@
     }
     if (item.kind === 'web') { location.href = 'browser.html'; return; }
     if (DEMO) { UI.toast('Anteprima: sul TV qui si apre ' + item.name); return; }
+    // <solo-completa>
     if (item.kind === 'yt') { UI.toast('Apro YouTube…'); location.href = YT_SENZA_SPOT; return; }
+    // </solo-completa>
     UI.toast('Apro ' + item.name + '…');
     UI.service('/api/launch', { id: item.id })['catch'](function () {
       UI.toast('Non riesco ad aprire ' + item.name + '. Riprova tra qualche secondo.');
@@ -880,6 +913,9 @@
       { label: 'Decorazioni delle feste', bool: 'decorazioni', on: 'Accese', off: 'Spente' }, // spente: la home e' leggera come senza
       { label: 'Continua a guardare', value: Math.max(vistiTotale, visti.length) ? Math.max(vistiTotale, visti.length) + ' video (OK per svuotare)' : 'Vuoto',
         action: Math.max(vistiTotale, visti.length) ? svuotaContinua : null },
+      // spenta di base: "Eri a ..." e le schede restano del sito dove guardi; accesa, la stessa puntata o lo stesso film si
+      // riprende anche da un altro sito (con una scheda sola)
+      { label: 'Riprendi anche su un altro sito', bool: 'riprendiAltroSito' },
       { group: 'Il mio sito' },
       { label: 'Nome', text: 'nomeSito', title: 'Nome del sito', placeholder: 'Il mio sito' },
       { label: 'Link', text: 'url', title: 'Link del sito', placeholder: 'https://…', url: true },
@@ -1151,7 +1187,8 @@
   }
   function appNeiPreferiti() {
     if (!DEMO && !apps) { UI.toast('App del TV non ancora lette: riprova tra poco'); return; }
-    var fav = favKeysNow(), lista = [ytItem()].concat(appVisibili().map(appItem)).filter(function (it) { return fav.indexOf(it.key) === -1; });
+    // YouTube per la TV solo col blocco avanzato acceso
+    var fav = favKeysNow(), lista = (conYt() ? [ytItem()] : []).concat(appVisibili().map(appItem)).filter(function (it) { return fav.indexOf(it.key) === -1; });
     if (!lista.length) { UI.toast('Tutte le app sono gi\u00e0 nei preferiti'); return; }
     UI.openSheet({ title: 'Quale app?', subtitle: 'Va nei preferiti, in alto',
       items: lista.slice(0, 60).map(function (it) { return { label: it.name, action: function () { toggleFav(it); } }; }) });
@@ -1275,6 +1312,7 @@
       siti: altriSiti(), // gli altri tuoi siti: nei siti valgono come il tuo (main.js e liste di filtri)
       bloccoPubblicita: !!opt('bloccoPubblicita'), bloccoAvanzato: !!opt('bloccoAvanzato'), schermoInteroAutomatico: !!opt('schermoInteroAutomatico'),
       apriHomeAllAccensione: !!opt('apriHomeAllAccensione'),
+      riprendiAltroSito: !!opt('riprendiAltroSito'), // Continua a guardare (la decide il servizio)
       dominiConsentiti: cfg.dominiConsentiti || [], paroleBloccate: cfg.paroleBloccate || [],
       selettoriExtra: cfg.selettoriExtra || [],
       // liste di filtri scelte in config.json (vuoto = quelle predefinite: EasyList, EasyList Italy; col blocco avanzato anche anti-adblock)

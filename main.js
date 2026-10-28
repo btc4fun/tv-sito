@@ -399,7 +399,7 @@
   ProfiloTV.ripara(window);
   var MOTORE = ProfiloTV.motore(window);
 
-  var VERSIONE = '1.2.0';
+  var VERSIONE = '1.2.1';
   var SERVIZIO = 'http://127.0.0.1:8090';
   var IN_FRAME = false;
   try { IN_FRAME = window.top !== window.self; } catch (e) { IN_FRAME = true; }
@@ -500,10 +500,13 @@
   var bloccoAttivo = true;
   var bloccoSpentoDallaPagina = false; // nei riquadri: spento dalla pagina che li contiene
   var SPENTO_QUI = false;
-  // YouTube senza pubblicita' (il riquadro della home): l'indirizzo ha il segno "hometv=senza-spot". Vale per la visita
-  // (anche dopo l'accesso all'account o un ricaricamento), anche col blocco della pubblicita' spento per tutti i siti, e
-  // conta piu' della scelta fatta prima nel menu Blu. Quella scelta su YouTube per la TV ha una sua chiave (il sito per
-  // computer tiene la sua). Il segno si toglie subito dall'indirizzo: ricaricando la pagina vale la scelta del menu Blu
+  // <solo-completa>
+  // YouTube per la TV dal riquadro della home (che c'e' solo col blocco avanzato acceso): l'indirizzo ha il segno
+  // "hometv=senza-spot", cosi' gli agganci ci sono gia' prima degli script di YouTube. Vale per la visita (anche dopo
+  // l'accesso all'account o un ricaricamento), anche col blocco della pubblicita' spento per tutti i siti, e conta piu'
+  // della scelta fatta prima nel menu Blu, ma solo col blocco avanzato acceso: spento nelle impostazioni non vale piu'
+  // (vedi avanzatoTv). Quella scelta su YouTube per la TV ha una sua chiave (il sito per computer tiene la sua). Il segno
+  // si toglie subito dall'indirizzo: ricaricando la pagina vale la scelta del menu Blu
   var YT_SENZA_SPOT = false, YT_SPOT_LASCIATI = false;
   if (YT_TV) {
     var segnoYt = /([?&])hometv=senza-spot(&|$)/;
@@ -520,6 +523,7 @@
       YT_SPOT_LASCIATI = localStorage.getItem('hometv-yt-spot-off') === '1';
     } catch (e) {}
   }
+  // </solo-completa>
   try { SPENTO_QUI = localStorage.getItem('hometv-adblock-off') === '1'; if (SPENTO_QUI) bloccoAttivo = false; } catch (e) {}
   // su YouTube per la TV niente blocco generico (ha la sua interfaccia)
   if (YT_TV) bloccoAttivo = false;
@@ -1055,15 +1059,20 @@
     return !(n && (n.nodeType === 1 || n.nodeType === 11) && neutralizza(n) === true);
   }
 
-  // conta lo stato al momento: dal riquadro "NO ADS" della home sempre, col blocco avanzato se il blocco della pubblicita'
-  // e' acceso; lasciata dal menu Blu (su YouTube per la TV), gli agganci lasciano tutto com'e'
-  function spotTvVia() { return !YT_SPOT_LASCIATI && (YT_SENZA_SPOT || (AVANZATO && !(CFG && CFG.bloccoPubblicita === false))); }
+  // <solo-completa>
+  // il blocco avanzato su YouTube per la TV: quello delle impostazioni, appena lette; prima di leggerle la copia di questo
+  // sito, o il segno del riquadro della home (che c'e' solo col blocco avanzato acceso)
+  function avanzatoTv() { return CFG && typeof CFG.bloccoAvanzato === 'boolean' ? CFG.bloccoAvanzato : (AVANZATO || YT_SENZA_SPOT); }
+  // conta lo stato al momento: col blocco avanzato spento niente, neanche dal riquadro della home; acceso, dal riquadro
+  // sempre e se no se il blocco della pubblicita' e' acceso; lasciata dal menu Blu (su YouTube per la TV), gli agganci
+  // lasciano tutto com'e'
+  function spotTvVia() { return !YT_SPOT_LASCIATI && avanzatoTv() && (YT_SENZA_SPOT || !(CFG && CFG.bloccoPubblicita === false)); }
   var spotTvFatto = false;
 
-  // Interfaccia per la TV, col blocco avanzato o dal riquadro della home: le risposte arrivano senza spot (adPlacements, adSlots, playerAds,
-  // riquadri adSlotRenderer, Shorts sponsorizzati) e il lettore chiede il video senza spot (isInlinePlaybackNoAd), cosi'
-  // il video parte subito. Gli agganci valgono anche per i moduli interni (_yttv) che hanno un loro JSON. Codice nostro
-  // (le idee sono quelle note di altri progetti liberi: vedi TERZE-PARTI.md)
+  // Interfaccia per la TV, solo col blocco avanzato (anche dal riquadro della home): le risposte arrivano senza spot
+  // (adPlacements, adSlots, playerAds, riquadri adSlotRenderer, Shorts sponsorizzati) e il lettore chiede il video senza
+  // spot (isInlinePlaybackNoAd), cosi' il video parte subito. Gli agganci valgono anche per i moduli interni (_yttv) che
+  // hanno un loro JSON. Codice nostro (le idee sono quelle note di altri progetti liberi: vedi TERZE-PARTI.md)
   function senzaSpotTv() {
     if (spotTvFatto) return;
     spotTvFatto = true;
@@ -1145,6 +1154,7 @@
       var n = 0, h = setInterval(function () { interni(); if (++n > 16) clearInterval(h); }, 300);
     });
   }
+  // </solo-completa>
 
   function agganci() {
     var NP = Node.prototype;
@@ -1550,7 +1560,11 @@
     try { agganci(); } catch (e) { log('agganci', e); }
     try { agganciFinestre(); } catch (e) { log('finestre', e); }
   }
+  // <solo-completa>
+  // prima degli script di YouTube (la copia del blocco avanzato o il segno del riquadro): se le impostazioni dicono
+  // spento, gli agganci lasciano tutto com'e' (spotTvVia)
   if (YT_TV && (AVANZATO || YT_SENZA_SPOT)) { try { senzaSpotTv(); } catch (e) { log('spot tv', e); } }
+  // </solo-completa>
 
   /* ================================================================ popup */
 
@@ -3435,8 +3449,9 @@
   /* ---------------------------------------------------------------- continua a guardare
    * Il TV ricorda cosa guardi (vedi il servizio): con il video nel lettore la pagina gli dice anche cos'e'
    * (titoli, dati strutturati del sito, indirizzo, immagine, la puntata dopo). Quando parte un video gli
-   * chiede se c'eri gia': stesso video -> riprende da solo; la stessa cosa su un altro sito o pagina ->
-   * lo propone ("Eri a 22:15 su ...: OK per riprendere"); aperto da "Continua a guardare" -> riprende da solo.
+   * chiede se c'eri gia': stesso video -> riprende da solo; la stessa cosa su un'altra pagina (su un altro sito solo
+   * con "Riprendi anche su un altro sito", lo decide il servizio) -> lo propone ("Eri a 22:15 su ...: OK per
+   * riprendere"); aperto da "Continua a guardare" -> riprende da solo.
    */
   var ldVisto = null, ldVistoChiave = '', propostaRipresa = null, continuaAvviato = false;
   // quale video e' (per non confondere due video della stessa pagina): la sorgente senza le domande
@@ -7431,9 +7446,12 @@
   function vociPannello() {
     return [
       { testo: 'Aggiungi ai preferiti del browser', valore: '', fai: aggiungiPreferito },
+      // <solo-completa>
       // su YouTube per la TV vale la pubblicita' di YouTube (il blocco generico li' non c'e', e il sito per computer ha la
-      // sua scelta); riaccesa, vale per la visita come dal riquadro della home
+      // sua scelta) e segue il blocco avanzato: spento, qui resta spento (niente ricarica, si dice dove si accende);
+      // acceso, riaccesa vale per la visita come dal riquadro della home
       { testo: 'Blocco pubblicita\' su questo sito', valore: (YT_TV ? spotTvVia() : bloccoAttivo) ? 'Attivo' : 'Spento', fai: function () {
+        if (YT_TV && !avanzatoTv()) { chiudiPannello(); toast('Si accende dalla home: Impostazioni > Blocco avanzato', 5000); return; }
         try {
           if (YT_TV) {
             if (spotTvVia()) localStorage.setItem('hometv-yt-spot-off', '1');
@@ -7443,6 +7461,16 @@
         } catch (e) {}
         location.reload();
       } },
+      // </solo-completa>
+      /* <solo-pubblica>
+      YT_TV ? null : { testo: 'Blocco pubblicita\' su questo sito', valore: bloccoAttivo ? 'Attivo' : 'Spento', fai: function () {
+        try {
+          if (bloccoAttivo) localStorage.setItem('hometv-adblock-off', '1');
+          else localStorage.removeItem('hometv-adblock-off');
+        } catch (e) {}
+        location.reload();
+      } },
+      </solo-pubblica> */
       YT_TV ? null : { testo: 'Schermo intero', valore: '', fai: function () { chiudiPannello(); entraSchermoIntero(null, true); } },
       { testo: 'Pagina precedente', valore: '', fai: function () { chiudiPannello(); history.back(); } },
       { testo: 'Pagina successiva', valore: '', fai: function () { chiudiPannello(); history.forward(); } },
@@ -7759,14 +7787,23 @@
 
   // le impostazioni dicono se il blocco avanzato e' acceso: la copia di questo sito si aggiorna (dalla pagina dopo parte
   // prima degli script del sito). Appena acceso parte subito anche qui, senza riaprire la pagina: riaprirla rifarebbe
-  // i moduli appena inviati e disturberebbe l'avviso e il ritorno indietro dalle pagine esterne
+  // i moduli appena inviati e disturberebbe l'avviso e il ritorno indietro dalle pagine esterne. Spento: su YouTube per la
+  // TV anche il segno del riquadro della home non vale piu' (neanche per le prossime pagine della visita)
   function aggiornaAvanzato() {
+    // <solo-completa>
+    if (CFG.bloccoAvanzato === false && YT_SENZA_SPOT) {
+      YT_SENZA_SPOT = false;
+      try { sessionStorage.removeItem('hometv-yt-senza-spot'); } catch (e) {}
+    }
+    // </solo-completa>
     if (typeof CFG.bloccoAvanzato !== 'boolean' || CFG.bloccoAvanzato === AVANZATO) return;
     AVANZATO = CFG.bloccoAvanzato;
     try { localStorage.setItem('hometv-avanzato', AVANZATO ? '1' : '0'); } catch (e) {}
     if (!AVANZATO) return;
     if (bloccoAttivo) { try { travestimenti(); } catch (e) { log('travestimenti', e); } }
+    // <solo-completa>
     if (YT_TV) { try { senzaSpotTv(); } catch (e) { log('spot tv', e); } }
+    // </solo-completa>
   }
 
   function dopoImpostazioni() {

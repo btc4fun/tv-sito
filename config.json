@@ -15,5 +15,8 @@
   "paroleBloccate": [],
   "selettoriExtra": [],
   "schermoInteroAutomatico": true,
-  "apriHomeAllAccensione": true
+  "apriHomeAllAccensione": true,
+  "bloccoAvanzato": true,
+  "riprendiAltroSito": true,
+  "youtubeNoAds": true
 }
