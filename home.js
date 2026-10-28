@@ -14,7 +14,7 @@
 
   var $ = UI.$;
   var DEMO = UI.DEMO;
-  var VERSIONE = '1.1.0';
+  var VERSIONE = '1.2.0';
 
   /* ============================================================ dati */
 
@@ -46,7 +46,7 @@
   var vistiTotale = 0; // quanti ne ricorda il TV (anche i film finiti, che nella fila non ci sono)
 
   var DEFAULTS = {
-    tema: 'notte', luce: 'vivace', categorie: true, nome: '', ricerca: 'duckduckgo',
+    tema: 'notte', luce: 'vivace', categorie: true, nome: '', ricerca: 'google',
     nomeSito: 'Il mio sito', url: '',
     bloccoPubblicita: true, bloccoAvanzato: false, schermoInteroAutomatico: true, apriHomeAllAccensione: true,
     decorazioni: true // le decorazioni delle feste (Halloween, Natale): si possono spegnere in Impostazioni
@@ -138,6 +138,7 @@
   var HOUSE = {
     sito: { a: '255,123,71', b: '168,50,27' },
     web: { a: '34,195,174', b: '11,87,98' },
+    yt: { a: '235,55,55', b: '122,16,24' },
     gear: { a: '120,132,156', b: '40,46,60' }
   };
   var PALETTE = [
@@ -246,6 +247,10 @@
     return { key: 'sito:' + s.id, kind: 'sito', sid: s.id, name: s.nome || UI.hostOf(s.url) || 'Sito', url: s.url, blocco: bloccoDi(s) };
   }
   function webItem() { return { key: 'web', kind: 'web', name: 'Browser' }; }
+  // YouTube per la TV dentro la home, senza pubblicita' e col tuo account (l'accesso lo ricorda il TV). Il segno
+  // nell'indirizzo lo legge main.js su youtube.com
+  var YT_SENZA_SPOT = 'https://www.youtube.com/tv?hometv=senza-spot';
+  function ytItem() { return { key: 'yt', kind: 'yt', name: 'YouTube senza pubblicità', cat: 'video' }; }
   var AGGIUNGI = { key: 'aggiungi', kind: 'aggiungi', name: 'Aggiungi' };
 
   function nascosta(a) {
@@ -278,7 +283,7 @@
 
   function build() {
     var list = appVisibili();
-    var byKey = { sito: sitoItem(), web: webItem() };
+    var byKey = { sito: sitoItem(), web: webItem(), yt: ytItem() };
     altriSiti().forEach(function (s) { var it = altroSitoItem(s); byKey[it.key] = it; });
     var items = list.map(appItem);
     for (var i = 0; i < items.length; i++) byKey[items[i].key] = items[i];
@@ -289,6 +294,11 @@
     if (favKeys.indexOf('web') === -1) favKeys.splice(1, 0, 'web');
     // i siti che hai aggiunto stanno sempre nei preferiti, come il tuo sito
     altriSiti().forEach(function (s) { if (favKeys.indexOf('sito:' + s.id) === -1) favKeys.push('sito:' + s.id); });
+    // YouTube senza pubblicita': nei preferiti subito dopo l'app YouTube (o in fondo), finche' non lo togli tu
+    if (favKeys.indexOf('yt') === -1 && !prefs.ytTolto) {
+      var ytApp = findByName(list, 'YouTube'), dopo = ytApp ? favKeys.indexOf('app:' + ytApp.id) : -1;
+      if (dopo !== -1) favKeys.splice(dopo + 1, 0, 'yt'); else favKeys.push('yt');
+    }
     var fav = [];
     for (var f = 0; f < favKeys.length; f++) if (byKey[favKeys[f]]) fav.push(byKey[favKeys[f]]);
     fav.push(AGGIUNGI); // in fondo: il "+"
@@ -296,15 +306,19 @@
     rows = [{ id: 'preferiti', titolo: 'Preferiti', items: fav }];
     // subito sotto i preferiti: quello che stavi guardando (al massimo 10, una scheda per film o serie)
     if (visti.length) rows.push({ id: 'continua', titolo: 'Continua a guardare', items: visti.map(continuaItem) });
+    // YouTube senza pubblicita' c'e' anche tra le app, accanto a YouTube: da li' si rimette nei preferiti
+    var tutte = items.slice(), y = 0;
+    while (y < tutte.length && !/^youtube$/i.test(tutte[y].nomeVero)) y++;
+    tutte.splice(y < tutte.length ? y + 1 : 0, 0, byKey.yt);
     if (opt('categorie')) {
       var gruppi = {};
-      for (var j = 0; j < items.length; j++) (gruppi[items[j].cat] = gruppi[items[j].cat] || []).push(items[j]);
+      for (var j = 0; j < tutte.length; j++) (gruppi[tutte[j].cat] = gruppi[tutte[j].cat] || []).push(tutte[j]);
       for (var o = 0; o < ORDINE_FILE.length; o++) {
         var g = gruppi[ORDINE_FILE[o]];
         if (g && g.length) rows.push({ id: ORDINE_FILE[o], titolo: TITOLI[ORDINE_FILE[o]], items: g });
       }
-    } else if (items.length) {
-      rows.push({ id: 'tutte', titolo: 'Tutte le app', items: items });
+    } else {
+      rows.push({ id: 'tutte', titolo: 'Tutte le app', items: tutte });
     }
   }
 
@@ -319,7 +333,8 @@
   var GLYPH = {
     sito: '<svg class="glyph" viewBox="0 0 48 48" aria-hidden="true"><path d="M8 9h32a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4V13a4 4 0 0 1 4-4zm0 4v18h32V13zm12 3.5L30 22l-10 5.5zM15 39h18v3H15z"/></svg>',
     aggiungi: '<svg class="glyph" viewBox="0 0 48 48" aria-hidden="true"><path d="M22 10h4v12h12v4H26v12h-4V26H10v-4h12z"/></svg>',
-    web: '<svg class="glyph" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 4a20 20 0 1 1 0 40 20 20 0 0 1 0-40zm0 4a16 16 0 1 0 0 32 16 16 0 0 0 0-32zm8.5 7.5L28 28l-12.5 4.5L20 20zM24 21.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg>'
+    web: '<svg class="glyph" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 4a20 20 0 1 1 0 40 20 20 0 0 1 0-40zm0 4a16 16 0 1 0 0 32 16 16 0 0 0 0-32zm8.5 7.5L28 28l-12.5 4.5L20 20zM24 21.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg>',
+    yt: '<svg class="glyph" viewBox="0 0 48 48" aria-hidden="true"><path fill-rule="evenodd" d="M24 4a20 20 0 1 1 0 40 20 20 0 0 1 0-40zM19 14.5v19L34.5 24z"/></svg>'
   };
 
   function continuaItem(v) { return { key: 'c:' + v.id, kind: 'continua', id: 'c:' + v.id, name: v.nome, v: v }; }
@@ -354,6 +369,10 @@
       cls += item.kind === 'sito' ? ' sito' : ' web';
       var sotto = item.kind === 'sito' ? (UI.validUrl(item.url) ? UI.hostOf(item.url) : 'Imposta il link') : 'Cerca e naviga';
       inner = GLYPH[item.kind] + '<div class="label">' + UI.esc(item.name) + '<small>' + UI.esc(sotto) + '</small></div>';
+    } else if (item.kind === 'yt') {
+      // si distingue da YouTube a colpo d'occhio: "NO ADS" in grande
+      cls += ' yt';
+      inner = GLYPH.yt + '<div class="yt-nome">YouTube</div><div class="label"><b>NO ADS</b></div>';
     } else {
       style = ' style="background:' + cardBg(item) + '"';
       if (item.icon && !DEMO) {
@@ -559,6 +578,7 @@
       return ['Preferiti', 'Aggiungi', 'Un sito come app (anche da un preferito del browser), un\'app del TV, le app nascoste', chip('OK', 'Scegli')];
     }
     if (it.kind === 'web') return ['Navigazione', 'Browser', 'Preferiti, cronologia e ricerca, senza pubblicità', chips];
+    if (it.kind === 'yt') return ['Video e musica', it.name, 'YouTube per la TV col tuo account: accedi una volta e resta collegato', chips];
     if (it.kind === 'continua') {
       var v = it.v, se = puntataDi(v);
       var dove = v.prossima ? 'La prossima puntata' : (v.durata ? 'Sei a ' + tempo(v.posizione) + ' di ' + tempo(v.durata) : '');
@@ -676,6 +696,7 @@
     }
     if (item.kind === 'web') { location.href = 'browser.html'; return; }
     if (DEMO) { UI.toast('Anteprima: sul TV qui si apre ' + item.name); return; }
+    if (item.kind === 'yt') { UI.toast('Apro YouTube…'); location.href = YT_SENZA_SPOT; return; }
     UI.toast('Apro ' + item.name + '…');
     UI.service('/api/launch', { id: item.id })['catch'](function () {
       UI.toast('Non riesco ad aprire ' + item.name + '. Riprova tra qualche secondo.');
@@ -761,13 +782,15 @@
         items.push({ label: 'Togli questo sito', action: function () { setTimeout(function () { togliSito(item); }, 120); } });
       }
     }
-    if (item.kind === 'app') {
+    if (item.kind === 'app' || item.kind === 'yt') {
       if (fav) items.push({ label: 'Togli dai preferiti', action: function () { toggleFav(item); } });
       else items.push({ label: 'Aggiungi ai preferiti', action: function () { toggleFav(item); } });
+    }
+    if (item.kind === 'app') {
       items.push({ label: 'Rinomina', action: function () { rinominaApp(item); } });
       items.push({ label: 'Nascondi questa app', action: function () { nascondi(item); } });
     }
-    UI.openSheet({ title: item.name, subtitle: item.kind === 'app' ? (TITOLI[item.cat] || 'App') : (item.kind === 'sito' ? (item.sid ? 'Un tuo sito' : 'Il tuo sito') : 'Browser'), items: items });
+    UI.openSheet({ title: item.name, subtitle: item.kind === 'app' || item.kind === 'yt' ? (TITOLI[item.cat] || 'App') : (item.kind === 'sito' ? (item.sid ? 'Un tuo sito' : 'Il tuo sito') : 'Browser'), items: items });
   }
 
   function toggleFav(item) {
@@ -775,6 +798,7 @@
     var at = keys.indexOf(item.key);
     if (at === -1) { keys.push(item.key); UI.toast(item.name + ' aggiunta ai preferiti'); }
     else { keys.splice(at, 1); UI.toast(item.name + ' tolta dai preferiti'); }
+    if (item.kind === 'yt') { if (at === -1) delete prefs.ytTolto; else prefs.ytTolto = true; } // tolto da te: non torna da solo
     prefs.preferiti = keys;
     salvaPrefs();
     render(true);
@@ -801,14 +825,21 @@
     showHero(true);
   }
 
+  // si sposta solo la scheda, al suo posto nella fila: niente home ridisegnata a ogni passo (sul TV ogni volta si
+  // ricaricavano tutte le schede e la fila ripartiva), la fila scorre liscia anche quando arriva in fondo
   function moveBy(d) {
     var keys = favKeysNow();
     var i = cur.i, j = i + d;
     if (j < 0 || j >= keys.length) return;
     var t = keys[i]; keys[i] = keys[j]; keys[j] = t;
     prefs.preferiti = keys;
-    render(true);
-    cur.el.classList.add('moving');
+    var items = rows[cur.r].items, it = items[i]; items[i] = items[j]; items[j] = it;
+    var track = trackEl(cur.r), a = track.children[i], b = track.children[j];
+    if (d > 0) track.insertBefore(b, a); else track.insertBefore(a, b);
+    cur.i = j;
+    offsets[cur.r] = trackOffset(cur.r, j);
+    UI.setTransform(track, 'translate3d(' + (-offsets[cur.r]) + 'px,0,0)');
+    signature = JSON.stringify([rows, opt('url'), opt('nomeSito'), DEMO]);
     heroKey = '';
     showHero(true);
   }
@@ -830,7 +861,7 @@
   var NOMI = {
     tema: { notte: 'Notte', grafite: 'Grafite', blu: 'Blu notte', nero: 'Nero' },
     luce: { vivace: 'Vivace', tenue: 'Tenue', spenta: 'Spenta' },
-    ricerca: { duckduckgo: 'DuckDuckGo', google: 'Google', bing: 'Bing', ecosia: 'Ecosia' }
+    ricerca: { google: 'Google', duckduckgo: 'DuckDuckGo', bing: 'Bing', ecosia: 'Ecosia' }
   };
   var serviceState = DEMO ? 'Anteprima sul computer' : 'Controllo…';
 
@@ -858,7 +889,7 @@
       { label: 'Liste di filtri (EasyList)', value: statoListe(), action: aggiornaListe },
       { label: 'Schermo intero automatico', bool: 'schermoInteroAutomatico' },
       { group: 'Browser' },
-      { label: 'Motore di ricerca', cycle: 'ricerca', values: ['duckduckgo', 'google', 'bing', 'ecosia'] },
+      { label: 'Motore di ricerca', cycle: 'ricerca', values: ['google', 'duckduckgo', 'bing', 'ecosia'] },
       { label: 'Cancella la cronologia', value: '', action: cancellaCronologia },
       { group: 'Telefono' },
       { label: 'Collega un telefono', value: telStato.attivo === false ? 'Non disponibile' : 'Telecomando e tastiera', action: apriAbbina },
@@ -1120,7 +1151,7 @@
   }
   function appNeiPreferiti() {
     if (!DEMO && !apps) { UI.toast('App del TV non ancora lette: riprova tra poco'); return; }
-    var fav = favKeysNow(), lista = appVisibili().map(appItem).filter(function (it) { return fav.indexOf(it.key) === -1; });
+    var fav = favKeysNow(), lista = [ytItem()].concat(appVisibili().map(appItem)).filter(function (it) { return fav.indexOf(it.key) === -1; });
     if (!lista.length) { UI.toast('Tutte le app sono gi\u00e0 nei preferiti'); return; }
     UI.openSheet({ title: 'Quale app?', subtitle: 'Va nei preferiti, in alto',
       items: lista.slice(0, 60).map(function (it) { return { label: it.name, action: function () { toggleFav(it); } }; }) });
@@ -1135,7 +1166,7 @@
     UI.openSheet({
       title: 'Ripristinare i preferiti?', subtitle: 'Tornano le app scelte all\'inizio, nell\'ordine iniziale.',
       items: [
-        { label: 'Ripristina', action: function () { delete prefs.preferiti; applyPrefs(); UI.toast('Preferiti ripristinati'); } },
+        { label: 'Ripristina', action: function () { delete prefs.preferiti; delete prefs.ytTolto; applyPrefs(); UI.toast('Preferiti ripristinati'); } },
         { label: 'Annulla' }
       ]
     });

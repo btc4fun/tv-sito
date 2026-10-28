@@ -24,6 +24,8 @@
   --sito-b: #a8321b;
   --web-a: #22c3ae;
   --web-b: #0b5762;
+  --yt-a: #eb3737;
+  --yt-b: #7a1018;
   --font: "Instrument Sans", "SamsungOneUI", "SamsungOne", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --ease: cubic-bezier(.2, .8, .2, 1);
 }
@@ -205,6 +207,15 @@ h1, h2, p, ul { margin: 0; padding: 0; }
 }
 .cont-barra i { display: block; height: 100%; border-radius: .35rem; background: linear-gradient(90deg, #19d3b7, #3b82f6 55%, #8b5cf6); }
 .card.web { background: linear-gradient(140deg, var(--web-a) 0%, var(--web-b) 100%); }
+/* YouTube senza pubblicita': si distingue da YouTube a colpo d'occhio, "NO ADS" in grande */
+.card.yt { background: linear-gradient(140deg, var(--yt-a) 0%, var(--yt-b) 100%); }
+.card.yt svg.glyph { top: 2.4rem; width: 4.4rem; height: 4.4rem; }
+.card.yt .yt-nome {
+  position: absolute; left: 7.8rem; top: 2.4rem;
+  font-size: 3rem; font-weight: 700; line-height: 4.4rem; letter-spacing: -.02em; color: #fff;
+}
+.card.yt .label { bottom: 1.6rem; }
+.card.yt .label b { display: block; font-size: 6rem; font-weight: 800; line-height: 1; letter-spacing: -.01em; white-space: nowrap; }
 .card.add { background: transparent; box-shadow: inset 0 0 0 .3rem var(--line); }
 .card.add svg.glyph { left: 50%; top: 36%; margin: -3.2rem 0 0 -3.2rem; fill: var(--text-2); }
 

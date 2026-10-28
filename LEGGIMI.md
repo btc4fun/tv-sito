@@ -1,10 +1,10 @@
-# Home TV 3.2 – la tua home per i TV Samsung
+# Home TV – la tua home per i TV Samsung
 
 Funziona sui Samsung con TizenBrew: i TV dal 2018 in poi del tutto, quelli del 2017 in parte (vedi *Quali TV* in fondo). È provata davvero su un QE55Q80B del 2022.
 
 Una schermata principale pulita e semplice, che si modifica **direttamente dal telecomando**:
 
-- **In alto i preferiti**: il tuo sito, il Browser e le app che usi di più (Netflix, Disney+, Prime Video, YouTube…). Si aprono le **app vere** del TV.
+- **In alto i preferiti**: il tuo sito, il Browser e le app che usi di più (Netflix, Disney+, Prime Video, YouTube…). Si aprono le **app vere** del TV. Accanto a YouTube c'è anche **YouTube NO ADS**, senza pubblicità e col tuo account (vedi sotto).
 - **Sotto, le altre app installate**, divise per tipo: *Film e serie*, *Sport*, *Video e musica*, *Giochi*, *Altre app*.
 - **Impostazioni sul TV** (tasto **Blu** o l'ingranaggio in alto a destra): tema, nome nel saluto, link del sito, motore di ricerca e altro. Non serve più GitHub per le modifiche di tutti i giorni.
 - **Il tuo sito** con il **blocco della pubblicità**: le pubblicità spariscono senza rompere la pagina. Usa le **stesse liste di filtri degli adblocker più diffusi** (EasyList ed EasyList Italy), che il TV scarica da solo e aggiorna ogni giorno. Il **blocco avanzato**, per i siti che bloccano chi usa un adblock, è spento all'inizio: se accenderlo lo decidi tu (vedi *Le impostazioni*).
@@ -116,6 +116,14 @@ Si cambia quando vuoi: **OK tenuto premuto** sul riquadro → *Blocco della pubb
 
 I tasti colorati sul telecomando SolarCell compaiono premendo **123** (una o due volte).
 
+### YouTube senza pubblicità
+
+Nei preferiti, subito dopo l'app YouTube del TV, c'è il riquadro rosso **YouTube NO ADS** (si riconosce subito dall'app normale): apre YouTube nella sua versione per la TV (la stessa dell'app, fatta per il telecomando), dentro la home e senza pubblicità. L'app YouTube del TV resta com'è.
+
+- **Il tuo account**: in YouTube scegli *Accedi*. Sul TV compare un codice: sul telefono (o sul computer) apri **yt.be/activate** (o inquadra il QR), scrivi il codice e scegli il tuo account Google. Lo fai **una volta sola**: resti collegato anche spegnendo il TV o chiudendo TizenBrew (lo ricorda il TV, come l'app).
+- I tasti li usa YouTube, come nell'app. **Verde** torna alla home, **Blu** apre il menu rapido (da lì puoi anche lasciare la pubblicità su YouTube, *Blocco pubblicità su questo sito*).
+- Non lo vuoi tra i preferiti? **OK tenuto premuto** → *Togli dai preferiti*. Lo ritrovi nella fila *Video e musica*, accanto a YouTube, e da lì lo rimetti.
+
 ### Continua a guardare
 
 Sotto i preferiti c'è la fila **Continua a guardare**: i film e le serie che hai lasciato a metà, l'ultimo per primo (al massimo 10). Ogni scheda ha l'immagine che il sito mostra per quel film o quella serie, il nome, la puntata (*S1 E3*) e una barra con quanto ne hai visto. Finita una puntata, la scheda propone la **prossima puntata**.
@@ -144,7 +152,7 @@ Sotto i preferiti c'è la fila **Continua a guardare**: i film e le serie che ha
 | Blocco avanzato | **Spento** all'inizio, e va bene così quasi sempre. Acceso: toglie anche gli avvisi «disattiva l'adblock» di alcuni siti e la pubblicità che il blocco normale lascia passare. Alcuni siti lo vietano nelle loro condizioni d'uso: se accenderlo lo decidi tu |
 | Liste di filtri (EasyList) | Quando il TV le ha aggiornate e quante regole ha; **OK** per scaricarle di nuovo subito |
 | Schermo intero automatico | Sul tuo sito e sui siti del **+** il video va a schermo intero appena parte. Nel browser solo quando lo fai partire tu (**OK** o Play); un video che parte da solo (anteprime, autoplay) resta nella pagina, come in un browser normale |
-| **Browser** → Motore di ricerca | DuckDuckGo, Google, Bing, Ecosia |
+| **Browser** → Motore di ricerca | Google (all'inizio), DuckDuckGo, Bing, Ecosia |
 | Cancella la cronologia | Svuota la cronologia del browser |
 | **Telefono** → Collega un telefono | Mostra il codice QR per il telecomando sul telefono (vedi sotto) |
 | Telefoni collegati | Quanti sono; OK per scollegarli tutti |
@@ -239,7 +247,8 @@ Tocca **Trackpad** in alto: al posto della croce c'è una superficie grande e su
 - L'ultimo riquadro dei preferiti è **Aggiungi un sito**: scrivi l'indirizzo, poi il nome.
 - **OK tenuto premuto** (o **Giallo**) su un preferito: *Sposta*, *Rinomina*, *Togli dai preferiti*. Su una pagina della cronologia: *Aggiungi ai preferiti*, *Togli dalla cronologia*, *Cancella tutta la cronologia*.
 - **Indietro** (o **Verde**) torna alla home.
-- I **pannelli dei siti fatti come riquadri** (per esempio quello delle app di Google): **OK** ci entra, le frecce si muovono dentro, **Indietro** esce. Vanno a schermo intero solo i riquadri con un video.
+- I **pannelli dei siti fatti come riquadri** (per esempio quello delle app di Google, o la finestra dei cookie di alcuni siti): la selezione ci entra da sola, sia aprendoli con **OK** sia arrivandoci con le frecce; le frecce si muovono dentro e, oltre l'ultima voce, tornano alla pagina nella stessa direzione; **Indietro** esce. I riquadri con un video invece si scelgono e basta: con **OK** vanno a schermo intero.
+- Nelle **caselle di testo** (per esempio la ricerca di Google): destra e sinistra muovono il cursore; all'inizio o alla fine del testo, o con la casella vuota, passano alla cosa accanto. Su e giù escono sempre. A destra e a sinistra la selezione resta sulla stessa riga (per esempio lungo la barra in alto di un sito), salvo una cosa molto più vicina.
 - I siti di video che hanno una **versione per la TV** si aprono in quella, fatta per il telecomando; dal menu **Blu** puoi passare al sito per computer (e tornare indietro).
 
 La cronologia si riempie da sola con **tutte** le pagine che apri, sia dal browser sia dal tuo sito, anche quando passi da una pagina all'altra dentro lo stesso sito. Tiene le ultime 300 pagine e fino a 60 preferiti, e resta salvata anche se spegni il TV.
@@ -323,7 +332,7 @@ Ti serve solo per le impostazioni di partenza o per cambiare qualcosa dal telefo
   "preferite": ["Netflix", "Disney+", "Prime Video", "YouTube", "Apple TV", "DAZN", "RaiPlay", "Mediaset Infinity", "NOW", "Spotify"],
   "nascoste": [],
   "browser": {
-    "ricerca": "https://duckduckgo.com/?q=",
+    "ricerca": "https://www.google.com/search?q=",
     "preferiti": [ { "nome": "Google", "url": "https://www.google.com/" } ]
   },
   "dominiConsentiti": [],

@@ -399,7 +399,7 @@
   ProfiloTV.ripara(window);
   var MOTORE = ProfiloTV.motore(window);
 
-  var VERSIONE = '1.1.0';
+  var VERSIONE = '1.2.0';
   var SERVIZIO = 'http://127.0.0.1:8090';
   var IN_FRAME = false;
   try { IN_FRAME = window.top !== window.self; } catch (e) { IN_FRAME = true; }
@@ -500,6 +500,26 @@
   var bloccoAttivo = true;
   var bloccoSpentoDallaPagina = false; // nei riquadri: spento dalla pagina che li contiene
   var SPENTO_QUI = false;
+  // YouTube senza pubblicita' (il riquadro della home): l'indirizzo ha il segno "hometv=senza-spot". Vale per la visita
+  // (anche dopo l'accesso all'account o un ricaricamento), anche col blocco della pubblicita' spento per tutti i siti, e
+  // conta piu' della scelta fatta prima nel menu Blu. Quella scelta su YouTube per la TV ha una sua chiave (il sito per
+  // computer tiene la sua). Il segno si toglie subito dall'indirizzo: ricaricando la pagina vale la scelta del menu Blu
+  var YT_SENZA_SPOT = false, YT_SPOT_LASCIATI = false;
+  if (YT_TV) {
+    var segnoYt = /([?&])hometv=senza-spot(&|$)/;
+    if (segnoYt.test(location.search)) {
+      YT_SENZA_SPOT = true;
+      try { sessionStorage.setItem('hometv-yt-senza-spot', '1'); localStorage.removeItem('hometv-yt-spot-off'); } catch (e) {}
+      try {
+        history.replaceState(history.state, '', location.pathname +
+          location.search.replace(segnoYt, function (x, a, b) { return b ? a : ''; }) + location.hash);
+      } catch (e) {}
+    }
+    try {
+      YT_SENZA_SPOT = YT_SENZA_SPOT || sessionStorage.getItem('hometv-yt-senza-spot') === '1';
+      YT_SPOT_LASCIATI = localStorage.getItem('hometv-yt-spot-off') === '1';
+    } catch (e) {}
+  }
   try { SPENTO_QUI = localStorage.getItem('hometv-adblock-off') === '1'; if (SPENTO_QUI) bloccoAttivo = false; } catch (e) {}
   // su YouTube per la TV niente blocco generico (ha la sua interfaccia)
   if (YT_TV) bloccoAttivo = false;
@@ -551,7 +571,8 @@
    * pubblicita') non le caricano.
    */
 
-  var MINUSCOLO = IN_FRAME && window.innerWidth > 0 && (window.innerWidth < 300 || window.innerHeight < 200);
+  // (un riquadro ancora chiuso, alto o largo 0, non e' minuscolo: e' un pannello che si sta aprendo, come le app di Google)
+  var MINUSCOLO = IN_FRAME && window.innerWidth > 0 && window.innerHeight > 0 && (window.innerWidth < 300 || window.innerHeight < 200);
   var SICURI = []; // il tuo sito e i domini consentiti (dal servizio): mai pubblicita' per le liste
   // nei riquadri piccoli (quasi sempre pubblicita' 300x250) le liste non si caricano: bastano quelle interne
   var PICCOLO = IN_FRAME && window.innerWidth > 0 && (window.innerWidth < 480 || window.innerHeight < 270);
@@ -1034,11 +1055,18 @@
     return !(n && (n.nodeType === 1 || n.nodeType === 11) && neutralizza(n) === true);
   }
 
-  // Interfaccia per la TV, solo col blocco avanzato: le risposte arrivano senza spot (adPlacements, adSlots, playerAds,
+  // conta lo stato al momento: dal riquadro "NO ADS" della home sempre, col blocco avanzato se il blocco della pubblicita'
+  // e' acceso; lasciata dal menu Blu (su YouTube per la TV), gli agganci lasciano tutto com'e'
+  function spotTvVia() { return !YT_SPOT_LASCIATI && (YT_SENZA_SPOT || (AVANZATO && !(CFG && CFG.bloccoPubblicita === false))); }
+  var spotTvFatto = false;
+
+  // Interfaccia per la TV, col blocco avanzato o dal riquadro della home: le risposte arrivano senza spot (adPlacements, adSlots, playerAds,
   // riquadri adSlotRenderer, Shorts sponsorizzati) e il lettore chiede il video senza spot (isInlinePlaybackNoAd), cosi'
   // il video parte subito. Gli agganci valgono anche per i moduli interni (_yttv) che hanno un loro JSON. Codice nostro
   // (le idee sono quelle note di altri progetti liberi: vedi TERZE-PARTI.md)
   function senzaSpotTv() {
+    if (spotTvFatto) return;
+    spotTvFatto = true;
     function spot(x) {
       if (!x || typeof x !== 'object') return false;
       if (x.adSlotRenderer) return true;
@@ -1046,9 +1074,9 @@
       return !!(r && r.adClientParams && r.adClientParams.isAd);
     }
     function senzaSpot(lista) {
-      if (!lista || !lista.length) return lista;
+      if (!Array.isArray(lista) || !lista.length) return lista;
       var out = [];
-      for (var i = 0; i < lista.length; i++) if (!spot(lista[i])) out.push(lista[i]);
+      for (var i = 0; i < lista.length; i++) { if (!spot(lista[i])) out.push(lista[i]); else conta('youtube'); }
       return out;
     }
     function scaffali(lista) {
@@ -1060,6 +1088,7 @@
     }
     function lettore(o) {
       if (!o || typeof o !== 'object') return;
+      if (o.adPlacements && o.adPlacements.length) conta('youtube');
       if (o.adPlacements) o.adPlacements = [];
       if (o.adSlots) o.adSlots = [];
       if (o.playerAds) o.playerAds = false;
@@ -1091,8 +1120,7 @@
       c.playbackContext.contentPlaybackContext.isInlinePlaybackNoAd = true;
       return c;
     }
-    // conta lo stato al momento: spenti il blocco avanzato o il blocco (per tutti o qui), gli agganci lasciano tutto com'e'
-    function spotVia() { return AVANZATO && !SPENTO_QUI && !(CFG && CFG.bloccoPubblicita === false); }
+    var spotVia = spotTvVia;
     function aggancia(J) {
       if (!J || J.__hometvYt || typeof J.parse !== 'function' || typeof J.stringify !== 'function') return;
       var parse = J.parse, stringify = J.stringify;
@@ -1522,7 +1550,7 @@
     try { agganci(); } catch (e) { log('agganci', e); }
     try { agganciFinestre(); } catch (e) { log('finestre', e); }
   }
-  if (YT_TV && AVANZATO) { try { senzaSpotTv(); } catch (e) { log('spot tv', e); } }
+  if (YT_TV && (AVANZATO || YT_SENZA_SPOT)) { try { senzaSpotTv(); } catch (e) { log('spot tv', e); } }
 
   /* ================================================================ popup */
 
@@ -1595,8 +1623,14 @@
   if (MINUSCOLO) {
     window.addEventListener('keydown', function (ev) {
       if ([37, 38, 39, 40, 13, 10009, 27, 403, 404, 405, 406].indexOf(ev.keyCode) === -1) return;
-      try { window.parent.postMessage({ hometv: 'esci' }, '*'); window.parent.focus(); } catch (e) {}
       ev.preventDefault();
+      // era piccolo all'apertura ma ora e' grande (un pannello che si apriva): si ricarica col codice completo (una volta)
+      if (window.innerWidth >= 300 && window.innerHeight >= 200) {
+        var chiave = 'hometv-cresciuto:' + location.href.slice(0, 300), gia = 0;
+        try { gia = +sessionStorage.getItem(chiave) || 0; sessionStorage.setItem(chiave, String(Date.now())); } catch (e) {}
+        if (Date.now() - gia > 15000) { try { location.reload(); return; } catch (e) {} }
+      }
+      try { window.parent.postMessage({ hometv: 'esci' }, '*'); window.parent.focus(); } catch (e) {}
     }, true);
     return;
   }
@@ -2677,15 +2711,46 @@
   // si entra in un riquadro che non e' un lettore: prende il fuoco (i tasti del telecomando vanno a lui, quelli del
   // telefono glieli passa eseguiAzione) e il nostro codice la' dentro sceglie la prima cosa. Indietro torna qui
   var entratoA = 0;
-  function entraNelRiquadro(fr) {
+  function entraNelRiquadro(fr, dir, da) {
     entratoA = Date.now();
     if (corrente && corrente !== fr) corrente.classList.remove('hometv-focus');
     corrente = fr;
     fr.classList.remove('hometv-focus');
     // se il sito gli ha gia' dato il fuoco non lo si ridia (rifarlo a meta' della sua apertura lo farebbe richiudere)
     if (document.activeElement !== fr) { try { fr.focus(); } catch (e) {} }
-    if (fr.__hometvPronto) { try { fr.contentWindow.postMessage({ hometv: 'entra' }, '*'); } catch (e) {} }
+    try { disegnaAnello(); } catch (e) {}
+    if (!fr.__hometvPronto) return;
+    var m = { hometv: 'entra' };
+    // arrivati con una freccia: da che parte e da che punto (nelle misure del riquadro), per scegliere la cosa piu' vicina
+    if (dir && da) {
+      var r = fr.getBoundingClientRect();
+      m.dir = dir; m.x = da.left + da.width / 2 - r.left - (fr.clientLeft || 0); m.y = da.top + da.height / 2 - r.top - (fr.clientTop || 0);
+    }
+    try { fr.contentWindow.postMessage(m, '*'); } catch (e) {}
   }
+  // un riquadro in cui si entra con le frecce (come in una tendina): non un lettore (quello va a schermo intero con OK), con
+  // il nostro codice dentro (sceglie la cosa piu' vicina alla parte da cui si arriva) e che si vede. Oltre l'ultima cosa la'
+  // dentro si torna qui, nella stessa direzione
+  function riquadroDaEntrare(fr) {
+    return !!fr.__hometvPronto && !fr.__hometvVideo && !fr.__hometvAd && !fr.__hometvTruffa && !eLettore(fr) && siVede(fr) &&
+      areaVisibile(fr) >= 60 * 40;
+  }
+  // il sito ha dato il fuoco a un suo riquadro subito dopo un tuo OK (un pannello come le app di Google): ci si entra, anche
+  // se lo fa quando la selezione e' gia' andata altrove (sui TV lenti succede dopo)
+  window.addEventListener('blur', function () {
+    var giri = 0;
+    function prova() {
+      var af = document.activeElement;
+      if (!af || af.tagName !== 'IFRAME' || fsEl || paginaDiCasa() || Date.now() - ultimoOk > 4000) return;
+      if (af === corrente && Date.now() - entratoA < 1500) return; // ci si e' appena entrati da qui
+      if (af.__hometvVideo || af.__hometvAd || eLettore(af) || !siVede(af)) return;
+      var r = af.getBoundingClientRect();
+      if (r.width < 120 || r.height < 120) { if (++giri < 8) setTimeout(prova, 150); return; } // si sta ancora aprendo
+      ambito = null;
+      entraNelRiquadro(af);
+    }
+    setTimeout(prova, 0);
+  });
   // un pannello fatto da un riquadro: il riquadro grande che c'e' dentro
   function riquadroGrande(el) {
     var f = el.tagName === 'IFRAME' ? [el] : el.querySelectorAll('iframe');
@@ -2696,12 +2761,35 @@
     return null;
   }
   // nel riquadro: la pagina di sopra ci fa entrare (OK su questo riquadro, o il sito ci ha dato il fuoco): si sceglie la
-  // cosa che il sito ha gia' scelto, se no la prima
-  function entrataDaFuori() {
-    var a = document.activeElement;
-    if (a && a !== document.body && a.matches && a.matches(SEL_NAV) && siVede(a)) { setFocus(a, true); return; }
-    var el = primaVoce(candidati(null), false);
+  // cosa che il sito ha gia' scelto, se no la prima. Arrivati con una freccia: la cosa piu' vicina al punto da cui si
+  // arriva, dalla parte da cui si arriva (scendendo, la prima in alto sotto quel punto)
+  var dentroDaFuori = false;
+  function entrataDaFuori(dir, x, y) {
+    dentroDaFuori = true;
+    var a = document.activeElement, lista = candidati(null), el = null;
+    if (!dir && a && a !== document.body && a.matches && a.matches(SEL_NAV) && siVede(a)) { setFocus(a, true); return; }
+    if (/^(su|giu|sx|dx)$/.test(dir) && isFinite(x) && isFinite(y)) {
+      var W = window.innerWidth, H = window.innerHeight, px = Math.max(0, Math.min(W, x)), py = Math.max(0, Math.min(H, y));
+      var rc = dir === 'giu' ? { left: px, right: px, top: -2, bottom: -1 } : dir === 'su' ? { left: px, right: px, top: H + 1, bottom: H + 2 } :
+        dir === 'dx' ? { left: -2, right: -1, top: py, bottom: py } : { left: W + 1, right: W + 2, top: py, bottom: py };
+      rc.width = rc.right - rc.left; rc.height = rc.bottom - rc.top;
+      if (corrente) { corrente.classList.remove('hometv-focus'); corrente = null; }
+      el = scegliVerso(lista, rc, dir);
+    }
+    el = el || primaVoce(lista, false);
     if (el) setFocus(el);
+  }
+  // nel riquadro in cui si e' entrati da fuori: oltre l'ultima cosa (e a fine pagina) si torna alla pagina di sopra, che
+  // continua da li' nella stessa direzione
+  function esciDalBordo(dir) {
+    if (!IN_FRAME || !dentroDaFuori) return false;
+    var se = document.scrollingElement || document.documentElement, y = window.pageYOffset || (se && se.scrollTop) || 0;
+    if (dir === 'giu' && se && y + window.innerHeight < se.scrollHeight - 2) return false; // c'e' ancora pagina: si scorre
+    if (dir === 'su' && y > 2) return false;
+    dentroDaFuori = false;
+    if (corrente) corrente.classList.remove('hometv-focus');
+    try { window.parent.postMessage({ hometv: 'bordo', dir: dir }, '*'); window.parent.focus(); } catch (e) {}
+    return true;
   }
   // nel riquadro: c'e' un video, quindi e' un lettore (con OK la pagina di sopra lo mette a schermo intero)
   var videoDetto = false;
@@ -3051,7 +3139,15 @@
       var figli = document.querySelectorAll('iframe');
       for (var j = 0; j < figli.length; j++) if (figli[j].__hometvPronto) inviaImpostazioni(figli[j]);
     } else if (d.hometv === 'entra' && IN_FRAME && ev.source === window.parent) {
-      entrataDaFuori();
+      entrataDaFuori(d.dir, Number(d.x), Number(d.y));
+    } else if (d.hometv === 'bordo' && frame && (frame === corrente || frame === document.activeElement) && !fsEl &&
+      /^(su|giu|sx|dx)$/.test(d.dir)) {
+      // usciti dal bordo di un riquadro: si continua da qui nella stessa direzione (se non c'e' niente, resta scelto lui)
+      try { if (document.activeElement === frame) frame.blur(); } catch (e) {}
+      try { window.focus(); } catch (e) {}
+      setFocus(frame, true);
+      ultimoMovimento = 0;
+      muovi(d.dir);
     } else if (d.hometv === 'premuto' && IN_FRAME && ev.source === window.parent) {
       ultimoOk = chiestoPlayA = Date.now();
       premutoAiRiquadri();
@@ -5124,6 +5220,13 @@
     '[role="checkbox"], [role="radio"], [role="switch"], [role="combobox"], [aria-haspopup]:not([aria-haspopup="false"]), ' +
     '[aria-expanded], [data-toggle], [data-bs-toggle], label[for], [contenteditable="true"], [contenteditable=""]';
   var CONTROLLI = /^(A|BUTTON|INPUT|SELECT|TEXTAREA|SUMMARY|LABEL|VIDEO|IFRAME)$/;
+  // titoli e paragrafi che il sito rende raggiungibili col tasto Tab solo per chi usa la sintesi vocale (tabindex, come
+  // nelle finestre dei cookie): non si cliccano, quindi non sono tappe; lo restano se il sito ci ascolta i clic, ci
+  // mette la manina del mouse o li fa da pulsante (ruolo, tendina)
+  var SEL_ATTIVI = SEL_NAV.replace('[tabindex]:not([tabindex="-1"]), ', '');
+  function soloDaLeggere(el) {
+    return /^(H[1-6]|P)$/.test(el.tagName) && !el.__hometvClic && !el.__hometvManina && !el.matches(SEL_ATTIVI);
+  }
   var RUOLI = /^(button|link|tab|menuitem|menuitemradio|menuitemcheckbox|option|checkbox|radio|switch|treeitem|combobox)$/;
 
   var corrente = null, ultimoRett = null, ambito = null, sottoIlMouse = null;
@@ -5317,7 +5420,7 @@
       tutti.push(e);
     }
     var q = (dentro || document).querySelectorAll(SEL_NAV);
-    for (i = 0; i < q.length; i++) metti(q[i]);
+    for (i = 0; i < q.length; i++) if (!soloDaLeggere(q[i])) metti(q[i]);
     for (i = 0; i < segnati.length; i++) if (segnati[i].isConnected) metti(segnati[i]);
     for (i = 0; i < manine.length; i++) if (manine[i].isConnected) metti(manine[i]);
     var lista = snella(tutti, visti);
@@ -5377,6 +5480,9 @@
       else { princ = dx; lat = gapY + Math.abs(dy) * 0.15; }
       // si tengono solo le 80 migliori, gia' in ordine (niente ordinamento di tutta la pagina a ogni tasto)
       var s = princ + lat * 2.5;
+      // a destra e a sinistra vince la stessa riga (la barra in alto di un sito, da un capo all'altro: non la casella di
+      // ricerca al centro, piu' in basso), salvo una cosa fuori riga molto piu' vicina
+      if ((dir === 'sx' || dir === 'dx') && r.top < rc.bottom - 2 && r.bottom > rc.top + 2) s *= 0.65;
       if (cand.length >= 80 && s >= cand[79].s) continue;
       var lo = 0, hi = cand.length;
       while (lo < hi) { var mezzo = (lo + hi) >> 1; if (cand[mezzo].s <= s) lo = mezzo + 1; else hi = mezzo; }
@@ -5484,7 +5590,7 @@
     var rc = puntoDiPartenza(sc), el;
     if (!rc) {
       el = primaVoce(lista, !!sc);
-      if (el) setFocus(el); else if (!sc) scorri(dir);
+      if (el) setFocus(el); else if (!sc && !esciDalBordo(dir)) scorri(dir);
       return;
     }
     // tornando indietro (giu' e poi su) si torna proprio da dove si era partiti
@@ -5508,8 +5614,9 @@
         if (!el) return;
       }
     }
+    if (el && el.tagName === 'IFRAME' && riquadroDaEntrare(el)) { entraNelRiquadro(el, dir, rc); ultimaMossa = { da: da, a: el, dir: dir }; return; }
     if (el) { setFocus(el); ultimaMossa = { da: da, a: el, dir: dir }; return; }
-    if (sc) scorriDentro(sc.el, dir); else scorri(dir);
+    if (sc) scorriDentro(sc.el, dir); else if (!esciDalBordo(dir)) scorri(dir);
   }
   var ultimaMossa = null, INVERSO = { su: 'giu', giu: 'su', sx: 'dx', dx: 'sx' };
 
@@ -6035,7 +6142,9 @@
       // il sito ha aperto un suo pannello fatto da un riquadro e gli ha dato il fuoco (come le app di Google): ci si
       // entra senza toccare la selezione di qui (se no il pannello si richiude)
       var af = document.activeElement;
-      if (af && af.tagName === 'IFRAME' && af !== da && !fsEl && siVede(af) && areaVisibile(af) >= 120 * 120) { fine(); entraNelRiquadro(af); return; }
+      if (af && af.tagName === 'IFRAME' && af !== da && !fsEl && siVede(af) && af.getBoundingClientRect().width >= 120 && !eLettore(af)) {
+        fine(); entraNelRiquadro(af); return;
+      }
       if (mosso) {
         mosso = false;
         var p = null;
@@ -6055,6 +6164,9 @@
     setTimeout(controlla, giri[0]);
   }
   function entraInAmbito(p, da) {
+    // il fuoco e' gia' nel riquadro del pannello (il sito gliel'ha dato): si entra li', non lo si porta via
+    var af = document.activeElement;
+    if (af && af.tagName === 'IFRAME' && p.el.contains(af) && !fsEl && !eLettore(af)) { entraNelRiquadro(af); return; }
     ambito = { el: p.el, da: da, voci: p.simili ? p.voci : null, modale: !!p.modale };
     var lista = vociDi(ambito), scelta = null;
     for (var i = 0; i < lista.length; i++) if (voceAttiva(lista[i]) && raggiungibile(lista[i], rettangolo(lista[i]))) { scelta = lista[i]; break; }
@@ -6165,7 +6277,9 @@
     '<rect x="0" y="0" width="100%" height="100%" rx="12" ry="12" fill="none" stroke="url(#hometv-colori)" stroke-width="4"/></svg>';
   function disegnaAnello() {
     var el = corrente;
-    if (!el || !el.isConnected || fsEl || pannelloAperto() || tendina || paginaDiCasa() || !document.body) {
+    // dentro un riquadro col nostro codice la scelta la mostra lui: un anello qui attorno a tutto il riquadro confonderebbe
+    var dentroLui = !!el && el.tagName === 'IFRAME' && !!el.__hometvPronto && document.activeElement === el;
+    if (!el || !el.isConnected || fsEl || pannelloAperto() || tendina || paginaDiCasa() || !document.body || dentroLui) {
       if (anello && anello.className) anello.className = '';
       anelloOra = null;
       return;
@@ -7113,6 +7227,15 @@
     if (el.tagName === 'TEXTAREA') return true;
     return el.tagName === 'INPUT' && !/^(button|submit|checkbox|radio|range|reset|image|file|hidden|color)$/i.test(el.type || '');
   }
+  // il cursore del testo e' all'inizio (sinistra) o alla fine (destra) del campo, o il campo e' vuoto
+  function alBordoDelTesto(el, dir) {
+    var v = String(el.value || '');
+    if (!v) return true;
+    var s, e;
+    try { s = el.selectionStart; e = el.selectionEnd; } catch (x) { return false; }
+    if (typeof s !== 'number' || s !== e) return false;
+    return dir === 'sx' ? s === 0 : s === v.length;
+  }
 
   // nessun campo selezionato: si cerca la casella di ricerca del sito
   function trovaCampoRicerca() {
@@ -7308,9 +7431,14 @@
   function vociPannello() {
     return [
       { testo: 'Aggiungi ai preferiti del browser', valore: '', fai: aggiungiPreferito },
-      { testo: 'Blocco pubblicita\' su questo sito', valore: bloccoAttivo ? 'Attivo' : 'Spento', fai: function () {
+      // su YouTube per la TV vale la pubblicita' di YouTube (il blocco generico li' non c'e', e il sito per computer ha la
+      // sua scelta); riaccesa, vale per la visita come dal riquadro della home
+      { testo: 'Blocco pubblicita\' su questo sito', valore: (YT_TV ? spotTvVia() : bloccoAttivo) ? 'Attivo' : 'Spento', fai: function () {
         try {
-          if (bloccoAttivo) localStorage.setItem('hometv-adblock-off', '1');
+          if (YT_TV) {
+            if (spotTvVia()) localStorage.setItem('hometv-yt-spot-off', '1');
+            else { localStorage.removeItem('hometv-yt-spot-off'); sessionStorage.setItem('hometv-yt-senza-spot', '1'); }
+          } else if (bloccoAttivo) localStorage.setItem('hometv-adblock-off', '1');
           else localStorage.removeItem('hometv-adblock-off');
         } catch (e) {}
         location.reload();
@@ -7410,6 +7538,9 @@
     }
     var a = document.activeElement;
     var staScrivendo = campoDiTesto(a);
+    // in un campo destra e sinistra muovono il cursore del testo; all'inizio (o alla fine) del testo, o nel campo vuoto, si
+    // passa alla cosa accanto, come sui TV (dalla casella di Google ai pulsanti di fianco)
+    if (staScrivendo && (azione === 'sx' || azione === 'dx') && alBordoDelTesto(a, azione)) staScrivendo = false;
     if (staScrivendo && (azione === 'sx' || azione === 'dx' || azione === 'ok')) {
       if (!daTelefono) return false; // la tastiera del TV fa il suo lavoro
       if (azione === 'ok') premiInvio(a);

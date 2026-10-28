@@ -14,8 +14,8 @@
   var IN_ANTEPRIMA = DEMO && window.top !== window.self;
 
   var MOTORI = {
-    duckduckgo: 'https://duckduckgo.com/?q=',
     google: 'https://www.google.com/search?q=',
+    duckduckgo: 'https://duckduckgo.com/?q=',
     bing: 'https://www.bing.com/search?q=',
     ecosia: 'https://www.ecosia.org/search?q='
   };
@@ -41,7 +41,7 @@
     var k = prefs.ricerca;
     if (k && MOTORI[k]) return MOTORI[k];
     if (cfg.browser && cfg.browser.ricerca) return cfg.browser.ricerca;
-    return MOTORI.duckduckgo;
+    return MOTORI.google;
   }
 
   function iniziali() { return UI.preferitiIniziali(cfg); }

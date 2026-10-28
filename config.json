@@ -4,7 +4,7 @@
   "preferite": ["Netflix", "Disney+", "Prime Video", "YouTube", "Apple TV", "DAZN", "RaiPlay", "Mediaset Infinity", "NOW", "Spotify"],
   "nascoste": [],
   "browser": {
-    "ricerca": "https://duckduckgo.com/?q=",
+    "ricerca": "https://www.google.com/search?q=",
     "preferiti": [
       { "nome": "Google", "url": "https://www.google.com/" },
       { "nome": "Wikipedia", "url": "https://it.wikipedia.org/" },
