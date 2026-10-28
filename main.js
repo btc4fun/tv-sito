@@ -399,7 +399,7 @@
   ProfiloTV.ripara(window);
   var MOTORE = ProfiloTV.motore(window);
 
-  var VERSIONE = '1.2.1';
+  var VERSIONE = '1.2.2';
   var SERVIZIO = 'http://127.0.0.1:8090';
   var IN_FRAME = false;
   try { IN_FRAME = window.top !== window.self; } catch (e) { IN_FRAME = true; }
@@ -3499,6 +3499,133 @@
     ldVistoChiave = chiave;
     return out;
   }
+  // Stagione e puntata quando il sito non le scrive nei titoli ne' nell'indirizzo: dove altro le mostra. I dati del video
+  // per il sistema (Media Session), le scritte del lettore attorno al video ("S1:E3 Il ritorno"), la puntata segnata
+  // nell'elenco con la stagione scelta, il titolo del riquadro del video (spesso il nome del file, "Serie.S01E03").
+  // Solo testi corti, rifatti al massimo ogni 15 secondi per pagina e video (il lettore li chiede spesso)
+  var RE_PUNTATA_SCRITTA = /\bs\d{1,2}\s{0,3}[ .:\-_\u00b7\u2022]?\s{0,3}e(?:p\.?)?\s{0,3}\d{1,4}\b|\b(?:episodi[oa]|episode|puntata|ep\.?)\s*n?\.?\s*\d{1,4}\b/i;
+  // la stessa cosa nei testi attaccati di un elenco ("S1:E2Il ritorno"): per riconoscere le voci delle puntate
+  var RE_PUNTATA_IN_ELENCO = /s\d{1,2}\s{0,3}[ .:\-_\u00b7\u2022]?\s{0,3}e(?:p\.?)?\s{0,3}\d|(?:episodi[oa]|episode|puntata)\s*n?\.?\s*\d|\bep\.?\s*\d/i;
+  var NON_QUESTA = /prossim|successiv|seguente|precedente|\bnext\b|\bprev/i;
+  var RE_STAGIONE_SCELTA = /^(?:stagione|season|stag\.?)\s*0*(\d{1,2})(?!\d)/i;
+  var altroVisto = null, altroVistoChiave = '', altroVistoQuando = 0;
+  function sessioneMedia() {
+    var m = navigator.mediaSession && navigator.mediaSession.metadata;
+    var t = m ? [m.title, m.artist, m.album].filter(function (x) { return typeof x === 'string' && !!x; }).join(' - ') : '';
+    return RE_PUNTATA_SCRITTA.test(t) && !NON_QUESTA.test(t) ? t : '';
+  }
+  // il testo coi pezzi separati da uno spazio ("3" e "Il ritorno" non diventano "3Il ritorno"), senza far ridisegnare la
+  // pagina al TV (innerText lo farebbe)
+  function testoLetto(el) {
+    if (typeof document.createTreeWalker !== 'function') return testoBreve(el).slice(0, 200);
+    var out = [], w = document.createTreeWalker(el, 4, null, false), n, k = 0, lung = 0, t;
+    while ((n = w.nextNode()) && k++ < 60 && lung < 200) {
+      t = String(n.nodeValue || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+      if (t) { out.push(t); lung += t.length + 1; }
+    }
+    return out.join(' ').slice(0, 200);
+  }
+  // dentro un elenco di puntate? (almeno tre voci corte vicine, dello stesso tipo, che dicono una puntata: il titolo del
+  // lettore con accanto "Prossimo episodio" sono due)
+  function nellElencoPuntate(el) {
+    for (var n = el, i = 0; n && n.parentElement && n !== document.body && i < 6; n = n.parentElement, i++) {
+      var simili = 0, conta = 0;
+      for (var c = n.parentElement.firstElementChild; c && simili < 3 && conta < 40; c = c.nextElementSibling, conta++) {
+        var t = c.tagName === n.tagName ? String(c.textContent || '') : '';
+        if (t && t.length <= 300 && RE_PUNTATA_IN_ELENCO.test(t) && !altraPuntata(c)) simili++;
+      }
+      if (simili >= 3) return true;
+    }
+    return false;
+  }
+  // "Prossimo episodio", "Episodio precedente": nel testo corto o nel nome della classe
+  function altraPuntata(n) {
+    var t = String(n.textContent || '');
+    return (t.length <= 80 && NON_QUESTA.test(t)) ||
+      /next|prossim|success|seguent|prev(?!iew)|preced/i.test((typeof n.className === 'string' ? n.className : '') + ' ' + (n.id || ''));
+  }
+  // fa parte di una di quelle? (lei o un contenitore vicino)
+  function versoAltra(el) {
+    for (var n = el, i = 0; n && n !== document.body && i < 4; n = n.parentElement, i++) if (altraPuntata(n)) return true;
+    return false;
+  }
+  // le scritte del lettore del sito attorno al video: la prima che dice la puntata (non "Prossimo episodio", non una
+  // voce di un elenco di puntate)
+  function scritteDelLettore(v) {
+    if (!v || !v.parentElement || typeof document.createTreeWalker !== 'function') return '';
+    var su = v.parentElement, i, n, t, el, conta = 0;
+    for (i = 0; i < 6 && su.parentElement && su.parentElement !== document.body && su.parentElement !== document.documentElement; i++) {
+      if (String(su.parentElement.textContent || '').length > 2000) break;
+      su = su.parentElement;
+    }
+    var w = document.createTreeWalker(su, 4, null, false); // 4: solo i testi
+    while ((n = w.nextNode()) && conta++ < 400) {
+      t = String(n.nodeValue || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+      if (t.length < 2 || t.length > 140 || !RE_PUNTATA_SCRITTA.test(t) || NON_QUESTA.test(t)) continue;
+      el = n.parentElement;
+      if (!el || (el.closest && el.closest('[id^="hometv-"]')) || versoAltra(el) || nellElencoPuntate(el)) continue;
+      return t;
+    }
+    return '';
+  }
+  // la stagione scelta nel sito: la voce scelta di un menu, la linguetta segnata o il solo pulsante "Stagione 2" visibile
+  function stagioneScelta() {
+    var i, t, m, el, cur, quante = 0, trovata = '';
+    var sel = document.querySelectorAll('select');
+    for (i = 0; i < sel.length && i < 20; i++) {
+      var o = sel[i].selectedIndex >= 0 && sel[i].options ? sel[i].options[sel[i].selectedIndex] : null;
+      if (o && (m = RE_STAGIONE_SCELTA.exec(testoBreve(o)))) return 'Stagione ' + m[1];
+    }
+    var c = document.querySelectorAll('[aria-selected="true"], [aria-current], [aria-pressed="true"], [class*="active"], [class*="selected"], [class*="current"], [class*="attiv"]');
+    for (i = 0; i < c.length && i < 300; i++) {
+      el = c[i];
+      cur = el.getAttribute('aria-current');
+      if (cur === 'false' || (el.id && el.id.indexOf('hometv-') === 0)) continue;
+      if (el.getAttribute('aria-selected') !== 'true' && el.getAttribute('aria-pressed') !== 'true' && cur === null &&
+        !CORRENTE.test(typeof el.className === 'string' ? el.className : '')) continue;
+      t = testoBreve(el);
+      if (t.length <= 30 && (m = RE_STAGIONE_SCELTA.exec(t))) return 'Stagione ' + m[1];
+    }
+    var b = document.querySelectorAll('button, [role="button"], [role="combobox"], [aria-haspopup], summary');
+    for (i = 0; i < b.length && i < 300; i++) {
+      t = testoBreve(b[i]);
+      if (t.length <= 30 && (m = RE_STAGIONE_SCELTA.exec(t)) && episodioVisibile(b[i])) { quante++; trovata = 'Stagione ' + m[1]; }
+    }
+    return quante === 1 ? trovata : '';
+  }
+  // il primo pezzo di testo di un elemento ("3" in <span>3</span><span>La casa</span>)
+  function primoTesto(el) {
+    if (typeof document.createTreeWalker !== 'function') return '';
+    var w = document.createTreeWalker(el, 4, null, false), n, k = 0, t;
+    while ((n = w.nextNode()) && k++ < 20) if ((t = String(n.nodeValue || '').replace(/^\s+|\s+$/g, ''))) return t;
+    return '';
+  }
+  // il numero davanti a una voce: "E3 La casa", "3. La casa", "3 - La casa"; o un primo pezzo che e' solo il numero
+  var RE_NUMERO_VOCE = /^(?:e(?:p\.?)?\s*0*(\d{1,3})\b|0*(\d{1,3})\s*[.:)\-\u2013])/i;
+  var RE_SOLO_NUMERO = /^(?:e(?:p\.?)?)?\s*0*(\d{1,3})\s*[.:)\-\u2013]?$/i;
+  // la puntata segnata nell'elenco del sito ("Episodio 3", "3. Il ritorno", "E3"), con la stagione scelta davanti
+  function puntataSegnata() {
+    var voce = puntataInCorso();
+    if (!voce) return '';
+    var t = testoLetto(voce), m, ep = '';
+    if (RE_PUNTATA_SCRITTA.test(t)) ep = t.slice(0, 120);
+    else if ((m = RE_NUMERO_VOCE.exec(t) || RE_SOLO_NUMERO.exec(primoTesto(voce)))) ep = 'Episodio ' + (m[1] || m[2]);
+    if (!ep || NON_QUESTA.test(ep)) return '';
+    if (/\bs\d{1,2}\s{0,3}[ .:\-_\u00b7\u2022]?\s{0,3}e|stagion|season/i.test(ep)) return ep;
+    var st = stagioneScelta();
+    return st ? st + ' ' + ep : ep;
+  }
+  function altroDiQui() {
+    var chiave = location.href + '|' + videoDi(lettoreVideo);
+    if (altroVisto && altroVistoChiave === chiave && Date.now() - altroVistoQuando < 15000) return altroVisto;
+    function prova(fn) { try { return fn() || ''; } catch (e) { return ''; } }
+    var out = [prova(sessioneMedia), prova(function () { return scritteDelLettore(lettoreVideo); }), prova(puntataSegnata),
+      IN_FRAME ? [document.title, metaDi('meta[property="og:title"]')].filter(function (x) { return !!x; }).join(' - ') : ''];
+    altroVisto = out.filter(function (x) { return !!x; }).map(function (x) { return String(x).slice(0, 300); });
+    altroVistoChiave = chiave;
+    altroVistoQuando = Date.now();
+    return altroVisto;
+  }
   // tutto quello che dice cosa si sta guardando
   function raccogliPagina(succ) {
     var p, k;
@@ -3509,6 +3636,8 @@
       for (k in serieSito.pagina) if (Object.prototype.hasOwnProperty.call(serieSito.pagina, k)) p[k] = serieSito.pagina[k];
       p.video = location.href.split('#')[0].slice(0, 500); // il video e' quello di questo riquadro
       if (!p.immagine && lettoreVideo && /^https?:/i.test(lettoreVideo.poster || '') && lettoreVideo.poster.length <= 2000) p.immagine = lettoreVideo.poster;
+      // stagione e puntata dette qui dentro (il lettore), poi quelle della pagina che lo contiene
+      p.altro = altroDiQui().concat(Array.isArray(p.altro) ? p.altro : []).slice(0, 6);
       return p;
     }
     var h = document.querySelector('h1'), ld = datiStrutturati(), qui = location.href;
@@ -3517,8 +3646,8 @@
       video: videoDi(lettoreVideo),
       ogSito: metaDi('meta[property="og:site_name"]'), ld: ld,
       h1: h ? String(h.textContent || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '').slice(0, 200) : '',
-      lettore: lettore && lettoreVideo ? String(pezzo('hl-titolo').textContent || '').slice(0, 200) : '',
-      immagine: metaDi('meta[property="og:image"]') || ld.immagine || (lettoreVideo && lettoreVideo.poster) || '' };
+      lettore: lettore && lettoreVideo ? String(pezzo('hl-titolo').textContent || '').slice(0, 200) : '', altro: altroDiQui(),
+      immagine:metaDi('meta[property="og:image"]') || ld.immagine || (lettoreVideo && lettoreVideo.poster) || '' };
     if (p.immagine && !/^https?:/i.test(p.immagine)) { try { p.immagine = new URL(p.immagine, location.href).href; } catch (e) { p.immagine = ''; } }
     if (p.immagine.length > 2000) p.immagine = '';
     var s = succ === undefined ? serie.succ : succ;

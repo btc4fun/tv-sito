@@ -173,6 +173,8 @@ var UI = (function () {
   }
   function emit(action, ev) {
     var h = handlers[handlers.length - 1];
+    // l'ultima volta che ci si e' spostati con le frecce (telecomando, telefono, due dita): vedi scorriPuntatore
+    if (action === 'up' || action === 'down' || action === 'left' || action === 'right') pt.frecceAt = Date.now();
     if (h) h(action, ev);
   }
 
@@ -434,6 +436,7 @@ var UI = (function () {
   }
   function muoviPuntatore(dx, dy) {
     if (!mostraPuntatore()) return;
+    pt.mossoAt = Date.now();
     var w = window.innerWidth, h = window.innerHeight, k = w / PT_RIF;
     var nx = pt.x + dx * k, ny = pt.y + dy * k;
     var oltre = ny < 0 ? ny : (ny > h - 1 ? ny - (h - 1) : 0);
@@ -580,11 +583,15 @@ var UI = (function () {
     var PASSO = PASSO_UI, ora = Date.now();
     if (!dalBordo) fermaBordo();
     // gesto nuovo: la pagina sa dove e' il puntatore (in orizzontale scorre la fila che c'e' sotto). Per il bordo che
-    // scorre di lato lo dice lui (filaNuova)
+    // scorre di lato lo dice lui (filaNuova). Solo se il puntatore si e' mosso dopo l'ultima freccia: scesi con le due
+    // dita o con la striscia, il puntatore e' rimasto sulla fila di prima e destra scorre la fila dove si e'
     if (dalBordo && dx ? filaNuova : ora - (pt.scorriAt || 0) > 400) {
       pt.sx = 0; pt.sy = 0;
-      var sotto = Math.abs(dx) > Math.abs(dy) ? sottoAllaFila(dx) : null;
-      if (!sotto) { try { sotto = document.elementFromPoint(pt.x, pt.y); } catch (e) {} }
+      var sotto = null;
+      if (dalBordo || (pt.mossoAt || 0) > (pt.frecceAt || 0)) {
+        sotto = Math.abs(dx) > Math.abs(dy) ? sottoAllaFila(dx) : null;
+        if (!sotto) { try { sotto = document.elementFromPoint(pt.x, pt.y); } catch (e) {} }
+      }
       if (sotto) { try { sotto.dispatchEvent(new CustomEvent('hometvscorri', { bubbles: true, detail: { dx: dx, dy: dy } })); } catch (e) {} }
     }
     // la spinta in alto o in basso si somma solo per poco: un resto vecchio piu' un tremolio non cambiano fila dopo

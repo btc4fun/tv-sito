@@ -438,7 +438,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.2.1';
+  var VERSION = '1.2.2';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
 
   var SHARE = '/home/owner/share';
@@ -1514,9 +1514,9 @@
     for (var k in A.m) if (Object.prototype.hasOwnProperty.call(B.m, k)) comuni += Math.min(A.m[k], B.m[k]);
     return 2 * comuni / (A.n + B.n);
   }
-  // stagione e puntata: S01E05, 1x05, Stagione 1 Episodio 5, Season 1 Episode 5, Stag. 1 Ep. 5...
+  // stagione e puntata: S01E05, S1 \u00b7 E5, 1x05, Stagione 1 Episodio 5, Season 1 Episode 5, Stag. 1 Ep. 5...
   var RE_SE = [
-    /\bs(\d{1,2})\s{0,3}[ .:\-_]?\s{0,3}e(?:p\.?)?\s{0,3}(\d{1,4})\b/i,
+    /\bs(\d{1,2})\s{0,3}[ .:\-_\u00b7\u2022]?\s{0,3}e(?:p\.?)?\s{0,3}(\d{1,4})\b/i,
     /\b(\d{1,2})\s{0,3}[x\u00d7]\s{0,3}(\d{1,4})\b/i,
     /\b(?:stagione|stag\.?|st\.?|season)\s*(\d{1,2})\b[^0-9]{0,24}?\b(?:episodio|episode|puntata|ep\.?|e)\s*(\d{1,4})\b/i
   ];
@@ -1574,8 +1574,25 @@
     function n(x) { x = Number(x); return isFinite(x) && x > 0 && x < 100000 ? Math.floor(x) : 0; }
     return { url: p.url, titolo: testo(p.titolo, 300), og: testo(p.og, 400), ogSito: testo(p.ogSito, 80), h1: testo(p.h1, 200),
       lettore: testo(p.lettore, 200), video: testo(p.video, 500), immagine: urlValido(p.immagine) ? p.immagine : '',
-      prossimo: urlValido(p.prossimo) ? p.prossimo : '',
+      prossimo: urlValido(p.prossimo) ? p.prossimo : '', altro: altroPulito(p.altro),
       ld: { nome: testo(ld.nome, 200), serie: testo(ld.serie, 200), episodio: n(ld.episodio), stagione: n(ld.stagione), anno: n(ld.anno) } };
+  }
+  // dove altro la pagina dice la puntata (le scritte del lettore, la puntata segnata nell'elenco, il riquadro del video):
+  // al massimo 6 testi corti
+  function altroPulito(a) {
+    var out = [];
+    if (Array.isArray(a)) for (var i = 0; i < a.length && out.length < 6; i++) if (typeof a[i] === 'string' && a[i]) out.push(testo(a[i], 300));
+    return out;
+  }
+  // stagione e puntata nelle domande dell'indirizzo, solo coi nomi giusti: ?season=1&episode=5, ?stagione=1&episodio=5,
+  // ?s=1&e=5 (tutti e due), ?episode=5 da solo. "e" o "ep" da soli sono spesso il codice della puntata, non il numero
+  function domandeSE(u) {
+    var q = senzaAncoraVera(u), k = q.indexOf('?');
+    if (k === -1) return null;
+    q = q.slice(k);
+    var s = /[?&](?:season|stagione|s)=0*(\d{1,2})(?=&|#|$)/i.exec(q), e = /[?&](?:episode|episodio|ep|e)=0*(\d{1,3})(?=&|#|$)/i.exec(q);
+    if (!e || !(+e[1] > 0) || (!s && !/[?&](?:episode|episodio)=/i.test(q))) return null;
+    return { s: s ? +s[1] || null : null, e: +e[1] };
   }
   // l'indirizzo di quello che guardi: senza l'ancora, ma i siti fatti a "#/percorso" la tengono (e' la pagina)
   function senzaAncoraVera(u) {
@@ -1620,6 +1637,9 @@
       x = trovaSE(via.replace(/[\/\-_+.#!]+/g, ' '));
       if (x) { se = { s: x.s, e: x.e }; daUrl = ' ' + parole(via).join(' ') + ' '; }
     }
+    // poi le domande dell'indirizzo e quello che la pagina dice altrove: da li' solo i numeri, il nome resta dei titoli
+    if (!se) se = domandeSE(p.url);
+    for (i = 0; i < (p.altro || []).length && !se; i++) { x = trovaSE(p.altro[i]); if (x) se = { s: x.s, e: x.e }; }
     var anno = ld.anno > 1900 ? +ld.anno : null;
     if (se) {
       if (!nome || !chiaveDi(nome, frasi)) {
@@ -1697,10 +1717,23 @@
       e = visti[i];
       if (!stessoPosto(e, p)) continue;
       if (id.episodio == null ? Math.abs((e.durata || 0) - id.durata) <= 3 : (e.episodio === id.episodio && stessaStagione(e, id))) return e;
+      // lo stesso video di una scheda fatta quando stagione e puntata non si leggevano: e' lei, adesso con la puntata
+      if (e.episodio == null && Math.abs((e.durata || 0) - id.durata) <= 3) return e;
     }
     // la stessa opera su un'altra pagina: dello stesso sito (con l'opzione anche di un altro, e la scheda passa a lui)
-    for (i = 0; i < visti.length; i++) if (sitoBuono(visti[i], p) && stessaOpera(visti[i], id)) return visti[i];
+    for (i = 0; i < visti.length; i++) if (sitoBuono(visti[i], p) && (stessaOpera(visti[i], id) || serieDiPrima(visti[i], id, p))) return visti[i];
     return null;
+  }
+  // una scheda fatta quando stagione e puntata di quel sito non si leggevano: un'altra puntata della stessa serie, sullo
+  // stesso sito (stesso nome, durata simile), la aggiorna invece di farne una seconda
+  function serieDiPrima(e, id, p) {
+    if (e.episodio != null || id.episodio == null || !id.chiave || !stessoSito(hostLink(e.url), hostLink(p.url))) return false;
+    if (e.anno && id.anno && e.anno !== id.anno) return false;
+    var chiavi = (e.chiavi || []).concat([e.chiave]), s = 0;
+    for (var i = 0; i < chiavi.length; i++) {
+      if (chiavi[i] && numeriDi(chiavi[i]) === numeriDi(id.chiave) && !paroleInPiu(chiavi[i], id.chiave)) s = Math.max(s, somiglianza(chiavi[i], id.chiave));
+    }
+    return s >= 0.9 && !!(e.durata && id.durata) && Math.abs(e.durata - id.durata) / Math.max(e.durata, id.durata) <= 0.15;
   }
   function registraVisto(b) {
     var p = paginaPulita(b.pagina);
@@ -1726,8 +1759,13 @@
       visti.splice(visti.indexOf(e), 1);
       visti.unshift(e);
     }
+    // lo stesso video di prima: stagione e puntata gia' sapute restano anche se questa volta la pagina non le dice
+    if (id.episodio == null && e.episodio != null && stessoPosto(e, p) && Math.abs((e.durata || 0) - id.durata) <= 3) {
+      id.stagione = e.stagione;
+      id.episodio = e.episodio;
+    }
     // stessa puntata di prima (anche su un altro sito, con l'opzione): vale la puntata dopo saputa prima
-    var stessaDiPrima = !!e.url && id.episodio != null && e.episodio === id.episodio && stessaStagione(e, id);
+    var stessaDiPrima =!!e.url && id.episodio != null && e.episodio === id.episodio && stessaStagione(e, id);
     if (e.chiave && e.chiave !== id.chiave && (e.chiavi || []).indexOf(e.chiave) === -1) e.chiavi = (e.chiavi || []).concat([e.chiave]).slice(-4);
     e.chiave = id.chiave;
     e.nome = id.nome;
@@ -1768,8 +1806,9 @@
     for (i = 0; i < visti.length; i++) {
       e = visti[i];
       if (e.finito || !(e.posizione >= MIN_VISTO) || e.posizione > dur - 60) continue;
+      // lo stesso video (stessa pagina, stessa durata), anche se una delle due volte stagione e puntata non si leggevano
       if (urlNorm(e.url) === u && stessoVideoDi(e, p) && Math.abs((e.durata || 0) - dur) <= 2 &&
-        (id.episodio == null || (e.episodio === id.episodio && stessaStagione(e, id)))) {
+        (id.episodio == null || e.episodio == null || (e.episodio === id.episodio && stessaStagione(e, id)))) {
         out.stesso = { posizione: e.posizione };
         return out;
       }
@@ -2088,6 +2127,9 @@
     } else if (tipo === 'home') {
       aggiungiEvento({ tipo: 'home' });
       apriHome('tasto Home del telefono'); // funziona anche da Netflix e dalle altre app
+    } else if (tipo === 'permesso') {
+      // dal telecomando del telefono: il TV chiede di nuovo "Consenti" per i tasti veri (si sceglie col telecomando del TV)
+      chiediPermessoRemoto();
     } else return 'comando sconosciuto';
     return '';
   }
@@ -3188,8 +3230,11 @@
     '  .velo { position: fixed; left: 0; top: 0; right: 0; bottom: 0; z-index: 8; background: rgba(0,0,0,.55); opacity: 0;',
     '    pointer-events: none; transition: opacity .25s ease; }',
     '  .velo.aperto { opacity: 1; pointer-events: auto; }',
+    '  /* mai piu\' alti dello schermo: quello che non ci sta si scorre dentro */',
     '  .foglio { position: fixed; left: 0; right: 0; z-index: 9; max-width: 460px; margin: 0 auto; background: #15171d;',
-    '    border: 1px solid var(--line); transition: transform .3s cubic-bezier(.2,.8,.2,1); }',
+    '    border: 1px solid var(--line); transition: transform .3s cubic-bezier(.2,.8,.2,1);',
+    '    max-height: calc(100vh - 36px); max-height: calc(100dvh - 36px); overflow-y: auto; -webkit-overflow-scrolling: touch;',
+    '    overscroll-behavior: contain; }',
     '  .foglio.giu { bottom: 0; border-radius: 26px 26px 0 0; padding: 10px 18px calc(env(safe-area-inset-bottom) + 20px);',
     '    transform: translateY(105%); box-shadow: 0 -20px 60px rgba(0,0,0,.55); }',
     '  .foglio.su { top: 0; border-radius: 0 0 26px 26px; padding: calc(env(safe-area-inset-top) + 18px) 18px 18px;',
@@ -3200,27 +3245,47 @@
     '  .gruppo { margin-bottom: 18px; }',
     '  .gruppo:last-child { margin-bottom: 0; }',
     '  .etichetta { font-size: 11px; font-weight: 600; color: var(--text-3); letter-spacing: .08em; text-transform: uppercase; margin: 0 4px 8px; }',
-    '  .bilanciere { display: grid; grid-template-columns: 1fr 1fr 1fr; height: 54px; border-radius: 16px; overflow: hidden;',
+    '  .foglio-testa { display: flex; align-items: center; justify-content: space-between; margin: 0 0 12px; }',
+    '  .foglio-testa .foglio-titolo { margin: 0 2px; }',
+    '  .chiudi { width: 40px; height: 40px; border-radius: 50%; background: var(--surface-2); border: 1px solid var(--line);',
+    '    color: var(--text-2); font-size: 22px; line-height: 1; display: flex; align-items: center; justify-content: center; }',
+    '  /* il permesso del TV per i tasti veri: finche\' manca, in cima al telecomando */',
+    '  .permesso { margin: 0 0 14px; padding: 12px 14px; border-radius: 16px; background: rgba(59,130,246,.12);',
+    '    border: 1px solid rgba(59,130,246,.35); }',
+    '  .permesso p { margin: 0; font-size: 14px; line-height: 1.35; }',
+    '  .permesso p.permesso-aiuto { margin-top: 8px; font-size: 12.5px; color: var(--text-2); }',
+    '  /* come un telecomando: volume a sinistra, numeri al centro, canali a destra */',
+    '  .telecomando { display: grid; grid-template-columns: 62px minmax(0, 1fr) 62px; gap: 10px; }',
+    '  .telecomando .etichetta { text-align: center; margin: 0 0 8px; }',
+    '  .rocca { display: flex; flex-direction: column; height: 200px; border-radius: 31px; overflow: hidden;',
     '    background: var(--surface-2); border: 1px solid var(--line); }',
-    '  .bilanciere button { display: flex; align-items: center; justify-content: center; transition: background-color .08s ease; }',
-    '  .bilanciere button + button { border-left: 1px solid var(--line); }',
-    '  .bilanciere svg { width: 24px; height: 24px; fill: var(--text); }',
-    '  .bilanciere .press { background: var(--surface-3); }',
+    '  .rocca button { flex: 1; display: flex; align-items: center; justify-content: center; transition: background-color .08s ease; }',
+    '  .rocca button + button { border-top: 1px solid var(--line); }',
+    '  .rocca svg { width: 24px; height: 24px; fill: var(--text); }',
+    '  .rocca b { font-size: 13px; font-weight: 700; }',
+    '  .rocca .press { background: var(--surface-3); }',
+    '  .funzioni { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 16px; }',
+    '  .funzioni button { min-height: 60px; padding: 8px 4px; border-radius: 16px; background: var(--surface-2); border: 1px solid var(--line);',
+    '    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 12px;',
+    '    font-weight: 600; line-height: 1.15; text-align: center; transition: transform .08s ease, background-color .08s ease; }',
+    '  .funzioni svg { width: 20px; height: 20px; fill: var(--text); }',
+    '  .funzioni .press { background: var(--surface-3); transform: scale(.97); }',
     '  .coppia { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }',
+    '  .coppia.video { margin: 14px 0 16px; }',
+    '  .coppia.video .pillola { height: 46px; }',
     '  .pillola { height: 52px; border-radius: 16px; background: var(--surface-2); border: 1px solid var(--line); display: flex; align-items: center;',
     '    justify-content: center; gap: 9px; font-size: 15px; font-weight: 600; transition: transform .08s ease, background-color .08s ease; }',
     '  .pillola svg { width: 20px; height: 20px; fill: var(--text); }',
     '  .pillola.press { background: var(--surface-3); transform: scale(.97); }',
     '  .colori { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }',
-    '  .colori button { height: 46px; border-radius: 16px; background: var(--surface-2); border: 1px solid var(--line);',
+    '  .colori button { height: 40px; border-radius: 16px; background: var(--surface-2); border: 1px solid var(--line);',
     '    display: flex; align-items: center; justify-content: center; transition: background-color .08s ease; }',
     '  .colori i { display: block; width: 20px; height: 20px; border-radius: 50%; }',
     '  .colori .press { background: var(--surface-3); }',
-    '  .bilanciere b { font-size: 15px; font-weight: 700; }',
-    '  .tastierino { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }',
-    '  .tastierino button { height: 48px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--line);',
+    '  .tastierino { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }',
+    '  .tastierino button { height: 44px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--line);',
     '    font-size: 21px; font-weight: 600; transition: background-color .08s ease; }',
-    '  .tastierino button.piccolo { font-size: 13px; }',
+    '  .tastierino button.piccolo { padding: 0 2px; font-size: 11.5px; line-height: 1.1; }',
     '  .tastierino .press { background: var(--surface-3); }',
     '  .coppia + .coppia { margin-top: 10px; }',
     '  .secondario { display: block; width: 100%; height: 46px; margin-top: 10px; border-radius: 14px; font-weight: 600; font-size: 15px;',
@@ -3349,51 +3414,54 @@
     '',
     '<div id="velo" class="velo" hidden></div>',
     '',
-    '<div id="foglio-altro" class="foglio giu" hidden role="dialog" aria-label="Altri tasti">',
+    '<div id="foglio-altro" class="foglio giu" hidden role="dialog" aria-label="Telecomando del TV">',
     '  <div class="maniglia"></div>',
-    '  <div class="gruppo">',
-    '    <div class="etichetta">Volume</div>',
-    '    <div class="bilanciere">',
-    '      <button data-tasto="volGiu" aria-label="Volume gi&ugrave;"><svg viewBox="0 0 24 24"><path d="M3 9h4l5-4v14l-5-4H3zm12.5 2h6v2h-6z"/></svg></button>',
-    '      <button data-tasto="muto" aria-label="Muto"><svg viewBox="0 0 24 24"><path d="M3 9h4l5-4v14l-5-4H3zm12.6.2L17 10.6l1.4-1.4 1.4 1.4-1.4 1.4 1.4 1.4-1.4 1.4-1.4-1.4-1.4 1.4-1.4-1.4 1.4-1.4-1.4-1.4z"/></svg></button>',
-    '      <button data-tasto="volSu" aria-label="Volume su"><svg viewBox="0 0 24 24"><path d="M3 9h4l5-4v14l-5-4H3zm14-1h2v3h3v2h-3v3h-2v-3h-3v-2h3z"/></svg></button>',
+    '  <div class="foglio-testa"><div class="foglio-titolo">Telecomando del TV</div><button class="chiudi chiude" aria-label="Chiudi">&times;</button></div>',
+    '  <div id="permesso" class="permesso" hidden>',
+    '    <p id="permesso-testo">Volume, canali, numeri e i tasti del televisore funzionano dopo il permesso del TV (una volta sola).</p>',
+    '    <button id="chiedi-permesso" class="secondario">Chiedi il permesso al TV</button>',
+    '    <p id="permesso-aiuto" class="permesso-aiuto" hidden>Se il TV non chiede niente: sul TV Impostazioni &rarr; Tutte le impostazioni &rarr; Connessione &rarr; Gestione dispositivi esterni &rarr; Gestione connessione dispositivi &rarr; Elenco dispositivi, e su <b>Home TV</b> scegli Consenti.</p>',
+    '  </div>',
+    '  <div class="telecomando">',
+    '    <div>',
+    '      <div class="etichetta">Volume</div>',
+    '      <div class="rocca">',
+    '        <button data-tasto="volSu" aria-label="Volume su"><svg viewBox="0 0 24 24"><path d="M3 9h4l5-4v14l-5-4H3zm14-1h2v3h3v2h-3v3h-2v-3h-3v-2h3z"/></svg></button>',
+    '        <button data-tasto="muto" aria-label="Muto"><svg viewBox="0 0 24 24"><path d="M3 9h4l5-4v14l-5-4H3zm12.6.2L17 10.6l1.4-1.4 1.4 1.4-1.4 1.4 1.4 1.4-1.4 1.4-1.4-1.4-1.4 1.4-1.4-1.4 1.4-1.4-1.4-1.4z"/></svg></button>',
+    '        <button data-tasto="volGiu" aria-label="Volume gi&ugrave;"><svg viewBox="0 0 24 24"><path d="M3 9h4l5-4v14l-5-4H3zm12.5 2h6v2h-6z"/></svg></button>',
+    '      </div>',
+    '    </div>',
+    '    <div>',
+    '      <div class="etichetta">Numeri</div>',
+    '      <div class="tastierino">',
+    '        <button data-tasto="n1">1</button><button data-tasto="n2">2</button><button data-tasto="n3">3</button>',
+    '        <button data-tasto="n4">4</button><button data-tasto="n5">5</button><button data-tasto="n6">6</button>',
+    '        <button data-tasto="n7">7</button><button data-tasto="n8">8</button><button data-tasto="n9">9</button>',
+    '        <button class="piccolo chiude" data-tasto="listaCanali">Lista canali</button><button data-tasto="n0">0</button>',
+    '        <button class="piccolo chiude" data-tasto="guida">Guida</button>',
+    '      </div>',
+    '    </div>',
+    '    <div>',
+    '      <div class="etichetta">Canali</div>',
+    '      <div class="rocca">',
+    '        <button data-tasto="canaleSu" aria-label="Canale su"><svg viewBox="0 0 24 24"><path d="M6.4 15.6L12 10l5.6 5.6 1.4-1.4-7-7-7 7z"/></svg></button>',
+    '        <button data-tasto="canalePrima" aria-label="Canale di prima"><b>Prima</b></button>',
+    '        <button data-tasto="canaleGiu" aria-label="Canale gi&ugrave;"><svg viewBox="0 0 24 24"><path d="M6.4 8.4L12 14l5.6-5.6 1.4 1.4-7 7-7-7z"/></svg></button>',
+    '      </div>',
     '    </div>',
     '  </div>',
-    '  <div class="gruppo">',
-    '    <div class="etichetta">Avanti e indietro</div>',
-    '    <div class="coppia">',
-    '      <button class="pillola" data-tasto="indietroVeloce"><svg viewBox="0 0 24 24"><path d="M11 6v12l-8-6zm9 0v12l-8-6z"/></svg>&minus;30 s</button>',
-    '      <button class="pillola" data-tasto="avanti">+30 s<svg viewBox="0 0 24 24"><path d="M13 6v12l8-6zM4 6v12l8-6z"/></svg></button>',
-    '    </div>',
+    '  <div class="coppia video">',
+    '    <button class="pillola" data-tasto="indietroVeloce"><svg viewBox="0 0 24 24"><path d="M11 6v12l-8-6zm9 0v12l-8-6z"/></svg>&minus;30 s</button>',
+    '    <button class="pillola" data-tasto="avanti">+30 s<svg viewBox="0 0 24 24"><path d="M13 6v12l8-6zM4 6v12l8-6z"/></svg></button>',
     '  </div>',
-    '  <div class="gruppo">',
-    '    <div class="etichetta">Canali</div>',
-    '    <div class="bilanciere">',
-    '      <button data-tasto="canaleGiu" aria-label="Canale gi&ugrave;"><b>CH &minus;</b></button>',
-    '      <button data-tasto="canalePrima" aria-label="Canale di prima"><b>Prima</b></button>',
-    '      <button data-tasto="canaleSu" aria-label="Canale su"><b>CH +</b></button>',
-    '    </div>',
-    '  </div>',
-    '  <div class="gruppo">',
-    '    <div class="etichetta">Numeri</div>',
-    '    <div class="tastierino">',
-    '      <button data-tasto="n1">1</button><button data-tasto="n2">2</button><button data-tasto="n3">3</button>',
-    '      <button data-tasto="n4">4</button><button data-tasto="n5">5</button><button data-tasto="n6">6</button>',
-    '      <button data-tasto="n7">7</button><button data-tasto="n8">8</button><button data-tasto="n9">9</button>',
-    '      <button class="piccolo chiude" data-tasto="listaCanali">Lista canali</button><button data-tasto="n0">0</button>',
-    '      <button class="piccolo chiude" data-tasto="guida">Guida</button>',
-    '    </div>',
-    '  </div>',
-    '  <div class="gruppo">',
-    '    <div class="etichetta">Televisore</div>',
-    '    <div class="coppia">',
-    '      <button class="pillola chiude" data-tasto="blu"><svg viewBox="0 0 24 24"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>Menu</button>',
-    '      <button class="pillola chiude" data-tasto="homeTv" aria-label="Home del TV (Samsung)"><svg viewBox="0 0 24 24"><path d="M3 5h18v11H3zm2 2v7h14V7zm4 11h6v2H9z"/></svg>Home del TV</button>',
-    '      <button class="pillola chiude" data-tasto="sorgente" aria-label="Sorgente (HDMI, antenna)"><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4zm2 2v6h12V9zM9 3l3 3 3-3z"/></svg>Sorgente</button>',
-    '      <button class="pillola chiude" data-tasto="menuTv" aria-label="Impostazioni del TV"><svg viewBox="0 0 24 24"><path d="M12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7zM10.6 2h2.8l.5 2.6 1.8.8 2.2-1.5 2 2-1.5 2.2.8 1.8 2.6.5v2.8l-2.6.5-.8 1.8 1.5 2.2-2 2-2.2-1.5-1.8.8-.5 2.6h-2.8l-.5-2.6-1.8-.8-2.2 1.5-2-2 1.5-2.2-.8-1.8L2 13.4v-2.8l2.6-.5.8-1.8-1.5-2.2 2-2 2.2 1.5 1.8-.8z"/></svg>Impostazioni TV</button>',
-    '      <button class="pillola chiude" data-tasto="info" aria-label="Info"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm-1 8v7h2v-7zm0-4v2h2V6z"/></svg>Info</button>',
-    '      <button class="pillola chiude" data-tasto="esci" aria-label="Esci"><svg viewBox="0 0 24 24"><path d="M6.4 5L12 10.6 17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4z"/></svg>Esci</button>',
-    '    </div>',
+    '  <div class="etichetta">Televisore</div>',
+    '  <div class="funzioni">',
+    '    <button class="chiude" data-tasto="blu"><svg viewBox="0 0 24 24"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>Menu</button>',
+    '    <button class="chiude" data-tasto="homeTv" aria-label="Home del TV (Samsung)"><svg viewBox="0 0 24 24"><path d="M3 5h18v11H3zm2 2v7h14V7zm4 11h6v2H9z"/></svg>Home del TV</button>',
+    '    <button class="chiude" data-tasto="sorgente" aria-label="Sorgente (HDMI, antenna)"><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4zm2 2v6h12V9zM9 3l3 3 3-3z"/></svg>Sorgente</button>',
+    '    <button class="chiude" data-tasto="menuTv" aria-label="Impostazioni del TV"><svg viewBox="0 0 24 24"><path d="M12 8.5a3.5 3.5 0 1 1 0 7 3.5 3.5 0 0 1 0-7zM10.6 2h2.8l.5 2.6 1.8.8 2.2-1.5 2 2-1.5 2.2.8 1.8 2.6.5v2.8l-2.6.5-.8 1.8 1.5 2.2-2 2-2.2-1.5-1.8.8-.5 2.6h-2.8l-.5-2.6-1.8-.8-2.2 1.5-2-2 1.5-2.2-.8-1.8L2 13.4v-2.8l2.6-.5.8-1.8-1.5-2.2 2-2 2.2 1.5 1.8-.8z"/></svg>Impostazioni TV</button>',
+    '    <button class="chiude" data-tasto="info" aria-label="Info"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm-1 8v7h2v-7zm0-4v2h2V6z"/></svg>Info</button>',
+    '    <button class="chiude" data-tasto="esci" aria-label="Esci"><svg viewBox="0 0 24 24"><path d="M6.4 5L12 10.6 17.6 5 19 6.4 13.4 12l5.6 5.6-1.4 1.4-5.6-5.6L6.4 19 5 17.6l5.6-5.6L5 6.4z"/></svg>Esci</button>',
     '  </div>',
     '  <div class="gruppo">',
     '    <div class="etichetta">Tasti colorati</div>',
@@ -3464,7 +3532,9 @@
     '  }',
     '',
     '  function api(percorso, corpo, segnale) {',
-    '    if (DEMO) return Promise.resolve({ ok: true, ascolta: true, dove: \'Anteprima\', t: \'demo\' });',
+    '    // anteprima: "?demo&tasti=mai" fa vedere il telecomando senza il permesso del TV',
+    '    if (DEMO) return Promise.resolve({ ok: true, ascolta: true, dove: \'Anteprima\', t: \'demo\',',
+    '      tasti: (/[?&]tasti=([a-z]+)/.exec(location.search) || [])[1] || \'ok\' });',
     '    var opz = { cache: \'no-store\' };',
     '    if (segnale) opz.signal = segnale;',
     '    if (corpo) { opz.method = \'POST\'; opz.headers = { \'Content-Type\': \'text/plain\' }; opz.body = JSON.stringify(corpo); }',
@@ -3513,12 +3583,17 @@
     '  /* ---------------------------------------------------- comandi */',
     '',
     '  var ultimoAvvisoApp = 0;',
-    '  var SENZA_PERMESSO = \'Per volume, spegnimento e Home TV serve il permesso sul TV: tasto Blu \\u2192 Telefono \\u2192 Tasti del TV.\';',
+    '  var SENZA_PERMESSO = \'Per i tasti del TV serve il suo permesso: in Altro tocca Chiedi di nuovo, poi sul TV scegli Consenti.\';',
     '  function invia(corpo) {',
     '    corpo.t = token;',
     '    return api(\'/comando\', corpo).then(function (j) {',
     '      if (j.__stato === 401) { perso(); return j; }',
-    '      if (j.error === \'non-disponibile\') { avviso(SENZA_PERMESSO, 5000); return j; }',
+    '      if (j.error === \'non-disponibile\') {',
+    '        avviso(SENZA_PERMESSO, 5000);',
+    '        mostraPermesso(j.tasti);',
+    '        if (foglioAperto && foglioAperto.id === \'foglio-altro\') foglioAperto.scrollTop = 0;',
+    '        return j;',
+    '      }',
     '      if (j.__stato && j.__stato >= 400) { avviso(\'Il TV non ha accettato il comando\'); return j; }',
     '      aggiornaStato(j);',
     '      if (corpo.tipo === \'link\' && j.ascolta === false) avviso(\'Apro la home sul TV e poi il link\\u2026\', 3000);',
@@ -3554,7 +3629,28 @@
     '    dot.className = \'dot \' + (j.ascolta || j.tasti === \'ok\' ? \'ok\' : \'no\');',
     '    n.textContent = \'Sul TV\';',
     '    s.textContent = j.ascolta ? (j.dove || \'Home\') : \'Un\\u2019altra app\';',
+    '    if (j.tasti) mostraPermesso(j.tasti);',
     '  }',
+    '  // i tasti veri del TV (volume, canali, numeri...) vogliono il permesso del TV: finche\' manca, il telecomando dice come darlo',
+    '  function mostraPermesso(t) {',
+    '    var box = $(\'permesso\'), p = $(\'permesso-testo\'), b = $(\'chiedi-permesso\');',
+    '    if (!box || !t) return;',
+    '    box.hidden = t === \'ok\';',
+    '    b.hidden = t === \'attesa\';',
+    '    $(\'permesso-aiuto\').hidden = t !== \'negato\';',
+    '    p.textContent = t === \'attesa\' ? \'Sul TV \\u00e8 comparsa la richiesta di Home TV: scegli Consenti col telecomando del TV.\' :',
+    '      t === \'negato\' ? \'Il TV ha negato il permesso ai tasti dal telefono.\' :',
+    '      t === \'assente\' ? \'Il TV non risponde ai tasti dal telefono.\' :',
+    '      \'Volume, canali, numeri e i tasti del televisore funzionano dopo il permesso del TV (una volta sola).\';',
+    '    b.textContent = t === \'mai\' ? \'Chiedi il permesso al TV\' : \'Chiedi di nuovo\';',
+    '  }',
+    '  $(\'chiedi-permesso\').addEventListener(\'click\', function () {',
+    '    invia({ tipo: \'permesso\' }).then(function (j) {',
+    '      if (!j || j.error || j.__stato >= 400) return;',
+    '      mostraPermesso(\'attesa\');',
+    '      avviso(\'Sul TV scegli Consenti col telecomando del TV\', 5000);',
+    '    });',
+    '  });',
     '',
     '  // pressione con ripetizione (frecce tenute premute)',
     '  function premibile(el) {',

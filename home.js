@@ -14,7 +14,7 @@
 
   var $ = UI.$;
   var DEMO = UI.DEMO;
-  var VERSIONE = '1.2.1';
+  var VERSIONE = '1.2.2';
 
   /* ============================================================ dati */
 
@@ -349,7 +349,18 @@
   var GLYPH = {
     sito: '<svg class="glyph" viewBox="0 0 48 48" aria-hidden="true"><path d="M8 9h32a4 4 0 0 1 4 4v18a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4V13a4 4 0 0 1 4-4zm0 4v18h32V13zm12 3.5L30 22l-10 5.5zM15 39h18v3H15z"/></svg>',
     aggiungi: '<svg class="glyph" viewBox="0 0 48 48" aria-hidden="true"><path d="M22 10h4v12h12v4H26v12h-4V26H10v-4h12z"/></svg>',
-    web: '<svg class="glyph" viewBox="0 0 48 48" aria-hidden="true"><path d="M24 4a20 20 0 1 1 0 40 20 20 0 0 1 0-40zm0 4a16 16 0 1 0 0 32 16 16 0 0 0 0-32zm8.5 7.5L28 28l-12.5 4.5L20 20zM24 21.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg>',
+    // il Browser: un globo con la lente (si capisce da lontano: internet e ricerca), e lo stesso globo grande e leggero
+    // sullo sfondo del riquadro
+    web: '<svg class="web-sfondo" viewBox="0 0 48 48" aria-hidden="true"><g fill="none" stroke="#fff" stroke-width="1.1">' +
+      '<circle cx="24" cy="24" r="22"/><ellipse cx="24" cy="24" rx="9.5" ry="22"/><path d="M24 2v44M2 24h44M5 13h38M5 35h38"/></g></svg>' +
+      '<svg class="glyph web-logo" viewBox="0 0 48 48" aria-hidden="true"><defs><radialGradient id="web-sfera" cx="34%" cy="28%" r="78%">' +
+      '<stop offset="0" stop-color="#fff"/><stop offset=".6" stop-color="#dcfaf3"/><stop offset="1" stop-color="#a5ebe0"/></radialGradient></defs>' +
+      '<circle cx="22" cy="22" r="18" fill="url(#web-sfera)"/>' +
+      '<g fill="none" stroke="#0f7f76" stroke-width="1.9" stroke-linecap="round"><ellipse cx="22" cy="22" rx="7.6" ry="18"/>' +
+      '<path d="M22 4v36M4 22h36M6.4 13h31.2M6.4 31h31.2"/></g>' +
+      '<circle cx="34.5" cy="34.5" r="7.6" fill="#0b5c56" stroke="#fff" stroke-width="2.8"/>' +
+      '<path d="M31.1 33.4a3.8 3.8 0 0 1 3.6-3" fill="none" stroke="#9df0e2" stroke-width="1.6" stroke-linecap="round"/>' +
+      '<path d="M40 40l4.6 4.6" stroke="#fff" stroke-width="3.6" stroke-linecap="round"/></svg>',
     yt: '<svg class="glyph" viewBox="0 0 48 48" aria-hidden="true"><path fill-rule="evenodd" d="M24 4a20 20 0 1 1 0 40 20 20 0 0 1 0-40zM19 14.5v19L34.5 24z"/></svg>'
   };
 

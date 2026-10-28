@@ -212,6 +212,9 @@ h1, h2, p, ul { margin: 0; padding: 0; }
 }
 .cont-barra i { display: block; height: 100%; border-radius: .35rem; background: linear-gradient(90deg, #19d3b7, #3b82f6 55%, #8b5cf6); }
 .card.web { background: linear-gradient(140deg, var(--web-a) 0%, var(--web-b) 100%); }
+/* il logo del Browser: il globo con la lente, un po' piu' grande delle altre icone; dietro, lo stesso globo grande e leggero */
+.card.web svg.glyph { left: 2.4rem; top: 2.2rem; width: 7.4rem; height: 7.4rem; }
+.card.web .web-sfondo { position: absolute; right: -7.2rem; top: -4.6rem; width: 22rem; height: 22rem; opacity: .12; }
 /* YouTube per la TV (solo col blocco avanzato acceso): come il Browser, col suo colore */
 .card.yt { background: linear-gradient(140deg, var(--yt-a) 0%, var(--yt-b) 100%); }
 /* <solo-completa> */
