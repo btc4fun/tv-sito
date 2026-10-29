@@ -6,13 +6,25 @@ e la home che si riapre da sola all'accensione. Si comanda tutto dal telecomando
 
 ## Metterla sul tuo TV
 
-Ti serve un **Mac** o un **PC con Windows 10 o 11** sulla stessa Wi-Fi del TV. L'app **Installa Home TV** fa quasi
-tutto da sola e ti mostra cosa premere sul telecomando, anche quello senza tasti numerici. Non serve un account GitHub.
+L'app **Installa Home TV** fa quasi tutto da sola e ti mostra cosa premere sul telecomando, anche quello senza tasti
+numerici: circa **20 minuti**, una volta sola. Non serve un account GitHub.
 
-| Computer | Da scaricare nella pagina [**Release**](../../releases/latest) |
+### ✅ Cosa serve
+
+- 💻 **Un computer:** un Mac con **macOS 11 (Big Sur)** o più nuovo, Intel o chip Apple, oppure un PC con
+  **Windows 10 o 11** a 64 bit (non in modalità S).
+- 📶 **La rete:** il computer sulla **stessa Wi-Fi del TV**, con **internet**. Durante l'installazione l'app scarica da
+  sola, dalle fonti ufficiali, **TizenBrew Installer** (circa 60 MB) e **sdb** di Samsung, e li controlla prima di
+  usarli: prima non devi installare niente.
+- 🧩 **Mac con chip Apple** (M1, M2, M3…): sdb funziona solo con **Rosetta**, un componente gratuito di Apple. Se manca,
+  l'app ti propone di installarla (macOS chiede la password del Mac), oppure quel passo si fa col telecomando.
+
+### ⬇️ Da scaricare
+
+| Computer | File, nella pagina [**Release**](../../releases/latest) |
 | --- | --- |
 | 🍎 **Mac** | `Installa-Home-TV.zip` |
-| 🪟 **Windows** (64 bit) | `Installa-Home-TV-Windows.zip` · *prima versione, provata solo in simulazione* |
+| 🪟 **Windows** | `Installa-Home-TV-Windows.zip` · *prima versione, provata solo in simulazione* |
 
 ### 🍎 Sul Mac
 
@@ -20,7 +32,7 @@ tutto da sola e ti mostra cosa premere sul telecomando, anche quello senza tasti
 2. La prima volta: tasto destro sull'app, **Apri**, poi **Apri**. Se macOS non la apre: **Impostazioni di Sistema** ›
    **Privacy e sicurezza** › in fondo **Apri comunque** (l'app non è firmata da uno sviluppatore Apple a pagamento).
 3. Se macOS chiede di trovare dispositivi sulla rete locale, scegli **Consenti**.
-4. Accendi il TV e segui l'app: circa **20 minuti**, una volta sola.
+4. Accendi il TV e segui l'app.
 
 ### 🪟 Su Windows
 
