@@ -6,28 +6,31 @@ e la home che si riapre da sola all'accensione. Si comanda tutto dal telecomando
 
 ## Metterla sul tuo TV
 
-Ti serve un **Mac** o un **PC con Windows 10 o 11** sulla stessa Wi-Fi del TV. Scarica l'app **Installa Home TV** dalla
-pagina [**Release**](../../releases/latest) (`Installa-Home-TV.zip` per Mac, `Installa-Home-TV-Windows.zip` per Windows),
-aprila e segui i passi: fa quasi tutto lei e ti mostra cosa premere sul telecomando, anche quello senza tasti numerici.
-Non serve un account GitHub.
+Ti serve un **Mac** o un **PC con Windows 10 o 11** sulla stessa Wi-Fi del TV. L'app **Installa Home TV** fa quasi
+tutto da sola e ti mostra cosa premere sul telecomando, anche quello senza tasti numerici. Non serve un account GitHub.
 
-Sul Mac:
+| Computer | Da scaricare nella pagina [**Release**](../../releases/latest) |
+| --- | --- |
+| 🍎 **Mac** | `Installa-Home-TV.zip` |
+| 🪟 **Windows** (64 bit) | `Installa-Home-TV-Windows.zip` · *prima versione, provata solo in simulazione* |
+
+### 🍎 Sul Mac
 
 1. Apri lo zip e trascina **Installa Home TV** nella cartella **Applicazioni**.
-2. La prima volta: tasto destro sull'app, **Apri**, poi **Apri**. Se macOS non la apre: **Impostazioni di Sistema**,
-   **Privacy e sicurezza**, in fondo **Apri comunque** (l'app non è firmata da uno sviluppatore Apple a pagamento).
+2. La prima volta: tasto destro sull'app, **Apri**, poi **Apri**. Se macOS non la apre: **Impostazioni di Sistema** ›
+   **Privacy e sicurezza** › in fondo **Apri comunque** (l'app non è firmata da uno sviluppatore Apple a pagamento).
 3. Se macOS chiede di trovare dispositivi sulla rete locale, scegli **Consenti**.
-4. Accendi il TV e segui l'app (circa 20 minuti, una volta sola).
+4. Accendi il TV e segui l'app: circa **20 minuti**, una volta sola.
 
-Su Windows (64 bit; prima versione, provata solo in simulazione):
+### 🪟 Su Windows
 
-1. Tasto destro su `Installa-Home-TV-Windows.zip`, **Estrai tutto...** (non aprirla da dentro lo zip).
+1. Tasto destro su `Installa-Home-TV-Windows.zip` › **Estrai tutto…** (non aprirla da dentro lo zip).
 2. Nella cartella estratta, doppio clic su **Installa Home TV**. Se Windows dice **PC protetto da Windows**:
-   **Ulteriori informazioni**, poi **Esegui comunque** (l'app non è firmata con un certificato a pagamento).
-3. Se Windows chiede il permesso del **Firewall**, va bene sia Consenti sia Annulla.
+   **Ulteriori informazioni** › **Esegui comunque** (l'app non è firmata con un certificato a pagamento).
+3. Se Windows chiede il permesso del **Firewall**, va bene sia **Consenti** sia **Annulla**.
 4. Accendi il TV e segui l'app, come sul Mac.
 
-La guida completa, con l'uso di tutti i giorni, è in [LEGGIMI.md](LEGGIMI.md).
+📖 La guida completa, con l'uso di tutti i giorni, è in [LEGGIMI.md](LEGGIMI.md).
 
 ## Una tua copia del modulo (facoltativo)
 
