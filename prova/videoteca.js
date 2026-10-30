@@ -1620,8 +1620,14 @@ var Videoteca = (function () {
       }
       var fine = Math.min(dim, z + 1 + (scan ? 64 : 0)); // qualche byte in piu' per decidere l'ultimo blocco
       var lettura = inizio, sospeso = null, sospesoPos = 0, chiuso = false, fd = -1, nf = 0, inAttesa = false, fermataScan = false;
-      // il lettore chiude mentre si aspetta "drain": nessuno richiamerebbe giro() e il file resterebbe aperto
-      function staccato() { chiuso = true; if (inAttesa) { inAttesa = false; res.removeListener('drain', riparti); finisci(); } }
+      // il lettore chiude mentre si aspetta "drain": nessuno richiamerebbe giro() e il file resterebbe aperto. Un file remoto
+      // (Jellyfin) si chiude subito anche con una lettura in corso: la domanda verso il server si interrompe e la lettura si
+      // sveglia con un errore (un server fermo a meta' non lascia domande aperte); quello della chiavetta quando la lettura finisce
+      function staccato() {
+        chiuso = true;
+        if (inAttesa) { inAttesa = false; res.removeListener('drain', riparti); finisci(); }
+        else if (fs.remoto) finisci();
+      }
       function riparti() { inAttesa = false; giro(); }
       req.on('close', staccato);
       res.on('close', staccato);

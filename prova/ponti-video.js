@@ -14,9 +14,10 @@
  * La strada diretta: il file vero letto da Jellyfin con le domande Range (un "fs" remoto) e passato alla videoteca, che
  * ci mette il "vuoto" come per le chiavette (tracce che il TV non legge nascoste, sottotitoli nostri, anche PGS).
  *
- *   var p = PontiVideo.crea({ http, https, dgram, url, crypto, fs, path, cartella, videoteca: vt, letti: fn, log: fn,
+ *   var p = PontiVideo.crea({ http, https, dgram, dns, url, crypto, fs, path, cartella, videoteca: vt, letti: fn, log: fn,
  *     leggiSottotitoli: Videoteca._interni.leggiSottotitoli, testoDi: Videoteca._interni.testoDi, locale: PROVE });
- *   (locale: solo nelle prove sul computer, un server su 127.0.0.1)
+ *   (locale: solo nelle prove sul computer, un server su 127.0.0.1; dns: ogni nome si controlla prima di collegarsi;
+ *   tempoLettura: quanto aspettare un server fermo a meta' film, 30 s se non c'e')
  *   Videoteca.gestisci(vt, g, req, res, u, { punto: fn, ponti: p.tratta })
  *
  * Solo ES5 e solo ASCII; va da Node 4.4.3 (TV 2017-2019) in su.
@@ -27,7 +28,7 @@ var PontiVideo = (function () {
   var VERSIONE = '1.0.0';
   var MAX_CORPO = 64 << 10, MAX_JSON = 8 << 20, MAX_PLAYLIST = 2 << 20, MAX_SOTTO = 4 << 20;
   // gli id di Jellyfin: 32 cifre esadecimali, a volte coi trattini (negli indirizzi che crea lui: HLS, sottotitoli)
-  var ID = '[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}', NOME = '(?!\\.|%2[eE])[^/]{1,200}';
+  var ID = '[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}';
   // i percorsi di Jellyfin che l'app puo' chiedere, con i metodi: il resto risponde 403
   var LISTA = [
     ['GET', 'Users/' + ID + '/Views'], ['GET', 'UserViews'],
@@ -37,7 +38,7 @@ var PontiVideo = (function () {
     ['GET', 'Items/' + ID + '/(Similar|LocalTrailers|SpecialFeatures|Ancestors|ThemeMedia)'],
     ['GET|HEAD', 'Items/' + ID + '/Images/[A-Za-z]{2,20}(/[0-9]{1,4})?'],
     ['GET', 'Shows/NextUp'], ['GET', 'Shows/' + ID + '/(Seasons|Episodes)'], ['GET', 'Shows/Upcoming'],
-    ['GET', 'Movies/Recommendations'], ['GET', 'Genres'], ['GET', 'Genres/' + NOME], ['GET', 'Persons'], ['GET', 'Persons/' + NOME],
+    ['GET', 'Movies/Recommendations'], ['GET', 'Genres'], ['GET', 'Persons'],
     ['GET', 'Studios'], ['GET', 'Search/Hints'], ['GET', 'MediaSegments/' + ID],
     ['GET', 'Videos/' + ID + '/Trickplay/[0-9]{1,5}/([0-9]{1,6}\\.jpg|tiles\\.m3u8)'],
     ['GET', 'Videos/' + ID + '/' + ID + '/Subtitles/[0-9]{1,4}(/[0-9]{1,12})?/Stream\\.(srt|vtt|ass|ssa|js|sup)'],
@@ -49,7 +50,11 @@ var PontiVideo = (function () {
     ['DELETE', 'Videos/ActiveEncodings']
   ].map(function (x) { return { metodi: x[0].split('|'), re: new RegExp('^' + x[1] + '$', 'i') }; });
 
+  // (nessuna voce ha testo libero: solo id, numeri e nomi fissi. %2F, %5C, %2E, %25, %00 non passano mai: dietro un proxy
+  // che decodifica il percorso diventerebbero altre strade, col token)
+  var SCAPPA = /%2f|%5c|%2e|%25|%00/i;
   function inLista(metodo, percorso) {
+    if (SCAPPA.test(percorso)) return false;
     for (var i = 0; i < LISTA.length; i++) if (LISTA[i].metodi.indexOf(metodo) >= 0 && LISTA[i].re.test(percorso)) return true;
     return false;
   }
@@ -60,32 +65,52 @@ var PontiVideo = (function () {
     var parti = s.slice(q + 1).split('&').filter(function (x) { return x && !/^(api_?key|x-emby-token|x-mediabrowser-token)(=|$)/i.test(x); });
     return s.slice(0, q) + (parti.length ? '?' + parti.join('&') : '');
   }
-  // la playlist HLS di Jellyfin: gli indirizzi restano relativi (il lettore chiede i pezzi accanto, sempre dal ponte), senza
-  // chiavi; quelli assoluti verso il server diventano quelli del ponte
-  function riscriviPlaylist(testo, server, ponte) {
-    function uno(u) {
-      var x = String(u).trim();
-      if (server && x.toLowerCase().indexOf(server.toLowerCase() + '/') === 0) x = ponte + x.slice(server.length + 1);
-      else if (/^[a-z][a-z0-9+.\-]*:/i.test(x)) return '';
-      return senzaChiavi(x);
-    }
+  // un indirizzo dentro una playlist HLS: si tiene solo se il lettore, risolvendolo, resta nel ponte su un percorso della lista
+  // (GET). Assoluto verso il server salvato: diventa quello del ponte. Relativo: risolto accanto alla playlist ("cartella").
+  // Mai: spazi, tab, controlli, barre rovesciate; "/..." o "//altro"; ":" prima della prima "/"; segmenti "." e "..";
+  // %2E/%2F/%5C/%25/%00 nel percorso. null = da togliere
+  function indirizzoPlaylist(u, server, ponte, cartella) {
+    var x = String(u);
+    if (!x || /[\u0000-\u0020\u007f\\]/.test(x)) return null;
+    var assoluto = !!server && x.toLowerCase().indexOf(server.toLowerCase() + '/') === 0, rel = assoluto ? x.slice(server.length + 1) : x;
+    if (/^\//.test(rel) || /^[^\/?#]*:/.test(rel) || rel.indexOf('#') >= 0) return null;
+    var q = rel.indexOf('?'), per = q >= 0 ? rel.slice(0, q) : rel;
+    if (/(^|\/)\.\.?(\/|$)/.test(per) || !inLista('GET', assoluto ? per : cartella + per)) return null;
+    return (assoluto ? ponte : '') + senzaChiavi(rel);
+  }
+  // la playlist HLS di Jellyfin riscritta: i pezzi restano accanto (sempre dal ponte), senza chiavi; nel master solo la prima
+  // variante (con l'HDR Jellyfin aggiunge una riserva H.264 SDR senza tonemapping: il TV potrebbe sceglierla) e niente
+  // anteprime per il lettore (le chiede l'app a parte). percorso = quello Jellyfin della playlist (videos/<id>/main.m3u8)
+  function riscriviPlaylist(testo, server, ponte, percorso) {
+    var cartella = String(percorso || '').replace(/[^\/]*$/, '');
     var righe = String(testo).split(/\r?\n/), out = [], varianti = 0, salta = false;
     for (var i = 0; i < righe.length; i++) {
       var r = righe[i];
-      // nel master: solo la prima variante (Jellyfin con l'HDR aggiunge una riserva H.264 SDR senza tonemapping: il TV
-      // potrebbe sceglierla); niente anteprime per il lettore (le chiede l'app a parte)
       if (/^#EXT-X-STREAM-INF:/.test(r)) { varianti++; if (varianti > 1) { salta = true; continue; } }
       else if (/^#EXT-X-IMAGE-STREAM-INF:/.test(r)) continue;
       else if (salta && r && r.charAt(0) !== '#') { salta = false; continue; }
       if (!r) { out.push(r); continue; }
-      if (r.charAt(0) !== '#') { out.push(uno(r)); continue; }
-      out.push(r.replace(/URI="([^"]*)"/g, function (t, u) { return 'URI="' + uno(u) + '"'; }));
+      if (r.charAt(0) !== '#') {
+        var buono = indirizzoPlaylist(r.trim(), server, ponte, cartella);
+        if (buono !== null) { out.push(buono); continue; }
+        // un pezzo (o una variante) tolto: via anche la sua riga di descrizione
+        while (out.length && /^#(EXTINF|EXT-X-BYTERANGE|EXT-X-STREAM-INF)/.test(out[out.length - 1])) out.pop();
+        continue;
+      }
+      var via = false, riga = r.replace(/URI="([^"]*)"/g, function (t, u) { var b = indirizzoPlaylist(u, server, ponte, cartella); if (b === null) via = true; return 'URI="' + (b || '') + '"'; });
+      if (!via) out.push(riga);
     }
     return out.join('\n');
   }
   function bufDa(s) { return typeof Buffer.from === 'function' && Buffer.from !== Uint8Array.from ? Buffer.from(s, 'utf8') : new Buffer(s, 'utf8'); }
   function errore(codice, msg) { var e = new Error(msg); e.codice = codice; return e; }
   function erroreRete(msg) { var e = new Error(msg); e.codice = 'rete'; e.rete = true; e.code = 'ERETE'; return e; }
+  // un errore della rete; quelli del certificato https (i TV 2017-2019 hanno autorita' vecchie) si dicono a parte
+  function erroreDa(e) {
+    var c = String(e && (e.code || e.message) || 'rete'), x = erroreRete(c);
+    if (/CERT|SELF_SIGNED|UNABLE_TO_VERIFY|DEPTH_ZERO|ERR_TLS|SSL/i.test(c)) x.codice = 'certificato';
+    return x;
+  }
   function rispondi(res, stato, o) {
     if (res.headersSent) { try { res.end(); } catch (e) {} return; }
     res.writeHead(stato, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
@@ -102,16 +127,63 @@ var PontiVideo = (function () {
   }
   function testo(s, max) { return String(s === undefined || s === null ? '' : s).replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, max); }
   function idBuono(x) { return typeof x === 'string' && new RegExp('^' + ID + '$').test(x); }
-  // indirizzo del server: http(s)://host[:porta][/base], mai il TV stesso (solo le prove sul computer usano 127.0.0.1)
+  // un IPv6 in 16 numeri (null se non si legge)
+  function ipv6Byte(s) {
+    var m = /^(.*:)(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s), i;
+    if (m) {
+      var a = [+m[2], +m[3], +m[4], +m[5]];
+      for (i = 0; i < 4; i++) if (a[i] > 255) return null;
+      s = m[1] + ((a[0] << 8) | a[1]).toString(16) + ':' + ((a[2] << 8) | a[3]).toString(16);
+    }
+    var parti = s.split('::');
+    if (parti.length > 2) return null;
+    var sx = parti[0] ? parti[0].split(':') : [], dx = parti.length === 2 && parti[1] ? parti[1].split(':') : [], manca = 8 - sx.length - dx.length;
+    if (parti.length === 1 ? manca !== 0 : manca < 1) return null;
+    var g = sx.slice();
+    for (i = 0; parti.length === 2 && i < manca; i++) g.push('0');
+    g = g.concat(dx);
+    var b = [];
+    for (i = 0; i < 8; i++) {
+      if (!/^[0-9a-f]{1,4}$/i.test(g[i])) return null;
+      var v = parseInt(g[i], 16);
+      b.push(v >> 8, v & 255);
+    }
+    return b;
+  }
+  // un indirizzo IP che e' il TV stesso (o "nessuno"): 127/8, 0/8, ::, ::1, e un IPv4 cosi' dentro un IPv6 (::ffff:127.x).
+  // Nelle prove sul computer (locale) 127.0.0.1 va bene
+  function ipVietato(ip, locale) {
+    ip = String(ip || '').toLowerCase().replace(/^\[|\]$/g, '');
+    if (locale && ip === '127.0.0.1') return false;
+    var v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+    if (v4) return +v4[1] === 127 || +v4[1] === 0;
+    if (ip.indexOf(':') < 0) return false;
+    var b = ipv6Byte(ip);
+    if (!b) return true;
+    for (var i = 0; i < 10; i++) if (b[i]) return false;
+    if (b[10] === 255 && b[11] === 255) return b[12] === 127 || b[12] === 0;
+    if (b[10] || b[11]) return false;
+    return b[12] === 127 || b[12] === 0; // ::, ::1 e ::127.x (IPv4 "compatibile")
+  }
+  // indirizzo del server: http(s)://host[:porta][/base], mai il TV stesso (solo le prove sul computer usano 127.0.0.1). Solo
+  // forme canoniche: niente numeri "da soli", esadecimali o ottali (2130706433, 0x7f000001, 0177.0.0.1), niente nomi col punto
+  // finale (localhost.), IPv6 controllati dopo averli espansi. I nomi si controllano anche col DNS (guardiaDns)
   function indirizzoBuono(urlLib, s, locale) {
     s = String(s || '').trim();
     if (!s || s.length > 300 || !/^[A-Za-z0-9._~:\/\-\[\]]+$/.test(s)) return '';
     if (!/^https?:\/\//i.test(s)) s = 'http://' + s;
     var u = urlLib.parse(s);
     if (!u || !/^https?:$/.test(u.protocol || '') || !u.hostname || u.auth || u.search || u.hash) return '';
-    var h = u.hostname.toLowerCase();
-    if (!(locale && h === '127.0.0.1') && (h === 'localhost' || /^127\./.test(h) || h === '0.0.0.0' || h === '::1' || h === '[::1]' || /^0+(\.0+){3}$/.test(h))) return '';
-    if (!/^[a-z0-9.\-\[\]:]+$/.test(h)) return '';
+    var h = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (!/^[a-z0-9.\-:]+$/.test(h) || /\.$/.test(h) || h === 'localhost' || /\.localhost$/.test(h)) return '';
+    if (h.indexOf(':') >= 0) { if (!ipv6Byte(h) || ipVietato(h, locale)) return ''; }
+    else if (/^[0-9.x]+$/.test(h)) {
+      // un IPv4: quattro numeri da 0 a 255, senza zeri davanti
+      var q = h.split('.');
+      if (q.length !== 4) return '';
+      for (var i = 0; i < 4; i++) if (!/^(0|[1-9][0-9]{0,2})$/.test(q[i]) || +q[i] > 255) return '';
+      if (ipVietato(h, locale)) return '';
+    } else if (/^\d+$/.test(h.replace(/\./g, '')) || /(^|\.)0x/.test(h)) return '';
     var base = (u.pathname || '').replace(/\/+$/, '');
     if (!/^(\/[A-Za-z0-9._\-]+)*$/.test(base) || /\/\.\.?(\/|$)/.test(base)) return '';
     return u.protocol + '//' + u.host.toLowerCase() + base;
@@ -173,8 +245,9 @@ var PontiVideo = (function () {
    * open/read/close come quelli di Node, per la videoteca. Le letture grandi e di seguito (il film che passa) usano UNA
    * domanda tenuta aperta, con al massimo 4 MB in memoria; le piccole (struttura, Cues, sottotitoli) una domanda breve
    * di almeno 64 KB, tenuta per le letture vicine. Una lettura alla volta per file aperto. */
-  function fsRemoto(chiedi, dim) {
+  function fsRemoto(chiedi, dim, tempo) {
     var aperti = {}, prossimo = 1;
+    tempo = tempo || 30000;
     function chiudiFlusso(s) {
       var f = s.flusso;
       s.flusso = null;
@@ -210,7 +283,7 @@ var PontiVideo = (function () {
           });
           res.on('end', function () { f.fine = true; sveglia(f); });
           res.on('aborted', function () { if (!f.fine) { f.err = erroreRete('interrotto'); sveglia(f); } });
-          res.on('error', function (e) { f.err = erroreRete(e.code || e.message); sveglia(f); });
+          res.on('error', function (e) { f.err = erroreDa(e); sveglia(f); });
         });
         prendi(s, f, x);
         return;
@@ -239,10 +312,10 @@ var PontiVideo = (function () {
         });
         res.on('end', fine);
         res.on('aborted', function () { if (!fatto) { fatto = true; x.cb(erroreRete('interrotto')); } });
-        res.on('error', function (e) { if (!fatto) { fatto = true; x.cb(erroreRete(e.code || e.message)); } });
+        res.on('error', function (e) { if (!fatto) { fatto = true; x.cb(erroreDa(e)); } });
       });
     }
-    function sveglia(f) { var a = f.attesa; f.attesa = null; if (a) a(); }
+    function sveglia(f) { if (f.timer) { clearTimeout(f.timer); f.timer = null; } var a = f.attesa; f.attesa = null; if (a) a(); }
     // dal flusso: prima si buttano i byte da saltare, poi si copia quello che c'e' (anche meno di n: leggi() richiede)
     function prendi(s, f, x) {
       function prova() {
@@ -269,7 +342,17 @@ var PontiVideo = (function () {
         }
         if (f.err) { x.cb(f.err); return; }
         if (f.fine) { x.cb(null, 0); return; }
+        // si aspetta il server: se resta fermo (Wi-Fi caduto, NAS bloccato) dopo "tempo" la lettura finisce con un errore e la
+        // domanda si chiude. In pausa nessuna lettura aspetta: questo tempo non la tocca
         f.attesa = prova;
+        if (f.timer) clearTimeout(f.timer);
+        f.timer = setTimeout(function () {
+          f.timer = null;
+          if (f.attesa !== prova) return;
+          f.err = erroreRete('il server non manda piu\' dati');
+          try { if (f.req) f.req.abort(); } catch (e) {}
+          sveglia(f);
+        }, tempo);
       }
       prova();
     }
@@ -286,6 +369,7 @@ var PontiVideo = (function () {
       try { fai(s, x); } catch (e) { x.cb(erroreRete(e.message)); }
     }
     return {
+      remoto: true,
       open: function (percorso, modo, cb) {
         var fd = prossimo++;
         aperti[fd] = { coda: [], occupato: false, cache: null, flusso: null, chiuso: false };
@@ -407,6 +491,19 @@ var PontiVideo = (function () {
       return conToken && cfg.token ? s + ', Token="' + cfg.token + '"' : s;
     }
     // una domanda al server salvato (o a "dove", per il controllo prima di salvarlo). cb(err, res) con la risposta aperta
+    // il DNS controllato: ogni collegamento al server passa da qui (opzione lookup di Node): un nome che porta al TV stesso
+    // non si collega. Gli indirizzi IP scritti non passano dal DNS: li ha gia' controllati indirizzoBuono
+    function guardiaDns(host, opz, cb) {
+      if (typeof opz === 'function') { cb = opz; opz = {}; }
+      o.dns.lookup(host, opz || {}, function (err, ind, fam) {
+        if (err) { cb(err); return; }
+        var l = Array.isArray(ind) ? ind : [{ address: ind }];
+        for (var i = 0; i < l.length; i++) {
+          if (ipVietato(l[i].address, o.locale)) { var e = new Error('il nome porta al TV stesso'); e.code = 'EVIETATO'; cb(e); return; }
+        }
+        cb(null, ind, fam);
+      });
+    }
     function apriDomanda(x, cb) {
       var base = x.dove || cfg.indirizzo;
       if (!base) { cb(errore('server', 'nessun server Jellyfin')); return null; }
@@ -427,9 +524,11 @@ var PontiVideo = (function () {
         cb(e, r);
       }
       // le domande lunghe (il film, i pezzi HLS) su una connessione loro; le brevi riusano le connessioni aperte
-      var req = mod.request({ protocol: u.protocol, hostname: u.hostname, port: u.port, path: u.path, method: x.metodo || 'GET',
-        headers: testa, agent: x.lungo ? false : agenti[u.protocol] || undefined }, function (r) { fine(null, r); });
-      req.on('error', function (e) { ferma(); fine(erroreRete(e.code || e.message)); });
+      var opz = { protocol: u.protocol, hostname: u.hostname, port: u.port, path: u.path, method: x.metodo || 'GET',
+        headers: testa, agent: x.lungo ? false : agenti[u.protocol] || undefined };
+      if (o.dns) opz.lookup = guardiaDns;
+      var req = mod.request(opz, function (r) { fine(null, r); });
+      req.on('error', function (e) { ferma(); fine(erroreDa(e)); });
       // un tempo per la risposta (e per il corpo, nelle brevi); gli stream del video, una volta partiti, non hanno limite
       timer = setTimeout(function () { timer = null; try { req.abort(); } catch (e) {} fine(erroreRete('tempo scaduto')); }, x.tempo || 8000);
       if (corpo) req.write(corpo);
@@ -451,7 +550,7 @@ var PontiVideo = (function () {
           cb(null, r.statusCode, v, r);
         });
         r.on('aborted', function () { if (!rotto) { rotto = true; cb(erroreRete('interrotto')); } });
-        r.on('error', function (e) { if (!rotto) { rotto = true; cb(erroreRete(e.code || e.message)); } });
+        r.on('error', function (e) { if (!rotto) { rotto = true; cb(erroreDa(e)); } });
       });
     }
 
@@ -465,8 +564,12 @@ var PontiVideo = (function () {
         servizio: { memoria: Math.round(process.memoryUsage().rss / 1e6), node: process.version, acceso: Math.round(process.uptime()) } };
     }
     // i server Jellyfin nella rete di casa (rispondono al broadcast UDP 7359 con il loro indirizzo)
-    function cerca(cb) {
+    var cercando = null;
+    function cerca(cb0) {
+      if (cercando) { cercando.push(cb0); return; }
+      cercando = [cb0];
       var trovati = {}, s, fatto = false;
+      function cb(l) { var a = cercando; cercando = null; for (var i = 0; i < a.length; i++) { try { a[i](l); } catch (e) {} } }
       function fine() {
         if (fatto) return;
         fatto = true;
@@ -500,8 +603,18 @@ var PontiVideo = (function () {
       prove = prove.filter(function (t) { return ora - t < 600000; });
       if (prove.length >= 20) { cb(errore('troppe', 'troppi indirizzi provati: aspetta qualche minuto')); return; }
       prove.push(ora);
+      // un nome: prima il DNS (tutti gli indirizzi), cosi' l'errore e' chiaro; poi lo stesso controllo a ogni collegamento
+      var host = urlLib.parse(ind).hostname.replace(/^\[|\]$/g, '');
+      if (o.dns && !/^[0-9.]+$/.test(host) && host.indexOf(':') < 0) {
+        o.dns.lookup(host, { all: true }, function (e0, l) {
+          if (e0) { cb(errore('rete', 'il nome del server non si trova')); return; }
+          for (var i = 0; i < (l || []).length; i++) if (ipVietato(l[i].address, o.locale)) { cb(errore('indirizzo', 'indirizzo non valido')); return; }
+          prova();
+        });
+      } else prova();
+      function prova() {
       chiedi({ dove: ind, percorso: 'System/Info/Public', token: false, tempo: 5000, max: 65536 }, function (err, st, j) {
-        if (err) { cb(err.codice === 'rete' ? errore('rete', 'il server non risponde') : err); return; }
+        if (err) { cb(err.codice === 'rete' ? errore('rete', 'il server non risponde') : err.codice === 'certificato' ? errore('certificato', 'certificato https non accettato da questo TV') : err); return; }
         var id = j && typeof j.Id === 'string' ? j.Id.replace(/-/g, '').toLowerCase() : '';
         if (st !== 200 || !idBuono(id) || typeof j.Version !== 'string') { cb(errore('jellyfin', 'non e\' un server Jellyfin')); return; }
         if (cfg.id !== id || cfg.indirizzo !== ind) { cfg.token = ''; cfg.utente = null; }
@@ -513,6 +626,7 @@ var PontiVideo = (function () {
         salva();
         cb(null);
       });
+      }
     }
     function accesso(j, cb) {
       var u = j && j.User, tok = j && j.AccessToken;
@@ -566,10 +680,11 @@ var PontiVideo = (function () {
 
     var sorgenti = {}; // id:ms -> { x (per la videoteca), ms (MediaSource di Jellyfin), at }
     function chiaveSorgente(id, ms) { return String(id).toLowerCase() + ':' + String(ms || '').toLowerCase(); }
+    var misure = {}; // id:ms -> la misura vera del file (dal Content-Range), se Jellyfin ne ricorda un'altra
     function ricordaSorgente(id, msid, ms) {
       var est = estDi(ms), k0 = chiaveSorgente(id, msid), gia = sorgenti[k0];
       if (!est) return null;
-      var dim = +ms.Size || 0;
+      var dim = misure[k0] || +ms.Size || 0;
       if (gia && gia.x.dim === dim && gia.x.est === est) { gia.at = Date.now(); gia.ms = ms; return gia; }
       var x = { percorso: 'jf:' + cfg.id + ':' + id + ':' + msid, nome: testo(path.basename(String(ms.Path || ms.Name || id)), 200),
         dim: dim, data: 0, est: est, fs: null };
@@ -577,13 +692,23 @@ var PontiVideo = (function () {
         return apriDomanda({ percorso: 'Videos/' + id + '/stream', query: 'static=true&mediaSourceId=' + msid, accetta: '*/*',
           range: 'bytes=' + a + '-' + z, tempo: 15000, lungo: z - a >= (1 << 20) }, function (err, r) {
           if (err) { cb(err.rete ? err : erroreRete(err.message)); return; }
-          var cr = String(r.headers['content-range'] || ''), m = /^bytes (\d+)-/.exec(cr);
+          var cr = String(r.headers['content-range'] || ''), m = /^bytes (\d+)-\d+\/(\d+|\*)$/.exec(cr);
+          // il file e' cambiato sul server senza una nuova scansione (la misura di Jellyfin e' vecchia): si ricorda quella
+          // vera e questa sorgente si butta; la prossima domanda del lettore riparte giusta
+          if (r.statusCode === 206 && m && m[2] !== '*' && +m[2] !== dim) {
+            try { r.destroy(); } catch (e) {}
+            if (Object.keys(misure).length >= 50) misure = {};
+            misure[k0] = +m[2];
+            if (sorgenti[k0] && sorgenti[k0].x === x) delete sorgenti[k0];
+            cb(erroreRete('il file e\' cambiato sul server'));
+            return;
+          }
           if (r.statusCode === 206 && m && +m[1] === a) { cb(null, r); return; }
           if (r.statusCode === 200 && a === 0) { cb(null, r); return; }
           try { r.destroy(); } catch (e) {}
           cb(erroreRete('il server ha risposto ' + r.statusCode));
         });
-      }, dim);
+      }, dim, o.tempoLettura);
       var k = chiaveSorgente(id, msid), l = Object.keys(sorgenti);
       sorgenti[k] = { x: x, ms: ms, at: Date.now() };
       if (l.length >= 20) {
@@ -614,15 +739,22 @@ var PontiVideo = (function () {
         sorgenteDaMs(id, String(ms.Id).toLowerCase(), ms, cb);
       });
     }
-    // la dimensione non c'e' nella scheda: la dice il server con la prima domanda Range
+    // la misura vera del file la dice il server (il totale nel Content-Range di una domanda da un byte): quella della scheda
+    // di Jellyfin puo' mancare o essere vecchia (file cambiato senza una nuova scansione), e il film si taglierebbe
     function sorgenteDaMs(id, msid, ms, cb) {
       if (!estDi(ms)) { cb(errore('formato', 'contenitore non adatto alla strada diretta')); return; }
-      if (+ms.Size > 0) { cb(null, ricordaSorgente(id, msid, ms)); return; }
       apriDomanda({ percorso: 'Videos/' + id + '/stream', query: 'static=true&mediaSourceId=' + msid, accetta: '*/*', range: 'bytes=0-0', tempo: 8000 }, function (e2, res) {
         if (e2) { cb(e2); return; }
+        var m = /^bytes 0-0\/(\d+)$/.exec(String(res.headers['content-range'] || ''));
+        if (res.statusCode !== 206 || !m || !(+m[1] > 0)) {
+          // un server che non ascolta il Range manderebbe tutto il film: si chiude subito
+          try { res.destroy(); } catch (e) {}
+          if (res.statusCode === 401 && cfg.token) { dimentica(); cb(errore('accesso', 'accesso scaduto')); return; }
+          cb(res.statusCode === 404 ? errore('assente', 'file non trovato') : errore('server', 'dimensione del file sconosciuta'));
+          return;
+        }
         res.resume();
-        var m = /\/(\d+)$/.exec(String(res.headers['content-range'] || ''));
-        if (!m || !(+m[1] > 0)) { cb(errore('server', 'dimensione del file sconosciuta')); return; }
+        delete misure[chiaveSorgente(id, msid)];
         ms.Size = +m[1];
         cb(null, ricordaSorgente(id, msid, ms));
       });
@@ -720,19 +852,26 @@ var PontiVideo = (function () {
       });
     }
 
-    // quanti Mbps arrivano dal server (per la qualita' "Automatica"): 8 MB, e 32 se e' veloce
+    // quanti Mbps arrivano dal server (per la qualita' "Automatica"): 8 MB, e altri 16 se e' veloce. I byte si contano e si
+    // buttano: in memoria resta un pezzo alla volta
+    // quanti Mbps arrivano dal server (per la qualita' "Automatica"): 8 MB, e 16 se e' veloce. I byte si contano e si
+    // buttano: in memoria non resta niente
     function veloce(cb) {
       function prova(n, poi) {
-        var t0 = Date.now();
-        chiedi({ percorso: 'Playback/BitrateTest', query: 'size=' + n, accetta: '*/*', byte: true, max: n + 1024, tempo: 20000 }, function (err, st, b) {
-          if (err) { cb(err); return; }
-          if (st !== 200 || !b || b.length < n * 0.9) { cb(errore('server', 'misura non riuscita')); return; }
-          poi(b.length * 8 / Math.max(1, Date.now() - t0) / 1000);
+        var t0 = Date.now(), tot = 0, fatto = false;
+        function fine(e) { if (fatto) return; fatto = true; if (e) cb(e); else if (tot < n * 0.9) cb(errore('server', 'misura non riuscita')); else poi(tot * 8 / Math.max(1, Date.now() - t0) / 1000); }
+        apriDomanda({ percorso: 'Playback/BitrateTest', query: 'size=' + n, accetta: '*/*', tempo: 20000 }, function (err, r) {
+          if (err) { fine(err); return; }
+          if (r.statusCode !== 200) { r.resume(); if (r.statusCode === 401 && cfg.token) { dimentica(); fine(errore('accesso', 'accesso scaduto')); } else fine(errore('server', 'misura non riuscita')); return; }
+          r.on('data', function (d) { tot += d.length; if (tot > n + 65536) { try { r.destroy(); } catch (e) {} fine(errore('server', 'misura non riuscita')); } });
+          r.on('end', function () { fine(null); });
+          r.on('aborted', function () { fine(erroreRete('interrotto')); });
+          r.on('error', function (e) { fine(erroreDa(e)); });
         });
       }
       prova(8 << 20, function (m) {
         if (m < 200) { cb(null, { mbps: Math.round(m) }); return; }
-        prova(32 << 20, function (m2) { cb(null, { mbps: Math.round(m2) }); });
+        prova(16 << 20, function (m2) { cb(null, { mbps: Math.round(m2) }); });
       });
     }
 
@@ -758,7 +897,7 @@ var PontiVideo = (function () {
             r.on('data', function (d) { n += d.length; if (n > MAX_PLAYLIST) { rotto = true; try { r.destroy(); } catch (e) {} } else parti.push(d); });
             r.on('end', function () {
               if (rotto) { rispondi(res, 502, { error: 'playlist troppo grande', codice: 'server' }); return; }
-              var b = bufDa(riscriviPlaylist(Buffer.concat(parti, n).toString('utf8'), cfg.indirizzo, ponte));
+              var b = bufDa(riscriviPlaylist(Buffer.concat(parti, n).toString('utf8'), cfg.indirizzo, ponte, percorso));
               res.writeHead(r.statusCode, { 'Content-Type': tipo || 'application/vnd.apple.mpegurl', 'Content-Length': String(b.length),
                 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
               res.end(b);
@@ -801,7 +940,8 @@ var PontiVideo = (function () {
       var get = req.method === 'GET', post = req.method === 'POST', m;
       function errore2(e) {
         var c = e.codice || 'errore';
-        rispondi(res, c === 'accesso' ? 401 : c === 'rete' ? 502 : c === 'assente' ? 404 : c === 'server' ? 409 : 400, { error: e.message, codice: c });
+        rispondi(res, c === 'accesso' ? 401 : c === 'rete' || c === 'certificato' ? 502 : c === 'assente' ? 404 : c === 'server' ? 409 :
+          c === 'troppe' ? 429 : 400, { error: e.message, codice: c });
       }
       if (resto === 'stato' && get) { rispondi(res, 200, statoPubblico()); return; }
       if (resto === 'cerca' && get) { cerca(function (l) { rispondi(res, 200, { server: l }); }); return; }
