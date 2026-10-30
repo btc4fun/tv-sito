@@ -45,7 +45,7 @@
 
   var $ = UI.$;
   var DEMO = UI.DEMO;
-  var VERSIONE = '1.3.6';
+  var VERSIONE = '1.3.7';
 
   /* ============================================================ dati */
 
@@ -849,7 +849,7 @@
     if (DEMO) return;
     UI.service('/api/visti').then(function (j) {
       var nuovi = j && Array.isArray(j.visti) ? j.visti : [];
-      riprendiDopoCaduta(nuovi);
+      riprendiDopoCaduta(nuovi, j && typeof j.ripresa === 'string' ? j.ripresa : '');
       var totale = j && typeof j.totale === 'number' ? j.totale : nuovi.length;
       if (totale !== vistiTotale) { vistiTotale = totale; if (settingsOpen) drawSettings(); }
       if (JSON.stringify(nuovi) === JSON.stringify(visti)) return;
@@ -860,17 +860,15 @@
     }, function () {});
   }
   // il servizio del TV era caduto con un'app aperta nello Store (il guardiano di ui.js l'ha riacceso): appena la home
-  // riparte, il video di Continua a guardare aggiornato nei 2 minuti prima della caduta riparte da dov'eri. Una volta
-  // sola e solo entro 3 minuti: il guardiano riaccende al massimo 2 volte in 10 minuti, quindi niente giri senza fine
-  function riprendiDopoCaduta(lista) {
+  // riparte, riprende da dov'eri il film che stava andando, quello che dice il servizio (la sua traccia: "ripresa"), e solo
+  // lui; se il servizio non lo sa (caduto prima che il film partisse, o lasciato), niente: mai un altro film o un sito.
+  // Una volta sola e solo entro 3 minuti: il guardiano riaccende al massimo 2 volte in 10 minuti, niente giri senza fine
+  function riprendiDopoCaduta(lista, ripresa) {
     var r = UI.load('hometv-riprendi', null), ora = Date.now(), v = null;
     if (!r || typeof r.t !== 'number') return;
     UI.save('hometv-riprendi', null);
-    if (ora - r.t > 180000 || r.t > ora + 60000) return;
-    for (var i = 0; i < lista.length; i++) {
-      var x = lista[i];
-      if (x && typeof x.quando === 'number' && x.quando <= r.t + 5000 && r.t - x.quando < 120000 && (!v || x.quando > v.quando)) v = x;
-    }
+    if (ora - r.t > 180000 || r.t > ora + 60000 || !ripresa) return;
+    for (var i = 0; i < lista.length; i++) if (lista[i] && lista[i].url === ripresa && !lista[i].prossima) v = lista[i];
     if (v) apriContinua(continuaItem(v), false);
   }
   // si apre la pagina e il video riparte da dov'eri (o dall'inizio)

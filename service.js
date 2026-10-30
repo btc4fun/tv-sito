@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.6';
+  var VERSION = '1.3.7';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -721,11 +721,14 @@
    * "fine" (le ultime 5 si leggono da 8091/tv): quando, da quanto era acceso, memoria, richieste in corso e ultime
    * richieste (solo il tipo: niente gettoni, id o nomi di film), ultimi errori. */
   var TRACCIA = pathLib.join(CACHE_DIR, 'hometv-traccia.json');
-  var traccia = { avvio: Date.now(), richieste: [], eventi: [], inVolo: 0, video: 0, ultimoVideo: 0, fini: [], scritta: 0 };
+  // film: l'indirizzo (in Continua a guardare) del film che Real4K sta facendo andare, '' se l'hai lasciato; filmPrima: quello
+  // della volta prima, se il servizio e' finito mentre andava (la home lo riprende dopo una caduta, home.js riprendiDopoCaduta)
+  var traccia = { avvio: Date.now(), richieste: [], eventi: [], inVolo: 0, video: 0, ultimoVideo: 0, fini: [], scritta: 0, film: '', filmPrima: null };
   (function () {
     var prec = leggiJsonSubito(TRACCIA);
     if (!prec || typeof prec !== 'object') return;
     if (Array.isArray(prec.fini)) traccia.fini = prec.fini.slice(-4);
+    if (typeof prec.film === 'string' && prec.film && typeof prec.t === 'number') traccia.filmPrima = { url: prec.film.slice(0, 1000), fine: prec.t };
     var ultima = traccia.fini[traccia.fini.length - 1];
     if (typeof prec.t === 'number' && !(ultima && ultima.fine === prec.t)) {
       traccia.fini.push({ fine: prec.t, minuti: Math.round((prec.t - (+prec.avvio || prec.t)) / 60000), versione: String(prec.versione || '').slice(0, 12),
@@ -808,7 +811,8 @@
   function scriviTraccia() {
     try {
       var dati = { v: 1, t: Date.now(), avvio: traccia.avvio, versione: VERSION, memoria: memoriaVera(), inVolo: traccia.inVolo,
-        video: traccia.video, richieste: traccia.richieste.slice(-12), eventi: traccia.eventi.slice(-10), errori: erroriRecenti.slice(-5), fini: traccia.fini };
+        video: traccia.video, richieste: traccia.richieste.slice(-12), eventi: traccia.eventi.slice(-10), errori: erroriRecenti.slice(-5), fini: traccia.fini,
+        film: traccia.film };
       // sincrona e piccola (un paio di KB): se il processo viene chiuso subito dopo, il file c'e' gia'
       fs.writeFileSync(TRACCIA + '.tmp', JSON.stringify(dati));
       fs.renameSync(TRACCIA + '.tmp', TRACCIA);
@@ -1420,7 +1424,13 @@
       })['catch'](fail(req, res, 400, true));
       return;
     }
-    if (route === 'GET /api/visti') { sendJson(req, res, 200, visti.perHome()); return; }
+    if (route === 'GET /api/visti') {
+      var pv = visti.perHome();
+      // il film che andava quando il servizio e' finito (entro 5 minuti): la home lo riprende da sola, solo lui
+      if (traccia.filmPrima && Date.now() - traccia.filmPrima.fine < 300000 && pv && typeof pv === 'object') pv.ripresa = traccia.filmPrima.url;
+      sendJson(req, res, 200, pv);
+      return;
+    }
     if (route === 'POST /api/visti/riprendi' || route === 'POST /api/visti/togli' || route === 'POST /api/visti/rinomina' ||
       route === 'POST /api/visti/visto' || route === 'POST /api/visti/svuota') {
       readBody(req).then(function (body) {
@@ -16325,6 +16335,8 @@
         '&dim=' + (Number(b.dim) || 0)), titolo: corpo.titolo, video: jf ? 'jellyfin:' + jf : 'chiavetta:' + String(b.p || '').slice(0, 400),
         ld: { nome: episodio ? '' : titolo, serie: episodio ? titolo : '', stagione: stagione, episodio: episodio, anno: anno } };
     }
+    // nella traccia (entro 300 ms, scritta da segnaRichiesta): se il servizio cade mentre il film va, dopo si sa quale riprendere
+    traccia.film = corpo.pagina && corpo.attivo ? corpo.pagina.url : '';
     cambiaVideo(corpo);
   }
 
