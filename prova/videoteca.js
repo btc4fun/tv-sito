@@ -1194,7 +1194,7 @@ var Videoteca = (function () {
       });
     }
 
-    // un file aperto: la struttura si legge una volta sola (finche' dimensione e data non cambiano)
+    // un file della chiavetta: la struttura si legge una volta sola (finche' dimensione e data non cambiano)
     function apri(d, p, cb) {
       risolvi(d, p, function (err, dove, parti) {
         if (err) { cb(err); return; }
@@ -1202,27 +1202,34 @@ var Videoteca = (function () {
         if (!EST_VIDEO.test(dove)) { cb(errore('assente', 'non e\' un video')); return; }
         fs.stat(dove, function (e2, st) {
           if (e2 || !st.isFile()) { cb(errore('assente', 'file non trovato')); return; }
-          var f = aperti[dove];
-          if (f && f.dim === st.size && f.data === +st.mtime) { f.usato = Date.now(); cb(null, f); return; }
-          var est = (/\.([a-z0-9]+)$/i.exec(dove) || ['', ''])[1].toLowerCase();
-          f = { percorso: dove, parti: parti, nome: parti[parti.length - 1] || '', est: est, dim: st.size, data: +st.mtime,
-            m: null, sotto: {}, usato: Date.now(), tipo: TIPI[est] || 'application/octet-stream' };
-          var lettore = /^(mkv|webm|mk3d)$/.test(est) ? apriMkv : /^(mp4|m4v|mov)$/.test(est) ? apriMp4 : null;
-          if (!lettore) { ricorda(f); cb(null, f); return; }
-          fs.open(dove, 'r', function (e3, fd) {
-            if (e3) { cb(errore(e3.code === 'EACCES' ? 'permesso' : 'assente', e3.code)); return; }
-            var finito = false;
-            function letto(e4, m) {
-              if (finito) return;
-              finito = true;
-              fs.close(fd, function () {});
-              if (!e4) f.m = m; else f.guasto = e4.message;
-              ricorda(f);
-              cb(null, f);
-            }
-            try { lettore(fs, fd, st.size, letto); } catch (e5) { letto(errore('formato', 'file rovinato')); }
-          });
+          apriF({ percorso: dove, parti: parti, nome: parti[parti.length - 1] || '', dim: st.size, data: +st.mtime }, cb);
         });
+      });
+    }
+    // un file qualsiasi col suo "fs": quello della chiavetta, o uno remoto (il ponte verso Jellyfin legge il file vero con
+    // le domande Range). x = { percorso (la chiave), nome, dim, data, est, fs }
+    function apriF(x, cb) {
+      var f = aperti[x.percorso];
+      if (f && f.dim === x.dim && f.data === x.data && f.fs === (x.fs || fs)) { f.usato = Date.now(); cb(null, f); return; }
+      var est = x.est || (/\.([a-z0-9]+)$/i.exec(x.percorso) || ['', ''])[1].toLowerCase();
+      f = { percorso: x.percorso, parti: x.parti || [], nome: x.nome || '', est: est, dim: x.dim, data: x.data, fs: x.fs || fs,
+        m: null, sotto: {}, usato: Date.now(), tipo: TIPI[est] || 'application/octet-stream' };
+      var lettore = /^(mkv|webm|mk3d)$/.test(est) ? apriMkv : /^(mp4|m4v|mov)$/.test(est) ? apriMp4 : null;
+      if (!lettore) { ricorda(f); cb(null, f); return; }
+      f.fs.open(f.percorso, 'r', function (e3, fd) {
+        if (e3) { cb(errore(e3.code === 'EACCES' ? 'permesso' : 'assente', e3.code)); return; }
+        var finito = false;
+        function letto(e4, m) {
+          if (finito) return;
+          finito = true;
+          f.fs.close(fd, function () {});
+          // la rete che si ferma (file remoto) non e' un file rovinato: non si ricorda, si riprova alla prossima domanda
+          if (e4 && e4.rete) { cb(errore('rete', 'server non raggiungibile')); return; }
+          if (!e4) f.m = m; else f.guasto = e4.message;
+          ricorda(f);
+          cb(null, f);
+        }
+        try { lettore(f.fs, fd, f.dim, letto); } catch (e5) { letto(errore('formato', 'file rovinato')); }
       });
     }
     function ricorda(f) {
@@ -1237,42 +1244,43 @@ var Videoteca = (function () {
 
     // per l'app: tutto quello che serve per scegliere (tracce, cosa legge il TV, capitoli, avvisi)
     function info(d, p, scelte, cb) {
-      apri(d, p, function (err, f) {
-        if (err) { cb(err); return; }
-        var m = f.m, out = { nome: f.nome, dim: f.dim, data: f.data, formato: m ? m.formato : f.est, durata: m ? m.durata : 0,
-          titolo: m ? m.titolo : '', video: null, audio: [], sotto: [], capitoli: m ? m.capitoli : [], avvisi: [] };
-        if (!m) {
-          out.avvisi.push(f.guasto ? 'struttura' : 'sconosciuto');
-          cb(null, out);
-          return;
-        }
-        var letti = lettiOra(), pi = piano(m, scelte, letti);
-        for (var i = 0; i < m.tracce.length; i++) {
-          var t = m.tracce[i], fam = famiglia(t.codec), base = { num: t.num, codec: fam, nomeCodec: NOMI[fam] || fam,
-            lingua: lingua(t), nome: t.nome || '', predefinita: !!t.predefinita, forzata: !!t.forzata };
-          if (t.tipo === 1 && t.num === pi.video) {
-            var v = t.video || {};
-            out.video = { num: t.num, codec: fam, nomeCodec: NOMI[fam] || fam, largh: v.largh || 0, alt: v.alt || 0,
-              hdr: t.dv ? 'DV' : v.trasf === 16 ? 'HDR10' : v.trasf === 18 ? 'HLG' : '', dv: t.dv || null, bit: v.bit || 0,
-              letto: !!letti.video[fam] };
-          } else if (t.tipo === 2) {
-            base.canali = (t.audio || {}).canali || 0;
-            base.commento = !!t.commento;
-            base.letto = !!letti.audio[fam] && !t.cifrata;
-            out.audio.push(base);
-          } else if (t.tipo === 17) {
-            base.udito = !!t.udito;
-            base.immagini = fam === 'PGS' || fam === 'VOBSUB';
-            base.leggibile = fam === 'SRT' || fam === 'ASS' || fam === 'VTT' || fam === 'PGS';
-            out.sotto.push(base);
-          }
-        }
-        out.scelta = { audio: pi.audio };
-        if (pi.senzaAudio) out.avvisi.push('audio');
-        if (out.video && !out.video.letto) out.avvisi.push('video');
-        if (out.durata > 0) out.mbps = Math.round(f.dim * 8 / out.durata / 1e5) / 10;
+      apri(d, p, function (err, f) { if (err) cb(err); else infoDi(f, scelte, cb); });
+    }
+    function infoDi(f, scelte, cb) {
+      var m = f.m, out = { nome: f.nome, dim: f.dim, data: f.data, formato: m ? m.formato : f.est, durata: m ? m.durata : 0,
+        titolo: m ? m.titolo : '', video: null, audio: [], sotto: [], capitoli: m ? m.capitoli : [], avvisi: [] };
+      if (!m) {
+        out.avvisi.push(f.guasto ? 'struttura' : 'sconosciuto');
         cb(null, out);
-      });
+        return;
+      }
+      var letti = lettiOra(), pi = piano(m, scelte, letti);
+      for (var i = 0; i < m.tracce.length; i++) {
+        // ordine: la posizione nel file (per Jellyfin, che conta le tracce cosi')
+        var t = m.tracce[i], fam = famiglia(t.codec), base = { num: t.num, ordine: i, codec: fam, nomeCodec: NOMI[fam] || fam,
+          lingua: lingua(t), nome: t.nome || '', predefinita: !!t.predefinita, forzata: !!t.forzata };
+        if (t.tipo === 1 && t.num === pi.video) {
+          var v = t.video || {};
+          out.video = { num: t.num, ordine: i, codec: fam, nomeCodec: NOMI[fam] || fam, largh: v.largh || 0, alt: v.alt || 0,
+            hdr: t.dv ? 'DV' : v.trasf === 16 ? 'HDR10' : v.trasf === 18 ? 'HLG' : '', dv: t.dv || null, bit: v.bit || 0,
+            letto: !!letti.video[fam] };
+        } else if (t.tipo === 2) {
+          base.canali = (t.audio || {}).canali || 0;
+          base.commento = !!t.commento;
+          base.letto = !!letti.audio[fam] && !t.cifrata;
+          out.audio.push(base);
+        } else if (t.tipo === 17) {
+          base.udito = !!t.udito;
+          base.immagini = fam === 'PGS' || fam === 'VOBSUB';
+          base.leggibile = fam === 'SRT' || fam === 'ASS' || fam === 'VTT' || fam === 'PGS';
+          out.sotto.push(base);
+        }
+      }
+      out.scelta = { audio: pi.audio };
+      if (pi.senzaAudio) out.avvisi.push('audio');
+      if (out.video && !out.video.letto) out.avvisi.push('video');
+      if (out.durata > 0) out.mbps = Math.round(f.dim * 8 / out.durata / 1e5) / 10;
+      cb(null, out);
     }
 
     function sottoTracce(f) {
@@ -1418,7 +1426,7 @@ var Videoteca = (function () {
         return true;
       }).slice(0, 5000);
       if (!scelti.length) { cb(!nella.length); return; } // nessun blocco qui: letta; blocchi senza posizione: no
-      var t = m.tracce.filter(function (x) { return x.num === num; })[0];
+      var t = m.tracce.filter(function (x) { return x.num === num; })[0], fs = f.fs;
       fs.open(f.percorso, 'r', function (err, fd) {
         if (err) { cb(false); return; }
         var k = 0, inVolo = 0, testate = f.testate || (f.testate = {}), finito = false, letti = 0;
@@ -1475,43 +1483,43 @@ var Videoteca = (function () {
     }
 
     function sotto(d, p, num, da, cb, dopo) {
-      apri(d, p, function (err, f) {
-        if (err) { cb(err); return; }
-        num = +num;
-        da = Math.max(0, +da || 0);
-        dopo = dopo !== undefined && dopo !== null && dopo !== '' && isFinite(+dopo) ? +dopo : -1;
-        f.dove = da;
-        var tr = sottoTracce(f)[num];
-        if (!tr) { cb(errore('assente', 'traccia di sottotitoli non trovata')); return; }
-        // da ora si raccoglie solo questa traccia (anche nelle letture del file gia' in corso); le altre si dimenticano
-        var attive = attiveDi(f);
-        if (attive[num] !== tr) {
-          for (var a0 in attive) if (Object.prototype.hasOwnProperty.call(attive, a0)) delete attive[a0];
-          attive[num] = tr;
-          dimenticaSotto(f, num);
+      apri(d, p, function (err, f) { if (err) cb(err); else sottoF(f, num, da, cb, dopo); });
+    }
+    function sottoF(f, num, da, cb, dopo) {
+      num = +num;
+      da = Math.max(0, +da || 0);
+      dopo = dopo !== undefined && dopo !== null && dopo !== '' && isFinite(+dopo) ? +dopo : -1;
+      f.dove = da;
+      var tr = sottoTracce(f)[num];
+      if (!tr) { cb(errore('assente', 'traccia di sottotitoli non trovata')); return; }
+      // da ora si raccoglie solo questa traccia (anche nelle letture del file gia' in corso); le altre si dimenticano
+      var attive = attiveDi(f);
+      if (attive[num] !== tr) {
+        for (var a0 in attive) if (Object.prototype.hasOwnProperty.call(attive, a0)) delete attive[a0];
+        attive[num] = tr;
+        dimenticaSotto(f, num);
+      }
+      // a finestre: 2 minuti per i PGS (pesano), 10 per il testo. Si risponde con la finestra di "da" e intanto si
+      // legge la prossima
+      var W = famiglia(tr.codec) === 'PGS' ? FINESTRA_PGS : FINESTRA_TESTO, k = Math.floor(da / W);
+      function rispondi(letta) {
+        var s = f.sotto[num] || { eventi: [], ordinati: true }, a = da + W, out = [], primo = 0, i;
+        ordina(s);
+        // l'ultimo iniziato prima di "da" resta sempre: un PGS non ha durata (lo toglie quello dopo). Ricerca a meta'
+        var lo = 0, hi = s.eventi.length - 1;
+        while (lo <= hi) { var mid = (lo + hi) >> 1; if (s.eventi[mid].t <= da) { primo = mid; lo = mid + 1; } else hi = mid - 1; }
+        for (i = primo; i < s.eventi.length && out.length < 400; i++) {
+          var e = s.eventi[i];
+          if (e.t > a) break;
+          if (dopo >= 0 && e.t <= dopo) continue; // l'app li ha gia'
+          if (i === primo || e.t + Math.max(e.d, 0) >= da - 2000) out.push(e.pgs ? { t: e.t, d: e.d, k: e.k, pgs: e.pgs.toString('base64') } : e);
         }
-        // a finestre: 2 minuti per i PGS (pesano), 10 per il testo. Si risponde con la finestra di "da" e intanto si
-        // legge la prossima
-        var W = famiglia(tr.codec) === 'PGS' ? FINESTRA_PGS : FINESTRA_TESTO, k = Math.floor(da / W);
-        function rispondi(letta) {
-          var s = f.sotto[num] || { eventi: [], ordinati: true }, a = da + W, out = [], primo = 0, i;
-          ordina(s);
-          // l'ultimo iniziato prima di "da" resta sempre: un PGS non ha durata (lo toglie quello dopo). Ricerca a meta'
-          var lo = 0, hi = s.eventi.length - 1;
-          while (lo <= hi) { var mid = (lo + hi) >> 1; if (s.eventi[mid].t <= da) { primo = mid; lo = mid + 1; } else hi = mid - 1; }
-          for (i = primo; i < s.eventi.length && out.length < 400; i++) {
-            var e = s.eventi[i];
-            if (e.t > a) break;
-            if (dopo >= 0 && e.t <= dopo) continue; // l'app li ha gia'
-            if (i === primo || e.t + Math.max(e.d, 0) >= da - 2000) out.push(e.pgs ? { t: e.t, d: e.d, k: e.k, pgs: e.pgs.toString('base64') } : e);
-          }
-          // "completi" solo per i file accanto (letti interi): le tracce del file si chiedono di nuovo andando avanti
-          cb(null, { eventi: out, fino: letta ? (k + 1) * W : 0, completi: false });
-        }
-        leggiFinestra(f, num, k, W, function (letta) {
-          rispondi(letta);
-          leggiFinestra(f, num, k + 1, W, function () {});
-        });
+        // "completi" solo per i file accanto (letti interi): le tracce del file si chiedono di nuovo andando avanti
+        cb(null, { eventi: out, fino: letta ? (k + 1) * W : 0, completi: false });
+      }
+      leggiFinestra(f, num, k, W, function (letta) {
+        rispondi(letta);
+        leggiFinestra(f, num, k + 1, W, function () {});
       });
     }
     // una finestra di sottotitoli dalle Cues, una volta sola: chi chiede mentre si legge aspetta la stessa lettura
@@ -1571,145 +1579,148 @@ var Videoteca = (function () {
     function servi(req, res, d, p, scelte) {
       apri(d, p, function (err, f) {
         if (err) {
-          res.writeHead(err.codice === 'permesso' ? 403 : 404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+          res.writeHead(err.codice === 'permesso' ? 403 : err.codice === 'rete' ? 502 : 404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
           res.end(err.codice || 'errore');
           return;
         }
-        var dim = f.dim, r = intervallo(req.headers.range, dim);
-        if (r === false) {
-          res.writeHead(416, { 'Content-Range': 'bytes */' + dim, 'Access-Control-Allow-Origin': '*' });
-          res.end();
-          return;
-        }
-        var a = r ? r.a : 0, z = r ? r.z : dim - 1, m = f.m;
-        var pi = m ? piano(m, scelte, lettiOra()) : null;
-        var fisse = m && pi ? modificheFisse(m, pi) : [];
-        var subT = m && m.formato !== 'mp4' ? sottoTracce(f) : {};
-        var scansiona = !!(m && m.formato !== 'mp4' && m.cluster1 > 0 && !f.scansioneRotta && (pi.quante || Object.keys(subT).length));
-        var testa = { 'Content-Type': f.tipo, 'Accept-Ranges': 'bytes', 'Content-Length': String(z - a + 1),
-          'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' };
-        if (r) testa['Content-Range'] = 'bytes ' + a + '-' + z + '/' + dim;
-        res.writeHead(r ? 206 : 200, testa);
-        if (req.method === 'HEAD') { res.end(); return; }
-        f.usato = Date.now();
+        serviF(req, res, f, scelte);
+      });
+    }
+    function serviF(req, res, f, scelte) {
+      var fs = f.fs, dim = f.dim, r = intervallo(req.headers.range, dim);
+      if (r === false) {
+        res.writeHead(416, { 'Content-Range': 'bytes */' + dim, 'Access-Control-Allow-Origin': '*' });
+        res.end();
+        return;
+      }
+      var a = r ? r.a : 0, z = r ? r.z : dim - 1, m = f.m;
+      var pi = m ? piano(m, scelte, lettiOra()) : null;
+      var fisse = m && pi ? modificheFisse(m, pi) : [];
+      var subT = m && m.formato !== 'mp4' ? sottoTracce(f) : {};
+      var scansiona = !!(m && m.formato !== 'mp4' && m.cluster1 > 0 && !f.scansioneRotta && (pi.quante || Object.keys(subT).length));
+      var testa = { 'Content-Type': f.tipo, 'Accept-Ranges': 'bytes', 'Content-Length': String(z - a + 1),
+        'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' };
+      if (r) testa['Content-Range'] = 'bytes ' + a + '-' + z + '/' + dim;
+      res.writeHead(r ? 206 : 200, testa);
+      if (req.method === 'HEAD') { res.end(); return; }
+      f.usato = Date.now();
 
-        // da dove si legge: per la scansione dal confine noto prima di "a" (il Cluster dove cade), se non e' troppo
-        // lontano; nell'intestazione (prima del primo Cluster) solo le modifiche fisse
-        var inizio = a, scan = null, daScansione = -1;
-        if (scansiona) {
-          if (a < m.cluster1) daScansione = m.cluster1;
-          else {
-            var c = confinePrima(m.confini, a);
-            if (c >= 0 && a - c <= (8 << 20)) { daScansione = c; inizio = c; }
-            else daScansione = -2; // troppo lontano: si cerca il prossimo Cluster
-          }
-          scan = new Scansione(m, pi.nascoste, attiveDi(f), function (num, ev) { nuovoSotto(f, num, ev); },
-            function (pos) { nuovoConfine(m, pos); });
+      // da dove si legge: per la scansione dal confine noto prima di "a" (il Cluster dove cade), se non e' troppo
+      // lontano; nell'intestazione (prima del primo Cluster) solo le modifiche fisse
+      var inizio = a, scan = null, daScansione = -1;
+      if (scansiona) {
+        if (a < m.cluster1) daScansione = m.cluster1;
+        else {
+          var c = confinePrima(m.confini, a);
+          if (c >= 0 && a - c <= (8 << 20)) { daScansione = c; inizio = c; }
+          else daScansione = -2; // troppo lontano: si cerca il prossimo Cluster
         }
-        var fine = Math.min(dim, z + 1 + (scan ? 64 : 0)); // qualche byte in piu' per decidere l'ultimo blocco
-        var lettura = inizio, sospeso = null, sospesoPos = 0, chiuso = false, fd = -1, nf = 0, inAttesa = false, fermataScan = false;
-        // il lettore chiude mentre si aspetta "drain": nessuno richiamerebbe giro() e il file resterebbe aperto
-        function staccato() { chiuso = true; if (inAttesa) { inAttesa = false; res.removeListener('drain', riparti); finisci(); } }
-        function riparti() { inAttesa = false; giro(); }
-        req.on('close', staccato);
-        res.on('close', staccato);
-        // una pausa lunga non chiude la connessione (in Node 12 il server la chiude dopo 2 minuti di silenzio)
-        try { if (req.socket && req.socket.setTimeout) req.socket.setTimeout(0); } catch (e0) {}
-        fs.open(f.percorso, 'r', function (e2, x) {
-          if (e2) { chiuso = true; try { res.destroy(); } catch (e) {} return; }
-          fd = x;
-          giro();
-        });
-        function finisci(rotta) {
-          if (fd >= 0) { fs.close(fd, function () {}); fd = -1; }
-          if (chiuso) return;
-          // meno byte di quelli promessi (file sparito, chiavetta staccata): si chiude la connessione, cosi' il lettore lo
-          // sa subito invece di aspettare il resto
-          if (rotta) { chiuso = true; try { res.destroy(); } catch (e) {} } else res.end();
-        }
-        function giro() {
-          if (chiuso) { finisci(); return; }
-          // la scansione e' rimasta indietro (fermata dopo 15 ms, o tanti blocchi minuscoli): prima si finisce cio' che
-          // c'e', al giro dopo, senza leggere altro (la memoria non cresce) e senza mandare byte non controllati
-          if (sospeso && (sospeso.length >= BLOCCO || fermataScan)) {
-            setImmediate(function () {
-              if (chiuso) { finisci(); return; }
-              var avanti;
-              try { avanti = pezzo(VUOTO); } catch (ex) { rotto(); return; }
-              if (!avanti) { inAttesa = true; res.once('drain', riparti); return; }
-              giro();
-            });
-            return;
-          }
-          if (lettura >= fine && !sospeso) { finisci(); return; }
-          var n = Math.min(BLOCCO, fine - lettura);
-          if (n <= 0) { manda(sospeso, sospesoPos, true); sospeso = null; finisci(); return; }
-          leggi(fs, fd, lettura, n, function (e3, b) {
-            if (e3 || !b.length) { if (sospeso) manda(sospeso, sospesoPos, true); finisci(lettura <= z); return; }
+        scan = new Scansione(m, pi.nascoste, attiveDi(f), function (num, ev) { nuovoSotto(f, num, ev); },
+          function (pos) { nuovoConfine(m, pos); });
+      }
+      var fine = Math.min(dim, z + 1 + (scan ? 64 : 0)); // qualche byte in piu' per decidere l'ultimo blocco
+      var lettura = inizio, sospeso = null, sospesoPos = 0, chiuso = false, fd = -1, nf = 0, inAttesa = false, fermataScan = false;
+      // il lettore chiude mentre si aspetta "drain": nessuno richiamerebbe giro() e il file resterebbe aperto
+      function staccato() { chiuso = true; if (inAttesa) { inAttesa = false; res.removeListener('drain', riparti); finisci(); } }
+      function riparti() { inAttesa = false; giro(); }
+      req.on('close', staccato);
+      res.on('close', staccato);
+      // una pausa lunga non chiude la connessione (in Node 12 il server la chiude dopo 2 minuti di silenzio)
+      try { if (req.socket && req.socket.setTimeout) req.socket.setTimeout(0); } catch (e0) {}
+      fs.open(f.percorso, 'r', function (e2, x) {
+        if (e2) { chiuso = true; try { res.destroy(); } catch (e) {} return; }
+        fd = x;
+        giro();
+      });
+      function finisci(rotta) {
+        if (fd >= 0) { fs.close(fd, function () {}); fd = -1; }
+        if (chiuso) return;
+        // meno byte di quelli promessi (file sparito, chiavetta staccata): si chiude la connessione, cosi' il lettore lo
+        // sa subito invece di aspettare il resto
+        if (rotta) { chiuso = true; try { res.destroy(); } catch (e) {} } else res.end();
+      }
+      function giro() {
+        if (chiuso) { finisci(); return; }
+        // la scansione e' rimasta indietro (fermata dopo 15 ms, o tanti blocchi minuscoli): prima si finisce cio' che
+        // c'e', al giro dopo, senza leggere altro (la memoria non cresce) e senza mandare byte non controllati
+        if (sospeso && (sospeso.length >= BLOCCO || fermataScan)) {
+          setImmediate(function () {
+            if (chiuso) { finisci(); return; }
             var avanti;
-            try { avanti = pezzo(b); } catch (ex) { rotto(); return; }
+            try { avanti = pezzo(VUOTO); } catch (ex) { rotto(); return; }
             if (!avanti) { inAttesa = true; res.once('drain', riparti); return; }
             giro();
           });
+          return;
         }
-        // un file fatto male (o apposta): questa risposta si chiude e il file si serve senza scansione (le modifiche
-        // fisse restano); il servizio non si ferma
-        function rotto() {
-          f.scansioneRotta = true;
-          chiuso = true;
-          if (fd >= 0) { fs.close(fd, function () {}); fd = -1; }
-          try { res.destroy(); } catch (e) {}
-        }
-        // un pezzo letto: scansione, modifiche, e la parte che cade nella richiesta. false = aspettare "drain"
-        function pezzo(b) {
-          var pos = sospeso ? sospesoPos : lettura, dati = sospeso ? unisci(sospeso, b) : b;
-          lettura += b.length;
-          sospeso = null;
-          var finale = dati.length, mod = [];
-          fermataScan = false;
-          if (scan) {
-            var da = 0;
-            if (daScansione === -2) {
-              // ricerca del prossimo Cluster (1F 43 B6 75) seguito da un Tempo o da un CRC
-              for (var i = 0; i + 13 < dati.length; i++) {
-                if (dati[i] === 0x1f && dati[i + 1] === 0x43 && dati[i + 2] === 0xb6 && dati[i + 3] === 0x75) {
-                  var vd = leggiVint(dati, i + 4);
-                  if (vd && !vd.rotto && (dati[i + 4 + vd.n] === 0xe7 || dati[i + 4 + vd.n] === 0xbf)) { daScansione = pos + i; break; }
-                }
+        if (lettura >= fine && !sospeso) { finisci(); return; }
+        var n = Math.min(BLOCCO, fine - lettura);
+        if (n <= 0) { manda(sospeso, sospesoPos, true); sospeso = null; finisci(); return; }
+        leggi(fs, fd, lettura, n, function (e3, b) {
+          if (e3 || !b.length) { if (sospeso) manda(sospeso, sospesoPos, true); finisci(lettura <= z); return; }
+          var avanti;
+          try { avanti = pezzo(b); } catch (ex) { rotto(); return; }
+          if (!avanti) { inAttesa = true; res.once('drain', riparti); return; }
+          giro();
+        });
+      }
+      // un file fatto male (o apposta): questa risposta si chiude e il file si serve senza scansione (le modifiche
+      // fisse restano); il servizio non si ferma
+      function rotto() {
+        f.scansioneRotta = true;
+        chiuso = true;
+        if (fd >= 0) { fs.close(fd, function () {}); fd = -1; }
+        try { res.destroy(); } catch (e) {}
+      }
+      // un pezzo letto: scansione, modifiche, e la parte che cade nella richiesta. false = aspettare "drain"
+      function pezzo(b) {
+        var pos = sospeso ? sospesoPos : lettura, dati = sospeso ? unisci(sospeso, b) : b;
+        lettura += b.length;
+        sospeso = null;
+        var finale = dati.length, mod = [];
+        fermataScan = false;
+        if (scan) {
+          var da = 0;
+          if (daScansione === -2) {
+            // ricerca del prossimo Cluster (1F 43 B6 75) seguito da un Tempo o da un CRC
+            for (var i = 0; i + 13 < dati.length; i++) {
+              if (dati[i] === 0x1f && dati[i + 1] === 0x43 && dati[i + 2] === 0xb6 && dati[i + 3] === 0x75) {
+                var vd = leggiVint(dati, i + 4);
+                if (vd && !vd.rotto && (dati[i + 4 + vd.n] === 0xe7 || dati[i + 4 + vd.n] === 0xbf)) { daScansione = pos + i; break; }
               }
-              if (daScansione === -2) { da = -1; finale = Math.max(0, dati.length - 13); }
             }
-            if (da >= 0 && daScansione >= 0 && pos + dati.length > daScansione) {
-              da = Math.max(0, daScansione - pos);
-              var r2 = scan.mangia(da ? dati.slice(da) : dati, pos + da);
-              finale = da + r2.usati;
-              mod = r2.modifiche;
-              fermataScan = r2.fermata;
-              // il file e' finito: si manda tutto (ma solo quando la scansione ha davvero guardato tutto quello che poteva)
-              if (lettura >= fine && finale < dati.length && !r2.fermata) finale = dati.length;
-              daScansione = pos; // da qui in poi la scansione segue i dati
-            }
+            if (daScansione === -2) { da = -1; finale = Math.max(0, dati.length - 13); }
           }
-          if (finale < dati.length) { sospeso = dati.slice(finale); sospesoPos = pos + finale; dati = dati.slice(0, finale); }
-          // le modifiche fisse e quelle trovate, solo dentro questo pezzo
-          for (var k = nf; k < fisse.length && fisse[k].pos < pos + dati.length; k++) {
-            if (fisse[k].pos >= pos) dati[fisse[k].pos - pos] = fisse[k].byte;
+          if (da >= 0 && daScansione >= 0 && pos + dati.length > daScansione) {
+            da = Math.max(0, daScansione - pos);
+            var r2 = scan.mangia(da ? dati.slice(da) : dati, pos + da);
+            finale = da + r2.usati;
+            mod = r2.modifiche;
+            fermataScan = r2.fermata;
+            // il file e' finito: si manda tutto (ma solo quando la scansione ha davvero guardato tutto quello che poteva)
+            if (lettura >= fine && finale < dati.length && !r2.fermata) finale = dati.length;
+            daScansione = pos; // da qui in poi la scansione segue i dati
           }
-          while (nf < fisse.length && fisse[nf].pos < pos + dati.length) nf++;
-          for (var j = 0; j < mod.length; j++) if (mod[j] >= pos && mod[j] < pos + dati.length) dati[mod[j] - pos] = ID.VOID;
-          if (scan && pos + dati.length > (f.fineLetta || 0)) {
-            f.fineLetta = pos + dati.length;
-          }
-          return manda(dati, pos, false);
         }
-        // manda la parte che cade nella richiesta [a, z]; false = aspetta "drain"
-        function manda(dati, pos, ultimo) {
-          if (!dati || chiuso) return true;
-          var da = Math.max(a, pos), al = Math.min(z + 1, pos + dati.length);
-          if (al <= da) return true;
-          return res.write(dati.slice(da - pos, al - pos));
+        if (finale < dati.length) { sospeso = dati.slice(finale); sospesoPos = pos + finale; dati = dati.slice(0, finale); }
+        // le modifiche fisse e quelle trovate, solo dentro questo pezzo
+        for (var k = nf; k < fisse.length && fisse[k].pos < pos + dati.length; k++) {
+          if (fisse[k].pos >= pos) dati[fisse[k].pos - pos] = fisse[k].byte;
         }
-      });
+        while (nf < fisse.length && fisse[nf].pos < pos + dati.length) nf++;
+        for (var j = 0; j < mod.length; j++) if (mod[j] >= pos && mod[j] < pos + dati.length) dati[mod[j] - pos] = ID.VOID;
+        if (scan && pos + dati.length > (f.fineLetta || 0)) {
+          f.fineLetta = pos + dati.length;
+        }
+        return manda(dati, pos, false);
+      }
+      // manda la parte che cade nella richiesta [a, z]; false = aspetta "drain"
+      function manda(dati, pos, ultimo) {
+        if (!dati || chiuso) return true;
+        var da = Math.max(a, pos), al = Math.min(z + 1, pos + dati.length);
+        if (al <= da) return true;
+        return res.write(dati.slice(da - pos, al - pos));
+      }
     }
 
     /* ---------------------------------------------------------- le schede (NFO, immagini, tag) e le immagini */
@@ -1776,7 +1787,7 @@ var Videoteca = (function () {
     }
     // le copertine dentro il file: gli allegati immagine del MKV (cover.jpg, cover_land.jpg...) o "covr" dell'MP4
     function allegatiDi(f, cb) {
-      var m = f.m;
+      var m = f.m, fs = f.fs;
       if (!m || !m.allegati) { cb([]); return; }
       if (m.listaAllegati) { cb(m.listaAllegati); return; }
       fs.open(f.percorso, 'r', function (e, fd) {
@@ -2056,6 +2067,19 @@ var Videoteca = (function () {
     return {
       dischi: dischi, cartella: cartella, info: info, servi: servi, sotto: sotto, sottoEsterni: sottoEsterni, prova: prova,
       scheda: scheda, immagine: immagine,
+      // un file che non sta sulla chiavetta (il ponte verso Jellyfin): x = { percorso (chiave unica), nome, dim, data, est,
+      // fs (open, read, close come quelli di Node) }. Stesse regole, stesso "vuoto", stessi sottotitoli
+      remoto: {
+        info: function (x, scelte, cb) { apriF(x, function (e, f) { if (e) cb(e); else infoDi(f, scelte, cb); }); },
+        servi: function (req, res, x, scelte) {
+          apriF(x, function (e, f) {
+            if (!e) { serviF(req, res, f, scelte); return; }
+            res.writeHead(e.codice === 'rete' ? 502 : 404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+            res.end(e.codice || 'errore');
+          });
+        },
+        sotto: function (x, num, da, cb, dopo) { apriF(x, function (e, f) { if (e) cb(e); else sottoF(f, num, da, cb, dopo); }); }
+      },
       previsto: radici.length > 0, domain: o.domain || null, log: typeof o.log === 'function' ? o.log : null,
       // per le prove
       _apri: apri, _sottoTot: function () { return sottoTot; }
@@ -2097,7 +2121,7 @@ var Videoteca = (function () {
       'Access-Control-Allow-Origin': '*' });
     res.end(JSON.stringify(o));
   }
-  function statoDi(e) { return e.codice === 'permesso' ? 403 : e.codice === 'percorso' ? 400 : 404; }
+  function statoDi(e) { return e.codice === 'permesso' ? 403 : e.codice === 'percorso' ? 400 : e.codice === 'rete' ? 502 : 404; }
   function corpoJson(req, max, cb) {
     var parti = [], n = 0, rotto = false;
     req.on('data', function (c) { n += c.length; if (n > max) { rotto = true; req.destroy(); } else parti.push(c); });
@@ -2131,7 +2155,7 @@ var Videoteca = (function () {
   }
   function tratta(vt, g, req, res, u, opzioni, m) {
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, HEAD',
+      res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, HEAD, DELETE',
         'Access-Control-Allow-Headers': 'Content-Type, Range', 'Access-Control-Max-Age': '600' });
       res.end();
       return true;
@@ -2164,6 +2188,10 @@ var Videoteca = (function () {
         if (opzioni.punto) { try { opzioni.punto(b); } catch (e) {} }
         rispondi(res, 200, { ok: true });
       });
+    } else if (/^(jf|mac|tv)\//.test(cosa) && opzioni.ponti) {
+      // i ponti verso Jellyfin e verso il limitatore del Mac, e la velocita' del TV (tv-sito/ponti-video.js): stesso
+      // gettone, stesso dominio
+      opzioni.ponti(req, res, cosa, q, u);
     } else {
       rispondi(res, 404, { error: 'domanda sconosciuta', codice: 'assente' });
     }
