@@ -1,0 +1,662 @@
+/*
+ * Home TV - stile condiviso da home e browser.
+ *
+ * Idea: un salotto al buio. Sfondo quasi nero, la luce arriva dall'app
+ * selezionata; una sola fila attiva sempre allo stesso punto dello schermo.
+ * 1rem = 10px su uno schermo largo 1920 (lo imposta ui.js).
+ * Per la fluidita' sul TV si animano solo transform e opacity; niente blur,
+ * niente flex gap, inset o aspect-ratio (il browser del TV e' datato).
+ */
+
+:root {
+  color-scheme: dark;
+  --bg: #07080b;
+  --surface: #14161b;
+  --surface-2: #1c1f26;
+  --line: rgba(255, 255, 255, .09);
+  --text: #f4f5f7;
+  --text-2: rgba(232, 235, 242, .64);
+  --text-3: rgba(232, 235, 242, .42);
+  --pill: #f4f5f7;
+  --pill-text: #0b0c10;
+  --ring: #ffffff;
+  --sito-a: #ff7b47;
+  --sito-b: #a8321b;
+  --web-a: #22c3ae;
+  --web-b: #0b5762;
+  --yt-a: #eb3737;
+  --yt-b: #7a1018;
+  --store-a: #8b5cf6;
+  --store-b: #3b1f7a;
+  --font: "Instrument Sans", "SamsungOneUI", "SamsungOne", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --ease: cubic-bezier(.2, .8, .2, 1);
+}
+html[data-tema="grafite"] { --bg: #121315; --surface: #1c1d21; --surface-2: #25272c; }
+html[data-tema="blu"] { --bg: #060b17; --surface: #0e1527; --surface-2: #162039; }
+html[data-tema="nero"] { --bg: #000000; --surface: #101012; --surface-2: #19191c; }
+
+html { font-size: 10px; background: var(--bg); }
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, p, ul { margin: 0; padding: 0; }
+
+/* ---------------------------------------------------------- luce dell'app */
+#ambient { position: fixed; left: 0; top: 0; width: 100%; height: 100%; z-index: 0; }
+.wash {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+  opacity: 0;
+  transition: opacity .5s ease;
+  will-change: opacity;
+}
+.wash.on { opacity: 1; }
+
+/* ---------------------------------------------------------- barra in alto */
+#topbar {
+  position: fixed; left: 9.6rem; right: 9.6rem; top: 4.8rem; z-index: 6;
+  height: 6.4rem;
+}
+#greeting {
+  position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  font-size: 3rem; font-weight: 600; letter-spacing: -.01em; color: var(--text);
+  white-space: nowrap;
+}
+#topright { position: absolute; right: 0; top: 0; height: 6.4rem; white-space: nowrap; }
+#date, #time {
+  display: inline-block; vertical-align: middle; line-height: 6.4rem;
+}
+#date { font-size: 2.6rem; font-weight: 500; color: var(--text-2); margin-right: 1.6rem; }
+#time { font-size: 3rem; font-weight: 600; font-variant-numeric: tabular-nums; margin-right: 3.2rem; }
+.iconbtn {
+  display: inline-block; vertical-align: middle; position: relative;
+  width: 6.4rem; height: 6.4rem; border-radius: 50%;
+  background: rgba(255, 255, 255, .08);
+  transition: transform .2s var(--ease), background-color .2s ease;
+  cursor: pointer;
+}
+.iconbtn svg { position: absolute; left: 1.6rem; top: 1.6rem; width: 3.2rem; height: 3.2rem; fill: var(--text); }
+.iconbtn.f { background: var(--pill); transform: scale(1.12); }
+.iconbtn.f svg { fill: var(--pill-text); }
+
+/* ---------------------------------------------------------- titolo grande */
+#hero {
+  position: fixed; left: 9.6rem; top: 15.6rem; z-index: 3;
+  width: 120rem;
+}
+/* il titolo resta su un livello suo: la dissolvenza non fa ridisegnare il resto dello schermo */
+.hero-text { transition: opacity .16s ease; will-change: opacity; }
+.hero-text.fade { opacity: 0; }
+#hero-cap {
+  font-size: 2.4rem; font-weight: 600; letter-spacing: .02em; color: var(--text-2);
+  height: 3rem; white-space: nowrap;
+}
+#hero-title {
+  margin-top: .8rem;
+  font-size: 9.2rem; font-weight: 700; line-height: 1.02; letter-spacing: -.035em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#hero-sub {
+  margin-top: 1.4rem;
+  font-size: 3rem; font-weight: 500; line-height: 1.3; color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110rem;
+}
+#hero-chips { margin-top: 3.2rem; height: 4.8rem; white-space: nowrap; }
+.chip {
+  display: inline-block; vertical-align: middle;
+  height: 4.8rem; line-height: 4.8rem; padding: 0 2rem 0 .8rem; margin-right: 1.2rem;
+  border-radius: 99rem; background: rgba(255, 255, 255, .08);
+  font-size: 2.1rem; font-weight: 600; color: var(--text-2);
+}
+.chip b {
+  display: inline-block; vertical-align: top; margin: .7rem 1.2rem 0 0;
+  min-width: 3.4rem; height: 3.4rem; line-height: 3.4rem; padding: 0 .9rem;
+  border-radius: 99rem; background: var(--text); color: var(--pill-text);
+  font-size: 1.7rem; font-weight: 700; text-align: center;
+}
+
+/* ---------------------------------------------------------- file di app */
+#rows {
+  position: fixed; left: 0; right: 0; top: 0; z-index: 2;
+  transition: transform .42s var(--ease);
+  will-change: transform;
+}
+.row {
+  position: absolute; left: 0; right: 0;
+  padding-left: 9.6rem;
+  transition: opacity .3s ease;
+}
+.row.past { opacity: 0; }
+.row.far { opacity: .55; }
+.row-title {
+  height: 3.6rem; margin-bottom: 2.2rem;
+  font-size: 2.8rem; font-weight: 600; letter-spacing: -.005em; color: var(--text-2);
+  white-space: nowrap;
+}
+.row.active .row-title { color: var(--text); }
+.track {
+  position: relative; height: 17.28rem; white-space: nowrap; font-size: 0;
+  transition: transform .36s var(--ease);
+  will-change: transform;
+}
+
+/* ---------------------------------------------------------- riquadri */
+.tile {
+  display: inline-block; vertical-align: top; position: relative;
+  width: 28.8rem; height: 17.28rem; margin-right: 3.2rem;
+  cursor: pointer;
+}
+.lift {
+  position: relative; width: 100%; height: 100%;
+  transition: transform .22s var(--ease);
+}
+/* anello bianco di selezione: fuori dal riquadro, appare solo su quello scelto */
+.lift:before {
+  content: ""; position: absolute; left: -.9rem; top: -.9rem; right: -.9rem; bottom: -.9rem;
+  border: .45rem solid var(--ring); border-radius: 2.7rem;
+  opacity: 0; transition: opacity .18s ease;
+}
+.lift:after {
+  content: ""; position: absolute; left: 6%; right: 6%; top: 20%; bottom: -6%; z-index: -1;
+  border-radius: 2.4rem; box-shadow: 0 2.6rem 5rem rgba(0, 0, 0, .7);
+  opacity: 0; transition: opacity .22s ease;
+}
+.card {
+  position: relative; width: 100%; height: 100%;
+  overflow: hidden; border-radius: 1.8rem;
+  background: var(--surface-2);
+}
+.card img {
+  position: absolute; left: 50%; top: 50%;
+  max-width: 82%; max-height: 82%;
+  transform: translate(-50%, -50%);
+}
+.card img.full { max-width: 100%; max-height: 100%; }
+.card svg.glyph { position: absolute; left: 2.6rem; top: 2.6rem; width: 6.4rem; height: 6.4rem; fill: #fff; }
+.card .label {
+  position: absolute; left: 2.6rem; right: 2.6rem; bottom: 2.2rem;
+  font-size: 3rem; font-weight: 700; line-height: 1.08; letter-spacing: -.02em; color: #fff;
+  white-space: normal;
+}
+.card .label small {
+  display: block; margin-top: .4rem;
+  font-size: 2rem; font-weight: 600; letter-spacing: 0; color: rgba(255, 255, 255, .72);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.card.sito { background: linear-gradient(140deg, var(--sito-a) 0%, var(--sito-b) 100%); }
+/* Continua a guardare: l'immagine del film, il titolo, quanto ne hai visto */
+.card .cont-foto {
+  left: 0; top: 0; width: 100%; height: 100%; max-width: none; max-height: none;
+  transform: none; object-fit: cover;
+}
+.card .cont-velo {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 78%;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, .5) 42%, rgba(0, 0, 0, .86) 100%);
+}
+.card.continua .label { bottom: 3.4rem; font-size: 2.6rem; text-shadow: 0 .2rem 1.2rem rgba(0, 0, 0, .55); }
+/* stagione e puntata (o il riferimento della pagina) sopra il titolo, ben leggibili: cambiando sito si sa cosa cercare */
+.card.continua .label small {
+  margin: 0 0 .5rem; font-size: 1.9rem; font-weight: 700; line-height: 1.15; color: #9df0e2;
+  white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+.card.continua .label b {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-weight: 700;
+}
+.cont-barra {
+  position: absolute; left: 2.6rem; right: 2.6rem; bottom: 1.8rem; height: .7rem; border-radius: .35rem;
+  background: rgba(255, 255, 255, .26); overflow: hidden;
+}
+.cont-barra i { display: block; height: 100%; border-radius: .35rem; background: linear-gradient(90deg, #19d3b7, #3b82f6 55%, #8b5cf6); }
+.card.web { background: linear-gradient(140deg, var(--web-a) 0%, var(--web-b) 100%); }
+/* il logo del Browser: il globo con la lente, un po' piu' grande delle altre icone; dietro, lo stesso globo grande e leggero */
+.card.web svg.glyph { left: 2.4rem; top: 2.2rem; width: 7.4rem; height: 7.4rem; }
+.card.web .web-sfondo { position: absolute; right: -7.2rem; top: -4.6rem; width: 22rem; height: 22rem; opacity: .12; }
+/* lo Store (le app web di Home TV) e il pallino delle app con una versione nuova */
+.card.store { background: linear-gradient(140deg, var(--store-a) 0%, var(--store-b) 100%); }
+.card .pallino {
+  position: absolute; right: 2rem; top: 2rem; width: 2.6rem; height: 2.6rem; border-radius: 50%;
+  background: #3b82f6; box-shadow: 0 0 0 .45rem #fff, 0 .4rem 1.2rem rgba(0, 0, 0, .45);
+}
+/* le app dello Store nella home: l'icona piccola in alto e il nome in basso, come i siti (colori della home) */
+.card.appweb .app-ico {
+  position: absolute; left: 2.4rem; top: 2.2rem; width: 6rem; height: 6rem; overflow: hidden;
+  border-radius: 1.5rem; background: rgba(255, 255, 255, .16); text-align: center;
+}
+.card.appweb .app-ico b { display: block; line-height: 6rem; font-size: 3rem; font-weight: 700; color: #fff; }
+/* il nome su una riga sola, sotto l'icona con un po' d'aria: intero si legge in grande quando l'app e' scelta */
+.card.appweb .label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card.appweb .app-ico img {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%; max-width: none; max-height: none;
+  transform: none; object-fit: cover;
+}
+/* la copertina di un'app dello Store: un disegno grande come il riquadro (480 x 288), sopra icona e nome; il pallino
+   delle versioni nuove e il segno delle installate restano sopra, nell'angolo in alto a destra */
+.card .copertina-img {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%; max-width: none; max-height: none;
+  transform: none; object-fit: cover; z-index: 1;
+}
+.card .pallino { z-index: 2; }
+.card .spunta {
+  position: absolute; right: 2rem; top: 2rem; z-index: 2; width: 3rem; height: 3rem; border-radius: 50%;
+  background: #fff; box-shadow: 0 .4rem 1.2rem rgba(0, 0, 0, .45);
+}
+.card .spunta:after {
+  content: ""; position: absolute; left: 1.08rem; top: .58rem; width: .7rem; height: 1.35rem;
+  border: solid #0b0c10; border-width: 0 .34rem .34rem 0;
+  -webkit-transform: rotate(45deg); transform: rotate(45deg);
+}
+/* YouTube per la TV (solo col blocco avanzato acceso): come il Browser, col suo colore */
+.card.yt { background: linear-gradient(140deg, var(--yt-a) 0%, var(--yt-b) 100%); }
+/* <solo-completa> */
+/* la tua versione: "NO ADS" in grande, si distingue dall'app YouTube a colpo d'occhio */
+.card.yt.noads svg.glyph { top: 2.4rem; width: 4.4rem; height: 4.4rem; }
+.card.yt.noads .yt-nome {
+  position: absolute; left: 7.8rem; top: 2.4rem;
+  font-size: 3rem; font-weight: 700; line-height: 4.4rem; letter-spacing: -.02em; color: #fff;
+}
+.card.yt.noads .label { bottom: 1.6rem; }
+.card.yt.noads .label b { display: block; font-size: 6rem; font-weight: 800; line-height: 1; letter-spacing: -.01em; white-space: nowrap; }
+/* </solo-completa> */
+.card.add { background: transparent; box-shadow: inset 0 0 0 .3rem var(--line); }
+.card.add svg.glyph { left: 50%; top: 36%; margin: -3.2rem 0 0 -3.2rem; fill: var(--text-2); }
+
+.tile.f .lift { transform: scale(1.1); }
+.tile.f .lift:before, .tile.f .lift:after { opacity: 1; }
+/* col puntatore del telefono la scheda indicata e' quella scelta (si ingrandisce come con le frecce); quella scelta
+   con le frecce torna normale finche' il puntatore si vede (una freccia lo nasconde e la selezione torna li') */
+.ui-pt-on .tile.f .lift { transform: none; }
+.ui-pt-on .tile.f .lift:before, .ui-pt-on .tile.f .lift:after { opacity: 0; }
+.ui-pt-on .tile.pt-sopra .lift { transform: scale(1.1); }
+.ui-pt-on .tile.pt-sopra .lift:before, .ui-pt-on .tile.pt-sopra .lift:after { opacity: 1; }
+
+/* spostamento: il riquadro si alza e mostra le frecce */
+.tile.moving .lift, .ui-pt-on .tile.moving .lift { transform: scale(1.1) translateY(-1.6rem); }
+.tile .arrows { display: none; }
+.tile.moving .arrows {
+  display: block; position: absolute; left: -4.4rem; right: -4.4rem; top: 50%; margin-top: -2.4rem; height: 4.8rem;
+}
+.arrows i {
+  position: absolute; top: 0; width: 3.2rem; height: 4.8rem;
+  font-style: normal; font-size: 4rem; line-height: 4.8rem; text-align: center; color: var(--text);
+}
+.arrows i:first-child { left: 0; }
+.arrows i:last-child { right: 0; }
+
+/* ---------------------------------------------------------- menu laterale */
+#sheet {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 30;
+  display: -webkit-flex; display: flex; -webkit-flex-direction: column; flex-direction: column;
+  width: 66rem; padding: 9.6rem 6.4rem 6.4rem;
+  background: var(--surface);
+  border-radius: 3.6rem 0 0 3.6rem;
+  box-shadow: -2rem 0 8rem rgba(0, 0, 0, .55);
+  transform: translateX(110%);
+  transition: transform .28s var(--ease);
+}
+#sheet.open { transform: translateX(0); }
+.sheet-head h2 { font-size: 4.8rem; font-weight: 700; letter-spacing: -.025em; line-height: 1.1; }
+.sheet-head p { margin-top: 1.2rem; font-size: 2.4rem; color: var(--text-2); }
+#sheet ul { list-style: none; margin-top: 4.8rem; -webkit-flex: 1 1 auto; flex: 1 1 auto; min-height: 0; overflow: hidden; }
+#sheet li {
+  height: 7.6rem; line-height: 7.6rem; padding: 0 3.2rem; margin-bottom: .8rem;
+  border-radius: 99rem; font-size: 2.9rem; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer;
+}
+#sheet li em { float: right; font-style: normal; font-weight: 500; color: var(--text-2); }
+#sheet li.sel { background: var(--pill); color: var(--pill-text); }
+#sheet li.sel em { color: rgba(11, 12, 16, .6); }
+#sheet li.off { color: var(--text-3); }
+
+/* ---------------------------------------------------------- finestra per scrivere */
+#editor {
+  position: fixed; left: 0; top: 0; width: 100%; height: 100%; z-index: 40;
+  background: rgba(0, 0, 0, .72);
+  display: none;
+}
+#editor.open { display: block; }
+.editor-card {
+  position: absolute; left: 50%; top: 30%; width: 120rem; margin-left: -60rem;
+  padding: 5.6rem 6.4rem; border-radius: 3.6rem; background: var(--surface);
+}
+.editor-card h2 { font-size: 4.2rem; font-weight: 700; letter-spacing: -.02em; }
+.editor-card input {
+  display: block; width: 100%; height: 9.6rem; margin-top: 3.2rem; padding: 0 3.2rem;
+  border: .4rem solid var(--ring); border-radius: 2rem; outline: 0;
+  background: var(--bg); color: var(--text);
+  font: inherit; font-size: 3.6rem; font-weight: 500;
+}
+.editor-card p { margin-top: 2.4rem; font-size: 2.3rem; line-height: 1.4; color: var(--text-2); }
+
+/* ---------------------------------------------------------- collega un telefono */
+#pair {
+  position: fixed; left: 0; top: 0; width: 100%; height: 100%; z-index: 35;
+  display: none; background: rgba(5, 6, 8, .94);
+}
+#pair.open { display: block; }
+.pair-card {
+  position: absolute; left: 50%; top: 50%; width: 136rem; height: 72rem; margin: -36rem 0 0 -68rem;
+  border-radius: 3.6rem; background: var(--surface);
+}
+.pair-qr {
+  position: absolute; left: 6.4rem; top: 9.4rem; width: 53.2rem; height: 53.2rem;
+  border-radius: 2.4rem; background: #fff; padding: 2.4rem;
+}
+.pair-qr svg, .pair-qr img { display: block; width: 100%; height: 100%; }
+.pair-qr .vuoto { color: #111; font-size: 2.4rem; line-height: 1.4; padding: 4rem 2rem; text-align: center; }
+.pair-text { position: absolute; left: 66rem; top: 6.4rem; right: 6.4rem; }
+.pair-text h2 { font-size: 5rem; font-weight: 700; letter-spacing: -.025em; line-height: 1.05; }
+.pair-text ol { margin: 2.8rem 0 0 3rem; font-size: 2.4rem; line-height: 1.4; color: var(--text-2); }
+.pair-text li { margin-bottom: .9rem; }
+.pair-text li b { color: var(--text); font-weight: 600; }
+.pair-text p { margin-top: 2.8rem; font-size: 2.4rem; line-height: 1.4; color: var(--text-2); }
+.pair-addr, .pair-pin { position: absolute; left: 66rem; right: 6.4rem; font-size: 2rem; color: var(--text-3);
+  text-transform: uppercase; letter-spacing: .08em; }
+.pair-addr { top: 41rem; }
+.pair-pin { top: 50rem; }
+.pair-addr strong { display: block; margin-top: .6rem; font-size: 3.6rem; color: var(--text); text-transform: none; letter-spacing: 0; }
+.pair-pin strong { display: block; margin-top: .4rem; font-size: 7.2rem; line-height: 1; color: var(--text); letter-spacing: .14em; }
+.pair-foot { position: absolute; left: 66rem; right: 6.4rem; bottom: 5.2rem; font-size: 2rem; color: var(--text-3); }
+
+/* ---------------------------------------------------------- impostazioni */
+#settings {
+  position: fixed; left: 0; top: 0; width: 100%; height: 100%; z-index: 20;
+  background: var(--bg);
+  opacity: 0; visibility: hidden;
+  transition: opacity .22s ease, visibility 0s linear .22s;
+}
+#settings.open { opacity: 1; visibility: visible; transition: opacity .22s ease, visibility 0s; }
+#settings-head { position: absolute; left: 9.6rem; top: 9.6rem; width: 50rem; }
+#settings-head h1 { font-size: 7.2rem; font-weight: 700; letter-spacing: -.035em; line-height: 1; }
+#settings-head p { margin-top: 2rem; font-size: 2.6rem; line-height: 1.4; color: var(--text-2); }
+#settings-list {
+  position: absolute; left: 68rem; right: 9.6rem; top: 0;
+  transition: transform .3s var(--ease);
+}
+.set-group {
+  height: 8.4rem; padding-top: 4.4rem;
+  font-size: 2.3rem; font-weight: 600; letter-spacing: .02em; color: var(--text-3);
+}
+.set-row {
+  position: relative; height: 8rem; line-height: 8rem; padding: 0 3.2rem; margin-bottom: .6rem;
+  border-radius: 2rem; font-size: 2.9rem; font-weight: 600;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  cursor: pointer;
+}
+.set-row em {
+  position: absolute; right: 3.2rem; top: 0; max-width: 46rem;
+  font-style: normal; font-weight: 500; color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.set-row.f { background: var(--pill); color: var(--pill-text); }
+.set-row.f em { color: rgba(11, 12, 16, .62); }
+.set-row.info { color: var(--text-2); cursor: default; }
+
+/* ---------------------------------------------------------- lo Store (store.html): come la home, con le icone */
+#store-stato { margin-left: 2.4rem; font-size: 2.4rem; font-weight: 500; color: var(--text-2); }
+.cerca-pill {
+  display: inline-block; vertical-align: middle; position: relative;
+  height: 6.4rem; line-height: 6.4rem; padding: 0 3.2rem 0 6.4rem; border-radius: 99rem;
+  background: rgba(255, 255, 255, .08); color: var(--text);
+  font-size: 2.6rem; font-weight: 600;
+  transition: transform .2s var(--ease), background-color .2s ease;
+  cursor: pointer;
+}
+.cerca-pill svg { position: absolute; left: 2.2rem; top: 1.7rem; width: 3rem; height: 3rem; fill: var(--text); }
+#cerca-testo { display: inline-block; vertical-align: top; max-width: 36rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cerca-pill.f { background: var(--pill); color: var(--pill-text); transform: scale(1.08); }
+.cerca-pill.f svg { fill: var(--pill-text); }
+.chip.solo { padding: 0 2rem; }
+
+/* le icone grandi (titolo, pagina dell'app, attesa): l'iniziale col colore della home, sopra l'immagine */
+.st-ico { position: relative; overflow: hidden; text-align: center; }
+.st-ico b { display: block; font-weight: 700; color: #fff; }
+.st-ico img { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; }
+/* i colori sono della home (come le schede delle app del TV): dal catalogo arrivano solo testi */
+.st-c0 { background: linear-gradient(140deg, rgb(59, 76, 202), rgb(26, 35, 102)); }
+.st-c1 { background: linear-gradient(140deg, rgb(142, 63, 184), rgb(61, 24, 87)); }
+.st-c2 { background: linear-gradient(140deg, rgb(15, 155, 142), rgb(10, 71, 68)); }
+.st-c3 { background: linear-gradient(140deg, rgb(217, 98, 43), rgb(110, 38, 17)); }
+.st-c4 { background: linear-gradient(140deg, rgb(86, 96, 107), rgb(34, 39, 45)); }
+.st-c5 { background: linear-gradient(140deg, rgb(47, 158, 90), rgb(18, 65, 39)); }
+.st-c6 { background: linear-gradient(140deg, rgb(194, 59, 78), rgb(86, 21, 32)); }
+.st-c7 { background: linear-gradient(140deg, rgb(43, 123, 191), rgb(16, 54, 90)); }
+/* l'icona dell'app scelta, in alto a destra: la luce arriva da li' */
+#hero-ico {
+  position: fixed; right: 9.6rem; top: 14.4rem; z-index: 3;
+  width: 25.6rem; height: 25.6rem; border-radius: 5.6rem;
+  box-shadow: 0 3.2rem 6.4rem rgba(0, 0, 0, .5);
+  transition: opacity .16s ease;
+}
+#hero-ico b { line-height: 25.6rem; font-size: 12rem; }
+#hero-ico.via, #hero-ico.fade { opacity: 0; }
+/* le azioni dello Store (Aggiungi, Cerca ancora): il segno in alto come negli altri riquadri */
+.pagina-store .card.add svg.glyph { left: 2.6rem; top: 2.6rem; margin: 0; }
+.pagina-store .card.add .label { color: var(--text-2); }
+
+/* la pagina di un'app: l'icona grande a sinistra, testi e pulsanti a destra; dietro resta la luce dell'app. Le file
+   si nascondono (niente strati trasparenti sopra: sul TV costano) */
+#dettaglio {
+  position: fixed; left: 0; top: 0; width: 100%; height: 100%; z-index: 8;
+  -webkit-animation: appare .24s var(--ease); animation: appare .24s var(--ease);
+}
+#dettaglio[hidden] { display: none; }
+.con-dettaglio #rows, .con-dettaglio #hero, .con-dettaglio #hero-ico, .con-dettaglio #topbar { visibility: hidden; }
+@-webkit-keyframes appare { from { opacity: 0; -webkit-transform: translateY(2rem); } to { opacity: 1; -webkit-transform: none; } }
+@keyframes appare { from { opacity: 0; transform: translateY(2rem); } to { opacity: 1; transform: none; } }
+#det-ico {
+  position: absolute; left: 9.6rem; top: 17.6rem; width: 36rem; height: 36rem; border-radius: 8rem;
+  box-shadow: 0 4rem 8rem rgba(0, 0, 0, .55);
+}
+#det-ico b { line-height: 36rem; font-size: 17rem; }
+#det-testo { position: absolute; left: 56rem; right: 9.6rem; top: 17.6rem; }
+#det-cap {
+  height: 3rem; font-size: 2.4rem; font-weight: 600; letter-spacing: .02em; color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#det-nome {
+  margin-top: .8rem; font-size: 8.4rem; font-weight: 700; line-height: 1.04; letter-spacing: -.035em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* un'app privata: "non verificata" ben visibile, nel colore d'avviso */
+#det-cap.avviso {
+  display: inline-block; height: auto; padding: .7rem 1.8rem; border-radius: 99rem; line-height: 1.3;
+  background: rgba(255, 180, 92, .16); color: #ffb45c;
+}
+/* i nomi lunghi (fino a 40 caratteri) si rimpiccioliscono invece di tagliarsi, nella home e nello Store; la riga resta
+   alta uguale, cosi' il resto del titolo grande non sobbalza */
+#hero-title { line-height: 9.4rem; }
+#det-nome { line-height: 8.8rem; }
+#hero-title.lungo, #det-nome.lungo { font-size: 7.2rem; }
+#hero-title.lunghissimo, #det-nome.lunghissimo { font-size: 5.6rem; }
+#det-info { margin-top: 1.6rem; font-size: 2.6rem; font-weight: 600; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#det-descr {
+  margin-top: 3.2rem; max-width: 110rem; font-size: 3rem; font-weight: 500; line-height: 1.4; color: var(--text);
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+}
+#det-novita {
+  margin-top: 2.8rem; max-width: 110rem; padding: 1.8rem 2.8rem; border-radius: 2rem;
+  background: rgba(255, 255, 255, .07); font-size: 2.5rem; line-height: 1.4; color: var(--text-2);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+#det-azioni { margin-top: 4.8rem; height: 8.8rem; white-space: nowrap; }
+.det-pill {
+  display: inline-block; vertical-align: middle;
+  height: 8rem; line-height: 8rem; padding: 0 5.2rem; margin-right: 2rem; border-radius: 99rem;
+  background: rgba(255, 255, 255, .1); color: var(--text);
+  font-size: 3rem; font-weight: 700;
+  transition: transform .18s var(--ease), background-color .18s ease;
+  cursor: pointer;
+}
+.det-pill.f { background: var(--pill); color: var(--pill-text); transform: scale(1.08); }
+.det-pill.spenta, .det-pill.spenta.f {
+  background: transparent; box-shadow: inset 0 0 0 .3rem var(--line); color: var(--text-2); transform: none; cursor: default;
+}
+#det-aiuto { margin-top: 3.2rem; font-size: 2.2rem; color: var(--text-3); }
+
+/* il riquadro isolato con l'app: tutto lo schermo; sopra lo store, sotto menu, finestra per scrivere e avvisi */
+#app-tv { position: fixed; left: 0; top: 0; width: 100%; height: 100%; z-index: 25; background: #000; }
+#app-tv[hidden] { display: none; }
+#app-tv iframe { position: absolute; left: 0; top: 0; width: 100%; height: 100%; border: 0; background: #000; }
+#app-velo { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+#app-attesa {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%; padding-top: 38rem;
+  background: var(--bg); text-align: center; transition: opacity .3s ease;
+}
+#app-attesa.via { opacity: 0; pointer-events: none; }
+#app-attesa .st-ico { display: inline-block; width: 14.4rem; height: 14.4rem; border-radius: 3.4rem; box-shadow: 0 2.4rem 4.8rem rgba(0, 0, 0, .5); }
+#app-attesa .st-ico b { line-height: 14.4rem; font-size: 7rem; }
+#app-attesa p { margin-top: 3.6rem; font-size: 3.2rem; font-weight: 600; color: var(--text-2); }
+
+/* ---------------------------------------------------------- avvisi */
+#toast {
+  position: fixed; left: 50%; bottom: 6.4rem; z-index: 50;
+  max-width: 130rem;
+  padding: 1.8rem 3.6rem;
+  border-radius: 99rem;
+  background: var(--pill); color: var(--pill-text);
+  font-size: 2.5rem; font-weight: 600; line-height: 1.3;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  opacity: 0;
+  transform: translate(-50%, 2rem);
+  transition: opacity .22s ease, transform .22s ease;
+  pointer-events: none;
+}
+#toast.show { opacity: 1; transform: translate(-50%, 0); }
+#toast.lungo { width: 120rem; white-space: normal; text-align: center; border-radius: 3.2rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  #rows, .track, .lift, .wash, .row, #sheet, .hero-text { transition-duration: .01s; }
+}
+
+/* ===== Halloween: da togliere dopo il 2 novembre (qui andranno anche le decorazioni di Natale) =====
+ * La scenografia sta sopra la luce dell'app e sotto file, titolo e barra: scritte e schede restano davanti. I disegni
+ * fermi vengono prima (il TV li disegna una volta, tutti insieme); poi pochi pezzi piccoli che si muovono, ognuno sul
+ * suo livello, quasi sempre fermi e mai tutti insieme. */
+#festa { position: absolute; left: 0; top: 0; width: 100%; height: 100%; z-index: 1; overflow: hidden; pointer-events: none; }
+#festa[hidden] { display: none; }
+#festa svg { position: absolute; display: block; overflow: visible; }
+#festa div > svg { position: static; width: 100%; height: 100%; }
+#festa .festa-luna { left: 134rem; top: 6rem; width: 32rem; height: 32rem; }
+#festa .festa-albero { right: 0; top: 0; width: 64rem; height: 62rem; }
+#festa .festa-cimitero { left: 0; bottom: 0; width: 192rem; height: 36rem; }
+#festa .festa-tela, #festa .festa-luccichii { left: 0; top: 0; width: 30rem; height: 30rem; }
+#festa .festa-tela-piccola { right: 0; top: 0; width: 13rem; height: 12rem; }
+#festa .festa-ghirlanda { left: 65rem; top: 0; width: 74rem; height: 9.25rem; }
+#festa .festa-zucche { left: 137rem; top: 34rem; width: 48rem; height: 24rem; }
+/* la nebbia bassa dietro le file: ferma, disegnata insieme al resto */
+.festa-nebbia {
+  position: absolute; left: -8rem; bottom: 0; width: 208rem; height: 24rem;
+  background: radial-gradient(60rem 12rem at 15% 70%, rgba(176, 166, 220, .16), rgba(176, 166, 220, 0)),
+              radial-gradient(68rem 14rem at 52% 60%, rgba(160, 150, 210, .14), rgba(160, 150, 210, 0)),
+              radial-gradient(56rem 12rem at 86% 72%, rgba(176, 166, 220, .16), rgba(176, 166, 220, 0));
+}
+/* la luce delle zucche (le facce e l'alone caldo intorno, un livello solo): ogni tanto la candela dentro trema */
+.festa-luci {
+  position: absolute; left: 137rem; top: 22rem; width: 62rem; height: 50rem;
+  -webkit-animation: festa-candela 8.3s linear infinite; animation: festa-candela 8.3s linear infinite; will-change: opacity;
+}
+#festa .festa-luci .festa-luce-zucche { position: absolute; left: 0; top: 12rem; width: 48rem; height: 24rem; }
+.festa-alone {
+  position: absolute; left: 6rem; top: 0; width: 56rem; height: 50rem; opacity: .85;
+  background: radial-gradient(closest-side, rgba(255, 150, 45, .3), rgba(255, 120, 30, .1) 55%, rgba(255, 110, 20, 0));
+}
+/* le gocce della ragnatela luccicano ogni tanto */
+#festa .festa-luccichii { position: absolute; opacity: 0; -webkit-animation: festa-luccica 9.7s ease-in-out 1s infinite; animation: festa-luccica 9.7s ease-in-out 1s infinite; will-change: opacity; }
+/* le fiammelle delle candele: tremano un attimo, poi stanno calme */
+.festa-fiamma { position: absolute; width: 2.8rem; height: 4.9rem; -webkit-transform-origin: 50% 80%; transform-origin: 50% 80%; will-change: transform, opacity; }
+.festa-fiamma-1 { left: 138.2rem; top: 47.1rem; -webkit-animation: festa-fiamma 6.6s ease-in-out infinite; animation: festa-fiamma 6.6s ease-in-out infinite; }
+.festa-fiamma-2 { left: 148.4rem; top: 49.7rem; -webkit-animation: festa-fiamma 6.6s ease-in-out 2.2s infinite; animation: festa-fiamma 6.6s ease-in-out 2.2s infinite; }
+.festa-fiamma-3 { left: 180.8rem; top: 48.3rem; -webkit-animation: festa-fiamma 6.6s ease-in-out 4.4s infinite; animation: festa-fiamma 6.6s ease-in-out 4.4s infinite; }
+/* il ragno appeso al centro della tela: scende, si ferma a meta' e molleggia sul filo, scende ancora, risale. Il filo
+ * fa parte del ragno (un livello solo): sopra il centro della tela non si vede */
+.festa-appeso { position: absolute; left: 1.6rem; top: 6.6rem; width: 6.4rem; height: 32rem; overflow: hidden; }
+.festa-ragno {
+  position: absolute; left: 0; top: -24rem; width: 6.4rem; height: 32rem;
+  -webkit-transform: translateY(12rem); transform: translateY(12rem);
+  -webkit-animation: festa-ragno 30s ease-in-out infinite; animation: festa-ragno 30s ease-in-out infinite;
+  will-change: transform;
+}
+.festa-filo { position: absolute; left: 3.15rem; top: 0; width: .1rem; height: 24.4rem; background: rgba(255, 255, 255, .42); }
+#festa .festa-ragno > svg { position: absolute; left: 0; top: 24rem; width: 6.4rem; height: 8rem; }
+/* i pendagli della ghirlanda: ondeggiano quando passa un po' d'aria, poi si fermano (uno per volta: l'attesa e' scritta su ognuno) */
+.festa-pendaglio {
+  position: absolute; width: 6rem; height: 11rem; -webkit-transform-origin: 50% 0; transform-origin: 50% 0;
+  -webkit-animation: festa-pendaglio 17s ease-in-out infinite; animation: festa-pendaglio 17s ease-in-out infinite;
+  will-change: transform;
+}
+/* due pipistrelli che passano davanti alla luna, a tempi diversi */
+.festa-volo { position: absolute; left: 0; top: 0; width: 9rem; height: 4.2rem; -webkit-transform: translate(-12rem, 0); transform: translate(-12rem, 0); will-change: transform; }
+.festa-volo-1 { -webkit-animation: festa-volo-1 37s linear 3s infinite; animation: festa-volo-1 37s linear 3s infinite; }
+.festa-volo-2 { width: 6.6rem; height: 3.1rem; -webkit-animation: festa-volo-2 43s linear 14s infinite; animation: festa-volo-2 43s linear 14s infinite; }
+/* il fantasmino che ogni tanto attraversa la zona vuota a destra, fluttuando */
+.festa-fantasma {
+  position: absolute; left: 0; top: 0; width: 9rem; height: 11.7rem; opacity: 0;
+  -webkit-animation: festa-fantasma 47s ease-in-out 9s infinite; animation: festa-fantasma 47s ease-in-out 9s infinite;
+  will-change: transform, opacity;
+}
+/* qualche foglia che cade piano, dietro le file, una per volta */
+.festa-foglia { position: absolute; left: 0; top: 0; width: 4.2rem; height: 4.2rem; opacity: 0; will-change: transform, opacity; }
+.festa-foglia-1 { -webkit-animation: festa-cade-1 53s linear 2s infinite; animation: festa-cade-1 53s linear 2s infinite; }
+.festa-foglia-2 { width: 3.4rem; height: 3.4rem; -webkit-animation: festa-cade-2 61s linear 21s infinite; animation: festa-cade-2 61s linear 21s infinite; }
+.festa-foglia-3 { -webkit-animation: festa-cade-3 67s linear 40s infinite; animation: festa-cade-3 67s linear 40s infinite; }
+/* il saluto, solo in questi giorni */
+html.festa-on #greeting:after { content: "  \00B7  Dolcetto o scherzetto?"; white-space: pre; font-weight: 500; color: #ffb35c; }
+/* il teschio dietro una scheda della prima fila (dentro la scheda: scorre con la fila). Prima le dita afferrano il
+ * bordo, una coppia dopo l'altra; poi la testa sale piano, si inclina e guarda, gli occhi si accendono; poi tutto
+ * torna giu' e per un po' non succede niente. Sulla scheda scelta non c'e' (si ingrandisce: niente sopra l'anello) */
+.festa-teschio, .festa-dita { display: none; position: absolute; pointer-events: none; }
+html.festa-on .festa-teschio, html.festa-on .festa-dita { display: block; }
+html.festa-on .tile.f .festa-teschio, html.festa-on .tile.f .festa-dita,
+html.festa-on .tile.pt-sopra .festa-teschio, html.festa-on .tile.pt-sopra .festa-dita { display: none; }
+.festa-teschio {
+  left: 8.2rem; top: 0; width: 12.4rem; height: 13.95rem;
+  -webkit-transform-origin: 50% 100%; transform-origin: 50% 100%; -webkit-transform: translateY(1.4rem); transform: translateY(1.4rem);
+  -webkit-animation: festa-teschio 26s ease-in-out infinite; animation: festa-teschio 26s ease-in-out infinite;
+  will-change: transform;
+}
+.festa-teschio svg { display: block; width: 100%; height: 100%; }
+.festa-occhi { position: absolute; left: 0; top: 0; width: 100%; height: 100%; opacity: 0;
+  -webkit-animation: festa-occhi 26s linear infinite; animation: festa-occhi 26s linear infinite; will-change: opacity; }
+.festa-dita { top: -2.4rem; height: 7.68rem; opacity: 0;
+  -webkit-animation: festa-dita 26s ease-in-out infinite; animation: festa-dita 26s ease-in-out infinite; will-change: transform, opacity; }
+.festa-dita svg { display: block; width: 100%; height: 100%; }
+@-webkit-keyframes festa-dita { 0.00%, 30.77% { opacity: 0; -webkit-transform: translateY(1rem); } 33.08% { opacity: 1; -webkit-transform: translateY(0); } 61.54% { opacity: 1; -webkit-transform: translateY(0); } 63.85%, 100.00% { opacity: 0; -webkit-transform: translateY(1rem); } }
+@keyframes festa-dita { 0.00%, 30.77% { opacity: 0; transform: translateY(1rem); } 33.08% { opacity: 1; transform: translateY(0); } 61.54% { opacity: 1; transform: translateY(0); } 63.85%, 100.00% { opacity: 0; transform: translateY(1rem); } }
+@-webkit-keyframes festa-teschio { 0.00%, 37.69% { -webkit-transform: translateY(1.4rem) rotate(0deg); } 44.62% { -webkit-transform: translateY(-9.2rem) rotate(0deg); } 47.31% { -webkit-transform: translateY(-8.9rem) rotate(-7deg); } 51.15% { -webkit-transform: translateY(-9.2rem) rotate(6deg); } 53.85%, 55.38% { -webkit-transform: translateY(-9.1rem) rotate(0deg); } 60.00%, 100.00% { -webkit-transform: translateY(1.4rem) rotate(0deg); } }
+@keyframes festa-teschio { 0.00%, 37.69% { transform: translateY(1.4rem) rotate(0deg); } 44.62% { transform: translateY(-9.2rem) rotate(0deg); } 47.31% { transform: translateY(-8.9rem) rotate(-7deg); } 51.15% { transform: translateY(-9.2rem) rotate(6deg); } 53.85%, 55.38% { transform: translateY(-9.1rem) rotate(0deg); } 60.00%, 100.00% { transform: translateY(1.4rem) rotate(0deg); } }
+@-webkit-keyframes festa-occhi { 0.00%, 42.31% { opacity: 0; } 45.00% { opacity: 1; } 47.31% { opacity: .65; } 49.62%, 54.62% { opacity: 1; } 57.31%, 100.00% { opacity: 0; } }
+@keyframes festa-occhi { 0.00%, 42.31% { opacity: 0; } 45.00% { opacity: 1; } 47.31% { opacity: .65; } 49.62%, 54.62% { opacity: 1; } 57.31%, 100.00% { opacity: 0; } }
+@-webkit-keyframes festa-ragno { 0.00%, 36.00% { -webkit-transform: translateY(1.92rem); } 48.67% { -webkit-transform: translateY(12.48rem); } 51.00% { -webkit-transform: translateY(11.9rem); } 53.00% { -webkit-transform: translateY(12.8rem); } 55.00% { -webkit-transform: translateY(12.3rem); } 57.00%, 64.67% { -webkit-transform: translateY(12.48rem); } 71.33%, 79.33% { -webkit-transform: translateY(24rem); } 95.33%, 100.00% { -webkit-transform: translateY(1.92rem); } }
+@keyframes festa-ragno { 0.00%, 36.00% { transform: translateY(1.92rem); } 48.67% { transform: translateY(12.48rem); } 51.00% { transform: translateY(11.9rem); } 53.00% { transform: translateY(12.8rem); } 55.00% { transform: translateY(12.3rem); } 57.00%, 64.67% { transform: translateY(12.48rem); } 71.33%, 79.33% { transform: translateY(24rem); } 95.33%, 100.00% { transform: translateY(1.92rem); } }
+@-webkit-keyframes festa-luccica { 0%, 80%, 100% { opacity: 0; } 85% { opacity: 1; } 90% { opacity: .15; } 94% { opacity: .8; } }
+@keyframes festa-luccica { 0%, 80%, 100% { opacity: 0; } 85% { opacity: 1; } 90% { opacity: .15; } 94% { opacity: .8; } }
+@-webkit-keyframes festa-candela { 0.00% { opacity: .86; } 4.46% { opacity: 1; } 8.07% { opacity: .7; } 12.53% { opacity: .96; } 16.87% { opacity: .66; } 22.05% { opacity: .93; } 27.23% { opacity: .76; } 32.29%, 100.00% { opacity: .86; } }
+@keyframes festa-candela { 0.00% { opacity: .86; } 4.46% { opacity: 1; } 8.07% { opacity: .7; } 12.53% { opacity: .96; } 16.87% { opacity: .66; } 22.05% { opacity: .93; } 27.23% { opacity: .76; } 32.29%, 100.00% { opacity: .86; } }
+@-webkit-keyframes festa-fiamma { 0.00% { opacity: .9; -webkit-transform: scale(1, 1) rotate(0deg); } 3.94% { opacity: 1; -webkit-transform: scale(.94, 1.08) rotate(-3deg); } 7.88% { opacity: .8; -webkit-transform: scale(1.04, .94) rotate(2deg); } 11.82% { opacity: 1; -webkit-transform: scale(.96, 1.05) rotate(-1.5deg); } 15.76% { opacity: .85; -webkit-transform: scale(1.02, .97) rotate(1deg); } 19.70% { opacity: .95; -webkit-transform: scale(.98, 1.03) rotate(-.5deg); } 23.64%, 100.00% { opacity: .9; -webkit-transform: scale(1, 1) rotate(0deg); } }
+@keyframes festa-fiamma { 0.00% { opacity: .9; transform: scale(1, 1) rotate(0deg); } 3.94% { opacity: 1; transform: scale(.94, 1.08) rotate(-3deg); } 7.88% { opacity: .8; transform: scale(1.04, .94) rotate(2deg); } 11.82% { opacity: 1; transform: scale(.96, 1.05) rotate(-1.5deg); } 15.76% { opacity: .85; transform: scale(1.02, .97) rotate(1deg); } 19.70% { opacity: .95; transform: scale(.98, 1.03) rotate(-.5deg); } 23.64%, 100.00% { opacity: .9; transform: scale(1, 1) rotate(0deg); } }
+@-webkit-keyframes festa-pendaglio { 0.00% { -webkit-transform: rotate(0deg); } 4.00% { -webkit-transform: rotate(5deg); } 9.12% { -webkit-transform: rotate(-4deg); } 14.29% { -webkit-transform: rotate(2.8deg); } 19.41% { -webkit-transform: rotate(-1.7deg); } 23.94% { -webkit-transform: rotate(.8deg); } 27.94%, 100.00% { -webkit-transform: rotate(0deg); } }
+@keyframes festa-pendaglio { 0.00% { transform: rotate(0deg); } 4.00% { transform: rotate(5deg); } 9.12% { transform: rotate(-4deg); } 14.29% { transform: rotate(2.8deg); } 19.41% { transform: rotate(-1.7deg); } 23.94% { transform: rotate(.8deg); } 27.94%, 100.00% { transform: rotate(0deg); } }
+@-webkit-keyframes festa-volo-1 { 0.00% { -webkit-transform: translate(196.0rem, 30.0rem) scaleY(1); } 0.60% { -webkit-transform: translate(192.6rem, 29.0rem) scaleY(0.45); } 1.19% { -webkit-transform: translate(189.2rem, 27.9rem) scaleY(1); } 1.79% { -webkit-transform: translate(185.8rem, 26.9rem) scaleY(0.45); } 2.38% { -webkit-transform: translate(182.4rem, 25.8rem) scaleY(1); } 2.98% { -webkit-transform: translate(179.0rem, 24.8rem) scaleY(0.45); } 3.57% { -webkit-transform: translate(175.5rem, 23.7rem) scaleY(1); } 4.17% { -webkit-transform: translate(172.1rem, 22.7rem) scaleY(0.45); } 4.76% { -webkit-transform: translate(168.7rem, 21.8rem) scaleY(1); } 5.36% { -webkit-transform: translate(165.1rem, 21.3rem) scaleY(0.45); } 5.96% { -webkit-transform: translate(161.6rem, 20.9rem) scaleY(1); } 6.55% { -webkit-transform: translate(158.1rem, 20.4rem) scaleY(0.45); } 7.15% { -webkit-transform: translate(154.5rem, 19.9rem) scaleY(1); } 7.74% { -webkit-transform: translate(151.0rem, 19.4rem) scaleY(0.45); } 8.34% { -webkit-transform: translate(147.5rem, 18.9rem) scaleY(1); } 8.93% { -webkit-transform: translate(144.0rem, 18.1rem) scaleY(0.45); } 9.53% { -webkit-transform: translate(140.5rem, 17.4rem) scaleY(1); } 10.12% { -webkit-transform: translate(137.0rem, 16.6rem) scaleY(0.45); } 10.72% { -webkit-transform: translate(133.5rem, 15.9rem) scaleY(1); } 11.31% { -webkit-transform: translate(130.0rem, 15.2rem) scaleY(0.45); } 11.91% { -webkit-transform: translate(126.5rem, 14.4rem) scaleY(1); } 12.51% { -webkit-transform: translate(123.1rem, 13.7rem) scaleY(0.45); } 13.10% { -webkit-transform: translate(119.6rem, 12.9rem) scaleY(1); } 13.70% { -webkit-transform: translate(116.0rem, 12.5rem) scaleY(0.45); } 14.29% { -webkit-transform: translate(112.5rem, 12.1rem) scaleY(1); } 14.89% { -webkit-transform: translate(108.9rem, 11.7rem) scaleY(0.45); } 15.48% { -webkit-transform: translate(105.4rem, 11.3rem) scaleY(1); } 16.08% { -webkit-transform: translate(101.8rem, 10.9rem) scaleY(0.45); } 16.67% { -webkit-transform: translate(98.3rem, 10.5rem) scaleY(1); } 17.27% { -webkit-transform: translate(94.8rem, 10.1rem) scaleY(0.45); } 17.87% { -webkit-transform: translate(91.2rem, 9.6rem) scaleY(1); } 18.46% { -webkit-transform: translate(87.7rem, 9.2rem) scaleY(0.45); } 19.06% { -webkit-transform: translate(84.1rem, 8.8rem) scaleY(1); } 19.65% { -webkit-transform: translate(80.6rem, 8.4rem) scaleY(0.45); } 20.25% { -webkit-transform: translate(77.0rem, 8.0rem) scaleY(1); } 20.84% { -webkit-transform: translate(73.5rem, 7.6rem) scaleY(0.45); } 21.44% { -webkit-transform: translate(70.0rem, 7.2rem) scaleY(1); } 22.03% { -webkit-transform: translate(66.4rem, 6.7rem) scaleY(0.45); } 22.63% { -webkit-transform: translate(62.9rem, 6.3rem) scaleY(1); } 23.22% { -webkit-transform: translate(59.3rem, 6.0rem) scaleY(0.45); } 23.82% { -webkit-transform: translate(55.8rem, 5.9rem) scaleY(1); } 24.42% { -webkit-transform: translate(52.2rem, 5.8rem) scaleY(0.45); } 25.01% { -webkit-transform: translate(48.6rem, 5.7rem) scaleY(1); } 25.61% { -webkit-transform: translate(45.1rem, 5.6rem) scaleY(0.45); } 26.20% { -webkit-transform: translate(41.5rem, 5.5rem) scaleY(1); } 26.80% { -webkit-transform: translate(37.9rem, 5.4rem) scaleY(0.45); } 27.39% { -webkit-transform: translate(34.4rem, 5.3rem) scaleY(1); } 27.99% { -webkit-transform: translate(30.8rem, 5.2rem) scaleY(0.45); } 28.58% { -webkit-transform: translate(27.2rem, 5.1rem) scaleY(1); } 29.18% { -webkit-transform: translate(23.7rem, 5.0rem) scaleY(0.45); } 29.78% { -webkit-transform: translate(20.1rem, 4.9rem) scaleY(1); } 30.37% { -webkit-transform: translate(16.5rem, 4.8rem) scaleY(0.45); } 30.97% { -webkit-transform: translate(13.0rem, 4.7rem) scaleY(1); } 31.56% { -webkit-transform: translate(9.4rem, 4.6rem) scaleY(0.45); } 32.16% { -webkit-transform: translate(5.8rem, 4.5rem) scaleY(1); } 32.75% { -webkit-transform: translate(2.3rem, 4.4rem) scaleY(0.45); } 33.35% { -webkit-transform: translate(-1.3rem, 4.3rem) scaleY(1); } 33.94% { -webkit-transform: translate(-4.9rem, 4.2rem) scaleY(0.45); } 34.54% { -webkit-transform: translate(-8.4rem, 4.1rem) scaleY(1); } 35.14% { -webkit-transform: translate(-12.0rem, 4.0rem) scaleY(1); } 100% { -webkit-transform: translate(-12.0rem, 4.0rem) scaleY(1); } }
+@keyframes festa-volo-1 { 0.00% { transform: translate(196.0rem, 30.0rem) scaleY(1); } 0.60% { transform: translate(192.6rem, 29.0rem) scaleY(0.45); } 1.19% { transform: translate(189.2rem, 27.9rem) scaleY(1); } 1.79% { transform: translate(185.8rem, 26.9rem) scaleY(0.45); } 2.38% { transform: translate(182.4rem, 25.8rem) scaleY(1); } 2.98% { transform: translate(179.0rem, 24.8rem) scaleY(0.45); } 3.57% { transform: translate(175.5rem, 23.7rem) scaleY(1); } 4.17% { transform: translate(172.1rem, 22.7rem) scaleY(0.45); } 4.76% { transform: translate(168.7rem, 21.8rem) scaleY(1); } 5.36% { transform: translate(165.1rem, 21.3rem) scaleY(0.45); } 5.96% { transform: translate(161.6rem, 20.9rem) scaleY(1); } 6.55% { transform: translate(158.1rem, 20.4rem) scaleY(0.45); } 7.15% { transform: translate(154.5rem, 19.9rem) scaleY(1); } 7.74% { transform: translate(151.0rem, 19.4rem) scaleY(0.45); } 8.34% { transform: translate(147.5rem, 18.9rem) scaleY(1); } 8.93% { transform: translate(144.0rem, 18.1rem) scaleY(0.45); } 9.53% { transform: translate(140.5rem, 17.4rem) scaleY(1); } 10.12% { transform: translate(137.0rem, 16.6rem) scaleY(0.45); } 10.72% { transform: translate(133.5rem, 15.9rem) scaleY(1); } 11.31% { transform: translate(130.0rem, 15.2rem) scaleY(0.45); } 11.91% { transform: translate(126.5rem, 14.4rem) scaleY(1); } 12.51% { transform: translate(123.1rem, 13.7rem) scaleY(0.45); } 13.10% { transform: translate(119.6rem, 12.9rem) scaleY(1); } 13.70% { transform: translate(116.0rem, 12.5rem) scaleY(0.45); } 14.29% { transform: translate(112.5rem, 12.1rem) scaleY(1); } 14.89% { transform: translate(108.9rem, 11.7rem) scaleY(0.45); } 15.48% { transform: translate(105.4rem, 11.3rem) scaleY(1); } 16.08% { transform: translate(101.8rem, 10.9rem) scaleY(0.45); } 16.67% { transform: translate(98.3rem, 10.5rem) scaleY(1); } 17.27% { transform: translate(94.8rem, 10.1rem) scaleY(0.45); } 17.87% { transform: translate(91.2rem, 9.6rem) scaleY(1); } 18.46% { transform: translate(87.7rem, 9.2rem) scaleY(0.45); } 19.06% { transform: translate(84.1rem, 8.8rem) scaleY(1); } 19.65% { transform: translate(80.6rem, 8.4rem) scaleY(0.45); } 20.25% { transform: translate(77.0rem, 8.0rem) scaleY(1); } 20.84% { transform: translate(73.5rem, 7.6rem) scaleY(0.45); } 21.44% { transform: translate(70.0rem, 7.2rem) scaleY(1); } 22.03% { transform: translate(66.4rem, 6.7rem) scaleY(0.45); } 22.63% { transform: translate(62.9rem, 6.3rem) scaleY(1); } 23.22% { transform: translate(59.3rem, 6.0rem) scaleY(0.45); } 23.82% { transform: translate(55.8rem, 5.9rem) scaleY(1); } 24.42% { transform: translate(52.2rem, 5.8rem) scaleY(0.45); } 25.01% { transform: translate(48.6rem, 5.7rem) scaleY(1); } 25.61% { transform: translate(45.1rem, 5.6rem) scaleY(0.45); } 26.20% { transform: translate(41.5rem, 5.5rem) scaleY(1); } 26.80% { transform: translate(37.9rem, 5.4rem) scaleY(0.45); } 27.39% { transform: translate(34.4rem, 5.3rem) scaleY(1); } 27.99% { transform: translate(30.8rem, 5.2rem) scaleY(0.45); } 28.58% { transform: translate(27.2rem, 5.1rem) scaleY(1); } 29.18% { transform: translate(23.7rem, 5.0rem) scaleY(0.45); } 29.78% { transform: translate(20.1rem, 4.9rem) scaleY(1); } 30.37% { transform: translate(16.5rem, 4.8rem) scaleY(0.45); } 30.97% { transform: translate(13.0rem, 4.7rem) scaleY(1); } 31.56% { transform: translate(9.4rem, 4.6rem) scaleY(0.45); } 32.16% { transform: translate(5.8rem, 4.5rem) scaleY(1); } 32.75% { transform: translate(2.3rem, 4.4rem) scaleY(0.45); } 33.35% { transform: translate(-1.3rem, 4.3rem) scaleY(1); } 33.94% { transform: translate(-4.9rem, 4.2rem) scaleY(0.45); } 34.54% { transform: translate(-8.4rem, 4.1rem) scaleY(1); } 35.14% { transform: translate(-12.0rem, 4.0rem) scaleY(1); } 100% { transform: translate(-12.0rem, 4.0rem) scaleY(1); } }
+@-webkit-keyframes festa-volo-2 { 0.00% { -webkit-transform: translate(118.0rem, 36.0rem) scaleY(1); } 0.52% { -webkit-transform: translate(119.2rem, 35.3rem) scaleY(0.45); } 1.04% { -webkit-transform: translate(120.4rem, 34.6rem) scaleY(1); } 1.56% { -webkit-transform: translate(121.6rem, 33.9rem) scaleY(0.45); } 2.07% { -webkit-transform: translate(122.7rem, 33.2rem) scaleY(1); } 2.59% { -webkit-transform: translate(123.9rem, 32.4rem) scaleY(0.45); } 3.11% { -webkit-transform: translate(125.1rem, 31.7rem) scaleY(1); } 3.63% { -webkit-transform: translate(126.3rem, 31.0rem) scaleY(0.45); } 4.15% { -webkit-transform: translate(127.5rem, 30.3rem) scaleY(1); } 4.67% { -webkit-transform: translate(128.7rem, 29.6rem) scaleY(0.45); } 5.18% { -webkit-transform: translate(129.9rem, 28.9rem) scaleY(1); } 5.70% { -webkit-transform: translate(131.1rem, 28.2rem) scaleY(0.45); } 6.22% { -webkit-transform: translate(132.2rem, 27.5rem) scaleY(1); } 6.74% { -webkit-transform: translate(133.4rem, 26.7rem) scaleY(0.45); } 7.26% { -webkit-transform: translate(134.6rem, 26.0rem) scaleY(1); } 7.78% { -webkit-transform: translate(135.8rem, 25.3rem) scaleY(0.45); } 8.30% { -webkit-transform: translate(137.0rem, 24.6rem) scaleY(1); } 8.81% { -webkit-transform: translate(138.2rem, 23.9rem) scaleY(0.45); } 9.33% { -webkit-transform: translate(139.4rem, 23.3rem) scaleY(1); } 9.85% { -webkit-transform: translate(140.7rem, 22.7rem) scaleY(0.45); } 10.37% { -webkit-transform: translate(141.9rem, 22.1rem) scaleY(1); } 10.89% { -webkit-transform: translate(143.1rem, 21.4rem) scaleY(0.45); } 11.41% { -webkit-transform: translate(144.4rem, 20.8rem) scaleY(1); } 11.93% { -webkit-transform: translate(145.6rem, 20.2rem) scaleY(0.45); } 12.44% { -webkit-transform: translate(146.8rem, 19.6rem) scaleY(1); } 12.96% { -webkit-transform: translate(148.1rem, 19.0rem) scaleY(0.45); } 13.48% { -webkit-transform: translate(149.3rem, 18.3rem) scaleY(1); } 14.00% { -webkit-transform: translate(150.6rem, 17.7rem) scaleY(0.45); } 14.52% { -webkit-transform: translate(151.8rem, 17.1rem) scaleY(1); } 15.04% { -webkit-transform: translate(153.1rem, 16.6rem) scaleY(0.45); } 15.55% { -webkit-transform: translate(154.4rem, 16.2rem) scaleY(1); } 16.07% { -webkit-transform: translate(155.7rem, 15.8rem) scaleY(0.45); } 16.59% { -webkit-transform: translate(157.1rem, 15.4rem) scaleY(1); } 17.11% { -webkit-transform: translate(158.4rem, 15.0rem) scaleY(0.45); } 17.63% { -webkit-transform: translate(159.7rem, 14.6rem) scaleY(1); } 18.15% { -webkit-transform: translate(161.0rem, 14.1rem) scaleY(0.45); } 18.67% { -webkit-transform: translate(162.3rem, 13.7rem) scaleY(1); } 19.18% { -webkit-transform: translate(163.7rem, 13.3rem) scaleY(0.45); } 19.70% { -webkit-transform: translate(165.0rem, 12.9rem) scaleY(1); } 20.22% { -webkit-transform: translate(166.3rem, 12.5rem) scaleY(0.45); } 20.74% { -webkit-transform: translate(167.6rem, 12.0rem) scaleY(1); } 21.26% { -webkit-transform: translate(168.9rem, 11.6rem) scaleY(0.45); } 21.78% { -webkit-transform: translate(170.3rem, 11.2rem) scaleY(1); } 22.30% { -webkit-transform: translate(171.6rem, 10.8rem) scaleY(0.45); } 22.81% { -webkit-transform: translate(172.9rem, 10.4rem) scaleY(1); } 23.33% { -webkit-transform: translate(174.2rem, 10.0rem) scaleY(0.45); } 23.85% { -webkit-transform: translate(175.6rem, 9.7rem) scaleY(1); } 24.37% { -webkit-transform: translate(176.9rem, 9.5rem) scaleY(0.45); } 24.89% { -webkit-transform: translate(178.3rem, 9.2rem) scaleY(1); } 25.41% { -webkit-transform: translate(179.7rem, 9.0rem) scaleY(0.45); } 25.92% { -webkit-transform: translate(181.0rem, 8.7rem) scaleY(1); } 26.44% { -webkit-transform: translate(182.4rem, 8.5rem) scaleY(0.45); } 26.96% { -webkit-transform: translate(183.7rem, 8.2rem) scaleY(1); } 27.48% { -webkit-transform: translate(185.1rem, 8.0rem) scaleY(0.45); } 28.00% { -webkit-transform: translate(186.5rem, 7.7rem) scaleY(1); } 28.52% { -webkit-transform: translate(187.8rem, 7.5rem) scaleY(0.45); } 29.04% { -webkit-transform: translate(189.2rem, 7.2rem) scaleY(1); } 29.55% { -webkit-transform: translate(190.6rem, 7.0rem) scaleY(0.45); } 30.07% { -webkit-transform: translate(191.9rem, 6.7rem) scaleY(1); } 30.59% { -webkit-transform: translate(193.3rem, 6.5rem) scaleY(0.45); } 31.11% { -webkit-transform: translate(194.6rem, 6.2rem) scaleY(1); } 31.63% { -webkit-transform: translate(196.0rem, 6.0rem) scaleY(1); } 100% { -webkit-transform: translate(196.0rem, 6.0rem) scaleY(1); } }
+@keyframes festa-volo-2 { 0.00% { transform: translate(118.0rem, 36.0rem) scaleY(1); } 0.52% { transform: translate(119.2rem, 35.3rem) scaleY(0.45); } 1.04% { transform: translate(120.4rem, 34.6rem) scaleY(1); } 1.56% { transform: translate(121.6rem, 33.9rem) scaleY(0.45); } 2.07% { transform: translate(122.7rem, 33.2rem) scaleY(1); } 2.59% { transform: translate(123.9rem, 32.4rem) scaleY(0.45); } 3.11% { transform: translate(125.1rem, 31.7rem) scaleY(1); } 3.63% { transform: translate(126.3rem, 31.0rem) scaleY(0.45); } 4.15% { transform: translate(127.5rem, 30.3rem) scaleY(1); } 4.67% { transform: translate(128.7rem, 29.6rem) scaleY(0.45); } 5.18% { transform: translate(129.9rem, 28.9rem) scaleY(1); } 5.70% { transform: translate(131.1rem, 28.2rem) scaleY(0.45); } 6.22% { transform: translate(132.2rem, 27.5rem) scaleY(1); } 6.74% { transform: translate(133.4rem, 26.7rem) scaleY(0.45); } 7.26% { transform: translate(134.6rem, 26.0rem) scaleY(1); } 7.78% { transform: translate(135.8rem, 25.3rem) scaleY(0.45); } 8.30% { transform: translate(137.0rem, 24.6rem) scaleY(1); } 8.81% { transform: translate(138.2rem, 23.9rem) scaleY(0.45); } 9.33% { transform: translate(139.4rem, 23.3rem) scaleY(1); } 9.85% { transform: translate(140.7rem, 22.7rem) scaleY(0.45); } 10.37% { transform: translate(141.9rem, 22.1rem) scaleY(1); } 10.89% { transform: translate(143.1rem, 21.4rem) scaleY(0.45); } 11.41% { transform: translate(144.4rem, 20.8rem) scaleY(1); } 11.93% { transform: translate(145.6rem, 20.2rem) scaleY(0.45); } 12.44% { transform: translate(146.8rem, 19.6rem) scaleY(1); } 12.96% { transform: translate(148.1rem, 19.0rem) scaleY(0.45); } 13.48% { transform: translate(149.3rem, 18.3rem) scaleY(1); } 14.00% { transform: translate(150.6rem, 17.7rem) scaleY(0.45); } 14.52% { transform: translate(151.8rem, 17.1rem) scaleY(1); } 15.04% { transform: translate(153.1rem, 16.6rem) scaleY(0.45); } 15.55% { transform: translate(154.4rem, 16.2rem) scaleY(1); } 16.07% { transform: translate(155.7rem, 15.8rem) scaleY(0.45); } 16.59% { transform: translate(157.1rem, 15.4rem) scaleY(1); } 17.11% { transform: translate(158.4rem, 15.0rem) scaleY(0.45); } 17.63% { transform: translate(159.7rem, 14.6rem) scaleY(1); } 18.15% { transform: translate(161.0rem, 14.1rem) scaleY(0.45); } 18.67% { transform: translate(162.3rem, 13.7rem) scaleY(1); } 19.18% { transform: translate(163.7rem, 13.3rem) scaleY(0.45); } 19.70% { transform: translate(165.0rem, 12.9rem) scaleY(1); } 20.22% { transform: translate(166.3rem, 12.5rem) scaleY(0.45); } 20.74% { transform: translate(167.6rem, 12.0rem) scaleY(1); } 21.26% { transform: translate(168.9rem, 11.6rem) scaleY(0.45); } 21.78% { transform: translate(170.3rem, 11.2rem) scaleY(1); } 22.30% { transform: translate(171.6rem, 10.8rem) scaleY(0.45); } 22.81% { transform: translate(172.9rem, 10.4rem) scaleY(1); } 23.33% { transform: translate(174.2rem, 10.0rem) scaleY(0.45); } 23.85% { transform: translate(175.6rem, 9.7rem) scaleY(1); } 24.37% { transform: translate(176.9rem, 9.5rem) scaleY(0.45); } 24.89% { transform: translate(178.3rem, 9.2rem) scaleY(1); } 25.41% { transform: translate(179.7rem, 9.0rem) scaleY(0.45); } 25.92% { transform: translate(181.0rem, 8.7rem) scaleY(1); } 26.44% { transform: translate(182.4rem, 8.5rem) scaleY(0.45); } 26.96% { transform: translate(183.7rem, 8.2rem) scaleY(1); } 27.48% { transform: translate(185.1rem, 8.0rem) scaleY(0.45); } 28.00% { transform: translate(186.5rem, 7.7rem) scaleY(1); } 28.52% { transform: translate(187.8rem, 7.5rem) scaleY(0.45); } 29.04% { transform: translate(189.2rem, 7.2rem) scaleY(1); } 29.55% { transform: translate(190.6rem, 7.0rem) scaleY(0.45); } 30.07% { transform: translate(191.9rem, 6.7rem) scaleY(1); } 30.59% { transform: translate(193.3rem, 6.5rem) scaleY(0.45); } 31.11% { transform: translate(194.6rem, 6.2rem) scaleY(1); } 31.63% { transform: translate(196.0rem, 6.0rem) scaleY(1); } 100% { transform: translate(196.0rem, 6.0rem) scaleY(1); } }
+@-webkit-keyframes festa-fantasma { 0.00% { opacity: 0; -webkit-transform: translate(186rem, 17rem); } 4.85% { opacity: .78; -webkit-transform: translate(178rem, 20rem); } 9.70% { -webkit-transform: translate(169rem, 22rem); } 14.55% { -webkit-transform: translate(159rem, 27rem); } 19.40% { -webkit-transform: translate(148rem, 30rem); } 24.26% { opacity: .78; -webkit-transform: translate(136rem, 29rem); } 29.11%, 100.00% { opacity: 0; -webkit-transform: translate(125rem, 32rem); } }
+@keyframes festa-fantasma { 0.00% { opacity: 0; transform: translate(186rem, 17rem); } 4.85% { opacity: .78; transform: translate(178rem, 20rem); } 9.70% { transform: translate(169rem, 22rem); } 14.55% { transform: translate(159rem, 27rem); } 19.40% { transform: translate(148rem, 30rem); } 24.26% { opacity: .78; transform: translate(136rem, 29rem); } 29.11%, 100.00% { opacity: 0; transform: translate(125rem, 32rem); } }
+@-webkit-keyframes festa-cade-1 { 0.00% { opacity: 0; -webkit-transform: translate(112rem, -4rem) rotate(0deg); } 1.81% { opacity: .9; } 13.58% { -webkit-transform: translate(121rem, 24rem) rotate(170deg); } 24.53% { opacity: .9; } 27.17%, 100.00% { opacity: 0; -webkit-transform: translate(116rem, 50rem) rotate(330deg); } }
+@keyframes festa-cade-1 { 0.00% { opacity: 0; transform: translate(112rem, -4rem) rotate(0deg); } 1.81% { opacity: .9; } 13.58% { transform: translate(121rem, 24rem) rotate(170deg); } 24.53% { opacity: .9; } 27.17%, 100.00% { opacity: 0; transform: translate(116rem, 50rem) rotate(330deg); } }
+@-webkit-keyframes festa-cade-2 { 0.00% { opacity: 0; -webkit-transform: translate(138rem, -4rem) rotate(20deg); } 1.90% { opacity: .85; } 14.26% { -webkit-transform: translate(131rem, 20rem) rotate(-120deg); } 25.74% { opacity: .85; } 28.52%, 100.00% { opacity: 0; -webkit-transform: translate(133rem, 46rem) rotate(-260deg); } }
+@keyframes festa-cade-2 { 0.00% { opacity: 0; transform: translate(138rem, -4rem) rotate(20deg); } 1.90% { opacity: .85; } 14.26% { transform: translate(131rem, 20rem) rotate(-120deg); } 25.74% { opacity: .85; } 28.52%, 100.00% { opacity: 0; transform: translate(133rem, 46rem) rotate(-260deg); } }
+@-webkit-keyframes festa-cade-3 { 0.00% { opacity: 0; -webkit-transform: translate(4rem, 30rem) rotate(0deg); } 1.85% { opacity: .85; } 13.88% { -webkit-transform: translate(1rem, 60rem) rotate(150deg); } 24.93% { opacity: .85; } 27.76%, 100.00% { opacity: 0; -webkit-transform: translate(5rem, 92rem) rotate(300deg); } }
+@keyframes festa-cade-3 { 0.00% { opacity: 0; transform: translate(4rem, 30rem) rotate(0deg); } 1.85% { opacity: .85; } 13.88% { transform: translate(1rem, 60rem) rotate(150deg); } 24.93% { opacity: .85; } 27.76%, 100.00% { opacity: 0; transform: translate(5rem, 92rem) rotate(300deg); } }
+@media (prefers-reduced-motion: reduce) {
+  #festa *, .festa-teschio, .festa-occhi, .festa-dita { -webkit-animation: none !important; animation: none !important; }
+  .festa-volo, .festa-fantasma, .festa-foglia { display: none; }
+}
+/* ===== fine Halloween ===== */
