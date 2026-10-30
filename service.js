@@ -385,6 +385,13 @@
       if (s === 'negato') return r(false, 'Permesso negato sul TV', 'Blu, Telefono, Tasti del TV dal telefono, poi Consenti sul TV');
       if (s === 'assente') return r(false, 'Questo TV non offre l\'ingresso per i telecomandi', 'Il telefono funziona lo stesso nella home, nel browser e nei siti');
       if (s === 'attesa') return r(null, 'Il TV sta chiedendo il permesso: scegli Consenti');
+      // provato, ma il TV non ha mai mostrato la richiesta: si dice cosa ha risposto e dove si sblocca
+      if (f.remotoErrore) {
+        return r(null, 'Provato ' + (f.remotoTentativi || 1) + ' volte, il TV non ha chiesto il permesso (' + f.remotoErrore + ')',
+          'Sul TV: Impostazioni, Tutte le impostazioni, Connessione, Gestione dispositivi esterni, Gestione connessione ' +
+          'dispositivi: Notifica di accesso su "Solo la prima volta", e in Elenco dispositivi Home TV su Consenti. Poi premi ' +
+          'un tasto sul telefono');
+      }
       return r(null, 'Non ancora provato (si prova col primo telefono collegato)');
     }
     function haPortaTelefono(f) {
@@ -1318,7 +1325,8 @@
   if (!remoto || typeof remoto !== 'object') remoto = {};
   // stato: 'mai' (mai provato), 'attesa' (il TV sta chiedendo il permesso), 'ok', 'negato', 'assente'
   var rem = { stato: remoto.stato === 'ok' || remoto.stato === 'negato' ? remoto.stato : 'mai', token: remoto.token || '',
-    sock: null, pronto: false, coda: [], tentativo: 0, ultimoErrore: '', indicePorta: 0, buffer: null, frammenti: null };
+    sock: null, pronto: false, coda: [], tentativo: 0, ultimoErrore: '', indicePorta: 0, buffer: null, frammenti: null,
+    tentativi: 0 };
   // le altre TV (LG) non hanno l'ingresso dei telecomandi di Samsung: niente tasti veri, il telefono comanda le pagine
   if (ALTRA) rem.stato = 'assente';
 
@@ -1398,35 +1406,58 @@
     }
   }
 
+  // dove bussare: prima l'indirizzo interno, poi quello di rete del TV (alcuni TV chiedono il permesso solo a chi
+  // arriva dalla rete di casa, come i telefoni). Nelle prove solo 127.0.0.1, dove ascolta il TV finto.
+  function indirizziRemoto() {
+    var h = ['127.0.0.1'];
+    if (HAS_TIZEN && !PROVE) { var ip = indirizziRete()[0]; if (ip) h.push(ip); }
+    return h;
+  }
+
   function apriRemoto() {
     if (rem.sock || !HAS_TIZEN && !PROVE) return;
+    var host = indirizziRemoto(), combinazioni = PORTE_REMOTO.length * host.length;
     var p = PORTE_REMOTO[rem.indicePorta % PORTE_REMOTO.length];
+    host = host[Math.floor(rem.indicePorta / PORTE_REMOTO.length) % host.length];
+    var dove = host + ':' + p.porta;
     var nome = new Buffer(NOME_REMOTO, 'utf8').toString('base64');
     var percorso = '/api/v2/channels/samsung.remote.control?name=' + encodeURIComponent(nome) +
       (rem.token ? '&token=' + encodeURIComponent(rem.token) : '');
     var chiave = crypto.randomBytes(16).toString('base64');
-    var intestazioneLetta = false, testa = '';
+    var intestazioneLetta = false, testa = '', errore = false;
     var sock;
     if (rem.stato !== 'ok') rem.stato = 'attesa';
+    rem.tentativi++;
+    // il TV non ha risposto come un ingresso per telecomandi: la prossima volta un'altra porta o un altro indirizzo;
+    // se nessuna combinazione risponde (due giri), il TV non lo offre
+    function prossimo() {
+      rem.indicePorta++;
+      if (rem.indicePorta >= combinazioni * 2 && rem.stato !== 'ok') rem.stato = 'assente';
+    }
     function avvia() {
-      sock.write('GET ' + percorso + ' HTTP/1.1\r\nHost: 127.0.0.1:' + p.porta + '\r\nUpgrade: websocket\r\n' +
+      sock.write('GET ' + percorso + ' HTTP/1.1\r\nHost: ' + dove + '\r\nUpgrade: websocket\r\n' +
         'Connection: Upgrade\r\nSec-WebSocket-Key: ' + chiave + '\r\nSec-WebSocket-Version: 13\r\n\r\n');
     }
     try {
-      sock = p.sicura ? tls.connect({ host: '127.0.0.1', port: p.porta, rejectUnauthorized: false }, avvia)
-        : net.connect({ host: '127.0.0.1', port: p.porta }, avvia);
-    } catch (e) { rem.ultimoErrore = e.message; return; }
+      sock = p.sicura ? tls.connect({ host: host, port: p.porta, rejectUnauthorized: false }, avvia)
+        : net.connect({ host: host, port: p.porta }, avvia);
+    } catch (e) { rem.ultimoErrore = dove + ': ' + e.message; prossimo(); return; }
     rem.sock = sock;
     rem.buffer = null;
     sock.setTimeout(45000); // il TV aspetta fino a 30 s la risposta sullo schermo
-    sock.on('timeout', function () { if (!rem.pronto) { rem.ultimoErrore = 'nessuna risposta'; chiudiRemoto(); } });
+    sock.on('timeout', function () {
+      // prima della risposta 101: il TV non ha neanche aperto il canale (la richiesta sullo schermo arriva dopo)
+      if (!rem.pronto) { errore = true; rem.ultimoErrore = dove + ': nessuna risposta in 45 s'; prossimo(); chiudiRemoto(); }
+    });
     sock.on('data', function (d) {
       if (rem.sock !== sock) return;
       if (!intestazioneLetta) {
         testa += d.toString('binary');
         var fine = testa.indexOf('\r\n\r\n');
         if (fine === -1) return;
-        if (!/^HTTP\/1\.1 101/.test(testa)) { rem.ultimoErrore = testa.split('\r\n')[0]; chiudiRemoto(); return; }
+        if (!/^HTTP\/1\.1 101/.test(testa)) {
+          errore = true; rem.ultimoErrore = dove + ': ' + testa.split('\r\n')[0].slice(0, 80); prossimo(); chiudiRemoto(); return;
+        }
         intestazioneLetta = true;
         sock.setTimeout(0);
         var resto = new Buffer(testa.slice(fine + 4), 'binary');
@@ -1437,18 +1468,18 @@
     });
     sock.on('error', function (e) {
       if (rem.sock !== sock) return;
-      rem.ultimoErrore = e.code || e.message;
+      errore = true;
+      rem.ultimoErrore = dove + ': ' + (e.code || e.message);
       // porta chiusa: si prova l'altra la prossima volta; se nessuna risponde, il TV non lo offre
-      if (!rem.pronto) {
-        rem.indicePorta++;
-        if (rem.indicePorta >= PORTE_REMOTO.length * 2 && rem.stato !== 'ok') rem.stato = 'assente';
-      }
+      if (!rem.pronto) prossimo();
       chiudiRemoto();
     });
     sock.on('close', function () {
       if (rem.sock !== sock) return;
       rem.sock = null;
       rem.pronto = false;
+      // chiuso dal TV prima ancora di rispondere: come una porta chiusa (si prova la combinazione dopo)
+      if (!intestazioneLetta && !errore) { rem.ultimoErrore = dove + ': chiuso dal TV senza risposta'; prossimo(); }
       if (rem.stato === 'attesa') rem.stato = rem.token ? 'ok' : 'mai';
     });
   }
@@ -7004,7 +7035,8 @@
       nome: String(d.name || ''), modello: String(d.modelName || ''), modelloPiattaforma: String(d.model || ''),
       tizenVer: versioneTizen(), tizenbrew: versioneTizenBrew(), risoluzione: String(d.resolution || ''),
       api8001: !!tvDalTv.device, statoAccensione: !!d.PowerState, apriAllAccensione: settings.apriAllAccensione !== false,
-      remoto: rem.stato, telefono: { attivo: tel.attivo, errore: tel.errore },
+      remoto: rem.stato, remotoErrore: rem.ultimoErrore, remotoTentativi: rem.tentativi,
+      telefono: { attivo: tel.attivo, errore: tel.errore },
       liste: { stato: D ? 'ok' : adb.stato === 'errore' ? 'errore' : 'mai', regole: D && D.conta ? D.conta.usate : 0 },
       // nelle prove e nella TV sul Mac i file restano (/tmp delle prove, cartella dei dati): valgono come quelli del TV
       salvataggio: (CACHE_DIR === SHARE || PROVE || (ALTRA && ALTRA.datiFissi)) && tvDalTv.scrittura ? 'tv' : 'temporaneo', casa: !!trovaCasa().origin,
