@@ -4471,7 +4471,8 @@
    *   var p = PontiVideo.crea({ http, https, dgram, dns, url, crypto, fs, path, cartella, videoteca: vt, letti: fn, log: fn,
    *     leggiSottotitoli: Videoteca._interni.leggiSottotitoli, testoDi: Videoteca._interni.testoDi, locale: PROVE });
    *   (locale: solo nelle prove sul computer, un server su 127.0.0.1; dns: ogni nome si controlla prima di collegarsi;
-   *   tempoLettura: quanto aspettare un server fermo a meta' film, 30 s se non c'e')
+   *   tempoLettura: quanto aspettare un server fermo a meta' film, 30 s se non c'e'; portaMac: dove cercare il limitatore
+   *   del Mac accanto a Jellyfin, 8097 se non c'e')
    *   Videoteca.gestisci(vt, g, req, res, u, { punto: fn, ponti: p.tratta })
    *
    * Solo ES5 e solo ASCII; va da Node 4.4.3 (TV 2017-2019) in su.
@@ -4920,28 +4921,32 @@
         if (!indirizzoBuono(urlLib, c.indirizzo, o.locale) || c.indirizzo !== indirizzoBuono(urlLib, c.indirizzo, o.locale)) { c.indirizzo = ''; c.token = ''; c.utente = null; }
         return c;
       }
-      function salva() {
-        var tmp = FILE + '.tmp';
+      function scriviPrivato(file, dati, chi) {
+        var tmp = file + '.tmp';
         try {
           // un .tmp rimasto (servizio spento a meta') potrebbe avere altri permessi: si rifa' da capo
           try { fs.unlinkSync(tmp); } catch (e0) {}
-          fs.writeFileSync(tmp, JSON.stringify(cfg), { mode: 384 }); // 0600: solo il servizio
-          fs.renameSync(tmp, FILE);
-        } catch (e) { log('Jellyfin: non riesco a salvare (' + (e.code || e.message) + ')'); }
+          fs.writeFileSync(tmp, JSON.stringify(dati), { mode: 384 }); // 0600: solo il servizio
+          fs.renameSync(tmp, file);
+        } catch (e) { log(chi + ': non riesco a salvare (' + (e.code || e.message) + ')'); }
       }
+      function salva() { scriviPrivato(FILE, cfg, 'Jellyfin'); }
       function dimentica() { cfg.token = ''; cfg.utente = null; salva(); sorgenti = {}; }
       function letti() { var x = typeof o.letti === 'function' ? o.letti() : o.letti; return x && x.audio && x.video ? x : { audio: {}, video: {} }; }
 
       /* ---------------------------------------------------------- le domande verso Jellyfin */
 
-      var nomeTv = { at: 0, v: '' }; // il nome del TV per Jellyfin, ricalcolato al massimo ogni minuto
-      function autorizzazione(conToken) {
+      var nomeTv = { at: 0, v: '' }; // il nome del TV (per Jellyfin e per il limitatore), ricalcolato al massimo ogni minuto
+      function nomeDelTv() {
         if (!nomeTv.v || Date.now() - nomeTv.at > 60000) {
           var x = '';
           try { x = typeof o.nomeTv === 'function' ? o.nomeTv() : o.nomeTv; } catch (e) { x = ''; }
           nomeTv = { at: Date.now(), v: String(x || 'TV').replace(/[^A-Za-z0-9 ._\-]/g, '').slice(0, 60) || 'TV' };
         }
-        var s = 'MediaBrowser Client="Home TV", Device="' + nomeTv.v + '", DeviceId="' + cfg.dispositivo + '", Version="' + VERSIONE + '"';
+        return nomeTv.v;
+      }
+      function autorizzazione(conToken) {
+        var s = 'MediaBrowser Client="Home TV", Device="' + nomeDelTv() + '", DeviceId="' + cfg.dispositivo + '", Version="' + VERSIONE + '"';
         return conToken && cfg.token ? s + ', Token="' + cfg.token + '"' : s;
       }
       // una domanda al server salvato (o a "dove", per il controllo prima di salvarlo). cb(err, res) con la risposta aperta
@@ -4958,13 +4963,16 @@
           cb(null, ind, fam);
         });
       }
+      // x.mac: la domanda va al limitatore del Mac (con la sua chiave; 'senza' per il collegamento)
       function apriDomanda(x, cb) {
-        var base = x.dove || cfg.indirizzo;
-        if (!base) { cb(errore('server', 'nessun server Jellyfin')); return null; }
+        var base = x.dove || (x.mac ? mac.indirizzo : cfg.indirizzo);
+        if (!base) { cb(errore('server', x.mac ? 'nessun limitatore' : 'nessun server Jellyfin')); return null; }
         var u = urlLib.parse(base + '/' + x.percorso + (x.query ? '?' + x.query : ''));
         var mod = u.protocol === 'https:' ? https : http;
         if (!mod) { cb(errore('server', 'https non disponibile')); return null; }
-        var testa = { 'Accept': x.accetta || 'application/json', 'Accept-Encoding': 'identity', 'Authorization': autorizzazione(x.token !== false) };
+        var testa = { 'Accept': x.accetta || 'application/json', 'Accept-Encoding': 'identity' };
+        if (!x.mac) testa.Authorization = autorizzazione(x.token !== false);
+        else if (x.mac !== 'senza' && mac.chiave) testa['X-Chiave'] = mac.chiave;
         if (x.range) testa.Range = x.range;
         var corpo = x.corpo !== undefined ? bufDa(JSON.stringify(x.corpo)) : null;
         if (corpo) { testa['Content-Type'] = 'application/json'; testa['Content-Length'] = String(corpo.length); }
@@ -4997,7 +5005,8 @@
           r.on('data', function (d) { if (rotto) return; n += d.length; if (n > max) { rotto = true; try { r.destroy(); } catch (e) {} cb(errore('server', 'risposta troppo grande')); } else parti.push(d); });
           r.on('end', function () {
             if (rotto) return;
-            if (r.statusCode === 401 && x.token !== false && cfg.token) { dimentica(); cb(errore('accesso', 'accesso scaduto')); return; }
+            if (r.statusCode === 401 && x.mac && x.mac !== 'senza' && mac.chiave) { dimenticaMac(); cb(errore('accesso', 'il Mac non riconosce piu\' questo TV')); return; }
+            if (r.statusCode === 401 && !x.mac && x.token !== false && cfg.token) { dimentica(); cb(errore('accesso', 'accesso scaduto')); return; }
             var b = Buffer.concat(parti, n), v = null;
             if (x.byte) { cb(null, r.statusCode, b, r); return; }
             if (b.length) { try { v = JSON.parse(b.toString('utf8')); } catch (e) { v = null; } }
@@ -5057,15 +5066,7 @@
         prove = prove.filter(function (t) { return ora - t < 600000; });
         if (prove.length >= 20) { cb(errore('troppe', 'troppi indirizzi provati: aspetta qualche minuto')); return; }
         prove.push(ora);
-        // un nome: prima il DNS (tutti gli indirizzi), cosi' l'errore e' chiaro; poi lo stesso controllo a ogni collegamento
-        var host = urlLib.parse(ind).hostname.replace(/^\[|\]$/g, '');
-        if (o.dns && !/^[0-9.]+$/.test(host) && host.indexOf(':') < 0) {
-          o.dns.lookup(host, { all: true }, function (e0, l) {
-            if (e0) { cb(errore('rete', 'il nome del server non si trova')); return; }
-            for (var i = 0; i < (l || []).length; i++) if (ipVietato(l[i].address, o.locale)) { cb(errore('indirizzo', 'indirizzo non valido')); return; }
-            prova();
-          });
-        } else prova();
+        controllaNome(ind, function (e0) { if (e0) cb(e0); else prova(); });
         function prova() {
         chiedi({ dove: ind, percorso: 'System/Info/Public', token: false, tempo: 5000, max: 65536 }, function (err, st, j) {
           if (err) { cb(err.codice === 'rete' ? errore('rete', 'il server non risponde') : err.codice === 'certificato' ? errore('certificato', 'certificato https non accettato da questo TV') : err); return; }
@@ -5081,6 +5082,16 @@
           cb(null);
         });
         }
+      }
+      // un nome: prima il DNS (tutti gli indirizzi), cosi' l'errore e' chiaro; poi lo stesso controllo a ogni collegamento
+      function controllaNome(ind, cb) {
+        var host = urlLib.parse(ind).hostname.replace(/^\[|\]$/g, '');
+        if (!o.dns || /^[0-9.]+$/.test(host) || host.indexOf(':') >= 0) { cb(null); return; }
+        o.dns.lookup(host, { all: true }, function (e0, l) {
+          if (e0) { cb(errore('rete', 'il nome del server non si trova')); return; }
+          for (var i = 0; i < (l || []).length; i++) if (ipVietato(l[i].address, o.locale)) { cb(errore('indirizzo', 'indirizzo non valido')); return; }
+          cb(null);
+        });
       }
       function accesso(j, cb) {
         var u = j && j.User, tok = j && j.AccessToken;
@@ -5454,11 +5465,254 @@
           sottoEsterni(m[1].toLowerCase(), ms2, indice, function (e, r) { if (e) errore2(e); else rispondi(res, 200, r); });
           return;
         }
+        // la quarta strada: lo stesso file dal limitatore del Mac
+        if ((m = /^limita\/([0-9a-fA-F]{32})$/.exec(resto)) && get) {
+          var msl = String(q.ms || '').toLowerCase(), tetto = +q.tetto || 0;
+          if (!idBuono(msl)) { rispondi(res, 400, { error: 'manca il file', codice: 'corpo' }); return; }
+          if (!mac.indirizzo || !mac.chiave) { rispondi(res, 409, { error: 'collega il limitatore del Mac', codice: 'mac' }); return; }
+          limita(m[1].toLowerCase(), msl, tetto >= 1 && tetto <= 1000 ? Math.round(tetto) : 0, function (e, r) {
+            if (!e) { rispondi(res, 200, r); return; }
+            if (e.codice === 'mac') rispondi(res, 409, { error: e.message, codice: 'mac' }); else errore2(e);
+          });
+          return;
+        }
         if (resto.indexOf('p/') === 0) {
           var percorso = resto.slice(2);
           if (/(^|\/)\.\.?(\/|$)|\/\/|\\/.test(percorso)) { rispondi(res, 403, { error: 'percorso non permesso', codice: 'lista' }); return; }
           var ponte = String(u.pathname || '').slice(0, String(u.pathname || '').length - percorso.length);
           inoltra(req, res, percorso, u, ponte);
+          return;
+        }
+        rispondi(res, 404, { error: 'domanda sconosciuta', codice: 'assente' });
+      }
+
+      /* ---------------------------------------------------------- il limitatore del Mac (mac/)
+       * Come per Jellyfin: un solo limitatore salvato, la chiave resta qui (limitatore.json, 600) e va solo nell'intestazione
+       * X-Chiave; all'app arriva "collegato". Il collegamento: il Mac mostra un codice di 6 cifre (Terminale e notifica),
+       * chi guarda lo scrive sul TV, il limitatore da' la chiave al ponte. */
+
+      var FILE_MAC = path.join(o.cartella, 'limitatore.json');
+      var mac = caricaMac(), abbinando = null, proveMac = [];
+      function caricaMac() {
+        var c = null;
+        try { c = JSON.parse(fs.readFileSync(FILE_MAC, 'utf8')); } catch (e) { c = null; }
+        if (!c || typeof c !== 'object') return { indirizzo: '', chiave: '' };
+        var ind = indirizzoBuono(urlLib, c.indirizzo, o.locale);
+        if (!ind || ind !== c.indirizzo) return { indirizzo: '', chiave: '' };
+        return { indirizzo: ind, chiave: /^[0-9a-f]{32}$/.test(c.chiave || '') ? c.chiave : '' };
+      }
+      function salvaMac() { scriviPrivato(FILE_MAC, mac, 'Limitatore'); }
+      function dimenticaMac() { mac.chiave = ''; salvaMac(); }
+      function statoMac() {
+        return { server: mac.indirizzo ? { indirizzo: mac.indirizzo } : null, collegato: !!(mac.indirizzo && mac.chiave),
+          abbinando: !!(abbinando && Date.now() - abbinando.da < 300000) };
+      }
+      // dove cercarlo: di solito sul Mac di Jellyfin, porta 8097. Senza chiave risponde 401 e parla della chiave
+      function cercaMac(cb) {
+        var l = [], gia = {}, trovati = [];
+        if (mac.indirizzo) l.push(mac.indirizzo);
+        if (cfg.indirizzo) {
+          var h = urlLib.parse(cfg.indirizzo).hostname || '';
+          if (h) l.push('http://' + (h.indexOf(':') >= 0 ? '[' + h + ']' : h) + ':' + (o.portaMac || 8097));
+        }
+        l = l.map(function (x) { return indirizzoBuono(urlLib, x, o.locale); }).filter(function (x) { if (!x || gia[x]) return false; gia[x] = true; return true; });
+        var resta = l.length;
+        if (!resta) { cb([]); return; }
+        l.forEach(function (ind) {
+          chiedi({ mac: 'senza', dove: ind, percorso: 'stato', tempo: 2000, max: 4096 }, function (err, st, j) {
+            if (!err && st === 401 && j && /chiave/.test(String(j.errore || ''))) trovati.push(ind);
+            if (--resta === 0) cb(trovati);
+          });
+        });
+      }
+      function abbinaMac(dove, cb) {
+        var ind = indirizzoBuono(urlLib, dove, o.locale), ora = Date.now();
+        if (!ind) { cb(errore('indirizzo', 'indirizzo non valido')); return; }
+        proveMac = proveMac.filter(function (t) { return ora - t < 600000; });
+        if (proveMac.length >= 10) { cb(errore('troppe', 'troppi tentativi: aspetta qualche minuto')); return; }
+        proveMac.push(ora);
+        controllaNome(ind, function (e0) {
+          if (e0) { cb(e0); return; }
+          chiedi({ mac: 'senza', dove: ind, percorso: 'abbina', metodo: 'POST', corpo: { nome: nomeDelTv() }, tempo: 5000, max: 65536 }, function (err, st, j) {
+            if (err) { cb(err.codice === 'rete' ? errore('rete', 'il Mac non risponde') : err); return; }
+            if (st === 429) { cb(errore('troppe', 'troppe richieste: aspetta qualche minuto')); return; }
+            if (st !== 200 || !j || !/^[0-9a-f]{16}$/.test(j.id || '')) { cb(errore('limitatore', 'a quell\'indirizzo non risponde il limitatore')); return; }
+            abbinando = { indirizzo: ind, id: j.id, da: Date.now() };
+            cb(null, { scade: 300 });
+          });
+        });
+      }
+      function codiceMac(codice, cb) {
+        var a = abbinando, c = String(codice === undefined || codice === null ? '' : codice).replace(/\D/g, '');
+        if (!a || Date.now() - a.da > 300000) { abbinando = null; cb(errore('scaduto', 'codice scaduto: ricomincia')); return; }
+        if (c.length !== 6) { cb(errore('codice', 'servono le 6 cifre che mostra il Mac')); return; }
+        chiedi({ mac: 'senza', dove: a.indirizzo, percorso: 'abbina/' + a.id, metodo: 'POST', corpo: { codice: c }, tempo: 5000, max: 65536 }, function (err, st, j) {
+          if (err) { cb(err.codice === 'rete' ? errore('rete', 'il Mac non risponde') : err); return; }
+          if (st === 404 || (st === 403 && j && /3 volte/.test(String(j.errore || '')))) {
+            if (abbinando === a) abbinando = null;
+            cb(errore('scaduto', st === 404 ? 'codice scaduto: ricomincia' : 'codice sbagliato 3 volte: ricomincia'));
+            return;
+          }
+          if (st === 403) { cb(errore('codice', 'codice sbagliato')); return; }
+          if (st !== 200 || !j || !/^[0-9a-f]{32}$/.test(j.chiave || '')) { cb(errore('limitatore', 'il Mac ha risposto in modo strano')); return; }
+          if (abbinando === a) abbinando = null;
+          mac = { indirizzo: a.indirizzo, chiave: j.chiave };
+          salvaMac();
+          log('Limitatore del Mac collegato');
+          cb(null, statoMac());
+        });
+      }
+
+      // i percorsi del limitatore che il ponte lascia passare (il resto: 403)
+      var LISTA_MAC = [['GET', 'stato'], ['GET', 'elenco'], ['GET', 'risultato'], ['GET', 'lavori'], ['GET', 'lavori/(analisi|hls)-[0-9]{1,9}'],
+        ['POST', 'lavori/(analisi|hls)-[0-9]{1,9}/ferma'], ['POST', 'analisi'], ['POST', 'hls'], ['GET', 'hls/[0-9a-f]{16}/(info|index\\.m3u8)'],
+        ['GET', 'hls/[0-9a-f]{16}/p[0-9]{3,6}_[0-9]{5,9}\\.ts']].map(function (x) { return { metodo: x[0], re: new RegExp('^' + x[1] + '$') }; });
+      function inListaMac(metodo, percorso) {
+        if (SCAPPA.test(percorso)) return false;
+        var m = metodo === 'HEAD' ? 'GET' : metodo;
+        for (var i = 0; i < LISTA_MAC.length; i++) if (LISTA_MAC[i].metodo === m && LISTA_MAC[i].re.test(percorso)) return true;
+        return false;
+      }
+      var PEZZO_MAC = /^p[0-9]{3,6}_[0-9]{5,9}\.ts$/;
+      // la playlist del limitatore: solo i suoi pezzi, per nome (accanto alla playlist), senza chiave; il resto si toglie
+      function riscriviPlaylistMac(t) {
+        var righe = String(t).split(/\r?\n/), out = [];
+        for (var i = 0; i < righe.length; i++) {
+          var r = righe[i].replace(/^\s+|\s+$/g, '');
+          if (!r) continue;
+          if (r.charAt(0) === '#') { if (!/URI\s*=/i.test(r)) out.push(r); continue; }
+          var nome = r.split('?')[0];
+          if (PEZZO_MAC.test(nome)) { out.push(nome); continue; }
+          while (out.length && /^#EXTINF/i.test(out[out.length - 1])) out.pop();
+        }
+        return out.join('\n') + '\n';
+      }
+      function inoltraMac(req, res, percorso, u) {
+        var metodo = req.method;
+        if (!inListaMac(metodo, percorso)) { rispondi(res, 403, { error: 'percorso non permesso', codice: 'lista' }); return; }
+        if (!mac.indirizzo || !mac.chiave) { rispondi(res, 401, { error: 'collega il Mac', codice: 'accesso' }); return; }
+        var query = String(u.search || '').replace(/^\?/, '').split('&').filter(function (x) { return x && !/^chiave=/i.test(x); }).join('&');
+        var pezzo = /\.ts$/.test(percorso), lista = /\.m3u8$/.test(percorso), dr = null;
+        function vai(corpo) {
+          dr = apriDomanda({ mac: true, percorso: percorso, query: query, metodo: metodo, corpo: corpo, accetta: '*/*',
+            range: pezzo ? req.headers.range : undefined, tempo: pezzo ? 30000 : 15000, lungo: pezzo }, function (err, r) {
+            if (err) { rispondi(res, 502, { error: err.message, codice: 'rete' }); return; }
+            if (r.statusCode === 401) { r.resume(); dimenticaMac(); rispondi(res, 401, { error: 'il Mac non riconosce piu\' questo TV', codice: 'accesso' }); return; }
+            if (!pezzo) {
+              // le risposte brevi (JSON, playlist) si leggono tutte: la chiave non deve mai uscire
+              var parti = [], n = 0, rotto = false;
+              r.on('data', function (d) { n += d.length; if (n > MAX_PLAYLIST) { rotto = true; try { r.destroy(); } catch (e) {} rispondi(res, 502, { error: 'risposta troppo grande', codice: 'server' }); } else parti.push(d); });
+              r.on('end', function () {
+                if (rotto) return;
+                var t = Buffer.concat(parti, n).toString('utf8'), pl = lista && r.statusCode === 200;
+                if (pl) t = riscriviPlaylistMac(t);
+                if (mac.chiave) t = t.split(mac.chiave).join('***');
+                var b = bufDa(t);
+                res.writeHead(r.statusCode, { 'Content-Type': pl ? 'application/vnd.apple.mpegurl' : 'application/json; charset=utf-8', 'Content-Length': String(b.length),
+                  'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+                res.end(metodo === 'HEAD' ? undefined : b);
+              });
+              r.on('aborted', function () { if (!rotto) { rotto = true; rispondi(res, 502, { error: 'interrotto', codice: 'rete' }); } });
+              r.on('error', function () { if (!rotto) { rotto = true; rispondi(res, 502, { error: 'interrotto', codice: 'rete' }); } });
+              return;
+            }
+            var testa = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Expose-Headers': 'Content-Range, Content-Length', 'Cache-Control': 'no-store' };
+            ['content-type', 'content-length', 'content-range', 'accept-ranges'].forEach(function (k) { if (r.headers[k] !== undefined) testa[k] = r.headers[k]; });
+            res.writeHead(r.statusCode, testa);
+            if (metodo === 'HEAD') { r.resume(); res.end(); return; }
+            r.pipe(res);
+            r.on('aborted', function () { try { res.destroy(); } catch (e) {} });
+            r.on('error', function () { try { res.destroy(); } catch (e) {} });
+          });
+          // il <video> chiude (salto, fine): si chiude anche la domanda verso il Mac
+          res.on('close', function () { if (dr) { try { dr.abort(); } catch (e) {} } });
+        }
+        if (metodo === 'POST') corpoJson(req, function (b) { if (!b) rispondi(res, 400, { error: 'corpo non valido', codice: 'corpo' }); else vai(b); });
+        else vai(undefined);
+      }
+
+      // la quarta strada dei film di Jellyfin: lo stesso file preparato dal limitatore (HLS "copia + picchi"). Il percorso vero
+      // del file lo dice Jellyfin e lo usa solo il ponte. Si richiama finche' e' pronto: i lavori uguali il limitatore li riusa
+      function lavoroPubblico(l) {
+        if (!l || typeof l !== 'object') return null;
+        var a = l.avanzamento && typeof l.avanzamento === 'object' ? l.avanzamento : {};
+        return { id: testo(l.id, 40), stato: testo(l.stato, 20), fase: testo(a.fase, 60), percentuale: +a.percentuale || 0, stima: +a.stimaSecondi || 0,
+          errore: l.errore ? testo(l.errore, 200) : '' };
+      }
+      function limita(id, msid, tetto, cb) {
+        function daMac(e) { return e.codice === 'accesso' ? errore('mac', 'il Mac non riconosce piu\' questo TV: ricollegalo') : e; }
+        if (!cfg.token || !cfg.utente) { cb(errore('accesso', 'serve l\'accesso a Jellyfin')); return; }
+        chiedi({ percorso: 'Items/' + id, query: 'userId=' + cfg.utente.id }, function (err, st, j) {
+          if (err) { cb(err); return; }
+          var l = j && Array.isArray(j.MediaSources) ? j.MediaSources : [], ms = null;
+          for (var i = 0; i < l.length; i++) if (String(l[i] && l[i].Id || '').toLowerCase() === msid) { ms = l[i]; break; }
+          if (st !== 200 || !ms) { cb(errore('assente', 'film non trovato')); return; }
+          var file = String(ms.Path || '');
+          if (file.charAt(0) !== '/' || file.length > 4096 || /[\u0000-\u001f]/.test(file)) { cb(errore('cartella', 'il limitatore del Mac non vede questo file')); return; }
+          var corpo = { file: file };
+          if (tetto) corpo.tetto = tetto;
+          chiedi({ mac: true, percorso: 'analisi', metodo: 'POST', corpo: corpo, tempo: 15000, max: 1 << 20 }, function (e2, st2, j2) {
+            if (e2) { cb(daMac(e2)); return; }
+            if (st2 === 403 || st2 === 404 || st2 === 415) { cb(errore('cartella', 'il limitatore del Mac non vede questo file: aggiungi la sua cartella sul Mac')); return; }
+            if (st2 === 202) { cb(null, { pronto: false, fase: 'analisi', lavoro: lavoroPubblico(j2 && j2.lavoro) }); return; }
+            var ris = st2 === 200 && j2 && j2.risultato;
+            if (!ris || typeof ris !== 'object') { cb(errore('limitatore', 'il limitatore non risponde come dovrebbe')); return; }
+            var out = { serve: !!ris.serve, tetto: +ris.tetto || 0, picco: +ris.piccoMbps || 0, media: +ris.mediaMbps || 0,
+              ricodifica: +(ris.piano && ris.piano.ricodificaQuota) || 0 };
+            // niente picchi oltre il tetto: va bene il file com'e' (la strada diretta)
+            if (!out.serve) { out.pronto = true; cb(null, out); return; }
+            chiedi({ mac: true, percorso: 'hls', metodo: 'POST', corpo: corpo, tempo: 15000, max: 1 << 20 }, function (e3, st3, j3) {
+              if (e3) { cb(daMac(e3)); return; }
+              var h = j3 && j3.hls;
+              if ((st3 !== 202 && st3 !== 200) || !h || !/^[0-9a-f]{16}$/.test(h.id || '')) { cb(errore('limitatore', 'il limitatore non prepara il film')); return; }
+              out.pronto = !!h.giocabile;
+              out.fase = 'hls';
+              out.url = 'mac/p/hls/' + h.id + '/index.m3u8';
+              out.info = 'mac/p/hls/' + h.id + '/info';
+              out.completo = !!h.completo;
+              out.secondiPronti = +h.secondiPronti || 0;
+              out.lavoro = lavoroPubblico(j3.lavoro);
+              cb(null, out);
+            });
+          });
+        });
+      }
+
+      function trattaMac(req, res, resto, q, u) {
+        var get = req.method === 'GET', post = req.method === 'POST';
+        function errore2(e) {
+          var c = e.codice || 'errore';
+          rispondi(res, c === 'accesso' ? 401 : c === 'rete' || c === 'certificato' ? 502 : c === 'troppe' ? 429 : c === 'codice' ? 403 :
+            c === 'scaduto' ? 410 : 400, { error: e.message, codice: c });
+        }
+        if (resto === 'stato' && get) {
+          var s = statoMac();
+          if (q.vivo !== '1' || !s.collegato) { rispondi(res, 200, s); return; }
+          chiedi({ mac: true, percorso: 'stato', tempo: 4000, max: 262144 }, function (err, st, j) {
+            var s2 = statoMac();
+            s2.acceso = !err && st === 200 && !!j;
+            if (s2.acceso) {
+              s2.mac = { versione: testo(j.versione, 20), videotoolbox: !!j.videotoolbox, tettoPredefinito: +j.tettoPredefinito || 80,
+                cartelle: (Array.isArray(j.cartelle) ? j.cartelle : []).slice(0, 50).map(function (c) { return { nome: testo(c && c.nome, 100), esiste: !!(c && c.esiste) }; }) };
+            }
+            rispondi(res, 200, s2);
+          });
+          return;
+        }
+        if (resto === 'cerca' && get) { cercaMac(function (l) { rispondi(res, 200, { trovati: l }); }); return; }
+        if ((resto === 'abbina' || resto === 'codice') && post) {
+          corpoJson(req, function (b) {
+            if (!b) { rispondi(res, 400, { error: 'corpo non valido', codice: 'corpo' }); return; }
+            if (resto === 'abbina') abbinaMac(b.indirizzo, function (e, r) { if (e) errore2(e); else rispondi(res, 200, r); });
+            else codiceMac(b.codice, function (e, r) { if (e) errore2(e); else rispondi(res, 200, r); });
+          });
+          return;
+        }
+        if (resto === 'esci' && post) { abbinando = null; dimenticaMac(); log('Limitatore del Mac scollegato'); rispondi(res, 200, statoMac()); return; }
+        if (resto.indexOf('p/') === 0) {
+          var percorso = resto.slice(2);
+          if (/(^|\/)\.\.?(\/|$)|\/\/|\\/.test(percorso)) { rispondi(res, 403, { error: 'percorso non permesso', codice: 'lista' }); return; }
+          inoltraMac(req, res, percorso, u);
           return;
         }
         rispondi(res, 404, { error: 'domanda sconosciuta', codice: 'assente' });
@@ -5474,12 +5728,12 @@
             misuraCpu(function (r) { misurando = false; rispondi(res, 200, r); });
             return;
           }
-          // il ponte verso il limitatore del Mac: in arrivo
+          if (cosa.indexOf('mac/') === 0) { trattaMac(req, res, cosa.slice(4), q || {}, u); return; }
           rispondi(res, 404, { error: 'domanda sconosciuta', codice: 'assente' });
         },
         stato: statoPubblico,
         // per le prove
-        _cfg: function () { return cfg; }, _sorgenti: function () { return sorgenti; }
+        _cfg: function () { return cfg; }, _sorgenti: function () { return sorgenti; }, _mac: function () { return mac; }
       };
     }
 
