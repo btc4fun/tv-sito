@@ -26,6 +26,8 @@
   --web-b: #0b5762;
   --yt-a: #eb3737;
   --yt-b: #7a1018;
+  --store-a: #8b5cf6;
+  --store-b: #3b1f7a;
   --font: "Instrument Sans", "SamsungOneUI", "SamsungOne", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --ease: cubic-bezier(.2, .8, .2, 1);
 }
@@ -215,6 +217,40 @@ h1, h2, p, ul { margin: 0; padding: 0; }
 /* il logo del Browser: il globo con la lente, un po' piu' grande delle altre icone; dietro, lo stesso globo grande e leggero */
 .card.web svg.glyph { left: 2.4rem; top: 2.2rem; width: 7.4rem; height: 7.4rem; }
 .card.web .web-sfondo { position: absolute; right: -7.2rem; top: -4.6rem; width: 22rem; height: 22rem; opacity: .12; }
+/* lo Store (le app web di Home TV) e il pallino delle app con una versione nuova */
+.card.store { background: linear-gradient(140deg, var(--store-a) 0%, var(--store-b) 100%); }
+.card .pallino {
+  position: absolute; right: 2rem; top: 2rem; width: 2.6rem; height: 2.6rem; border-radius: 50%;
+  background: #3b82f6; box-shadow: 0 0 0 .45rem #fff, 0 .4rem 1.2rem rgba(0, 0, 0, .45);
+}
+/* le app dello Store nella home: l'icona piccola in alto e il nome in basso, come i siti (colori della home) */
+.card.appweb .app-ico {
+  position: absolute; left: 2.4rem; top: 2.2rem; width: 6rem; height: 6rem; overflow: hidden;
+  border-radius: 1.5rem; background: rgba(255, 255, 255, .16); text-align: center;
+}
+.card.appweb .app-ico b { display: block; line-height: 6rem; font-size: 3rem; font-weight: 700; color: #fff; }
+/* il nome su una riga sola, sotto l'icona con un po' d'aria: intero si legge in grande quando l'app e' scelta */
+.card.appweb .label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card.appweb .app-ico img {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%; max-width: none; max-height: none;
+  transform: none; object-fit: cover;
+}
+/* la copertina di un'app dello Store: un disegno grande come il riquadro (480 x 288), sopra icona e nome; il pallino
+   delle versioni nuove e il segno delle installate restano sopra, nell'angolo in alto a destra */
+.card .copertina-img {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%; max-width: none; max-height: none;
+  transform: none; object-fit: cover; z-index: 1;
+}
+.card .pallino { z-index: 2; }
+.card .spunta {
+  position: absolute; right: 2rem; top: 2rem; z-index: 2; width: 3rem; height: 3rem; border-radius: 50%;
+  background: #fff; box-shadow: 0 .4rem 1.2rem rgba(0, 0, 0, .45);
+}
+.card .spunta:after {
+  content: ""; position: absolute; left: 1.08rem; top: .58rem; width: .7rem; height: 1.35rem;
+  border: solid #0b0c10; border-width: 0 .34rem .34rem 0;
+  -webkit-transform: rotate(45deg); transform: rotate(45deg);
+}
 /* YouTube per la TV (solo col blocco avanzato acceso): come il Browser, col suo colore */
 .card.yt { background: linear-gradient(140deg, var(--yt-a) 0%, var(--yt-b) 100%); }
 /* <solo-completa> */
@@ -361,6 +397,122 @@ h1, h2, p, ul { margin: 0; padding: 0; }
 .set-row.f { background: var(--pill); color: var(--pill-text); }
 .set-row.f em { color: rgba(11, 12, 16, .62); }
 .set-row.info { color: var(--text-2); cursor: default; }
+
+/* ---------------------------------------------------------- lo Store (store.html): come la home, con le icone */
+#store-stato { margin-left: 2.4rem; font-size: 2.4rem; font-weight: 500; color: var(--text-2); }
+.cerca-pill {
+  display: inline-block; vertical-align: middle; position: relative;
+  height: 6.4rem; line-height: 6.4rem; padding: 0 3.2rem 0 6.4rem; border-radius: 99rem;
+  background: rgba(255, 255, 255, .08); color: var(--text);
+  font-size: 2.6rem; font-weight: 600;
+  transition: transform .2s var(--ease), background-color .2s ease;
+  cursor: pointer;
+}
+.cerca-pill svg { position: absolute; left: 2.2rem; top: 1.7rem; width: 3rem; height: 3rem; fill: var(--text); }
+#cerca-testo { display: inline-block; vertical-align: top; max-width: 36rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cerca-pill.f { background: var(--pill); color: var(--pill-text); transform: scale(1.08); }
+.cerca-pill.f svg { fill: var(--pill-text); }
+.chip.solo { padding: 0 2rem; }
+
+/* le icone grandi (titolo, pagina dell'app, attesa): l'iniziale col colore della home, sopra l'immagine */
+.st-ico { position: relative; overflow: hidden; text-align: center; }
+.st-ico b { display: block; font-weight: 700; color: #fff; }
+.st-ico img { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; }
+/* i colori sono della home (come le schede delle app del TV): dal catalogo arrivano solo testi */
+.st-c0 { background: linear-gradient(140deg, rgb(59, 76, 202), rgb(26, 35, 102)); }
+.st-c1 { background: linear-gradient(140deg, rgb(142, 63, 184), rgb(61, 24, 87)); }
+.st-c2 { background: linear-gradient(140deg, rgb(15, 155, 142), rgb(10, 71, 68)); }
+.st-c3 { background: linear-gradient(140deg, rgb(217, 98, 43), rgb(110, 38, 17)); }
+.st-c4 { background: linear-gradient(140deg, rgb(86, 96, 107), rgb(34, 39, 45)); }
+.st-c5 { background: linear-gradient(140deg, rgb(47, 158, 90), rgb(18, 65, 39)); }
+.st-c6 { background: linear-gradient(140deg, rgb(194, 59, 78), rgb(86, 21, 32)); }
+.st-c7 { background: linear-gradient(140deg, rgb(43, 123, 191), rgb(16, 54, 90)); }
+/* l'icona dell'app scelta, in alto a destra: la luce arriva da li' */
+#hero-ico {
+  position: fixed; right: 9.6rem; top: 14.4rem; z-index: 3;
+  width: 25.6rem; height: 25.6rem; border-radius: 5.6rem;
+  box-shadow: 0 3.2rem 6.4rem rgba(0, 0, 0, .5);
+  transition: opacity .16s ease;
+}
+#hero-ico b { line-height: 25.6rem; font-size: 12rem; }
+#hero-ico.via, #hero-ico.fade { opacity: 0; }
+/* le azioni dello Store (Aggiungi, Cerca ancora): il segno in alto come negli altri riquadri */
+.pagina-store .card.add svg.glyph { left: 2.6rem; top: 2.6rem; margin: 0; }
+.pagina-store .card.add .label { color: var(--text-2); }
+
+/* la pagina di un'app: l'icona grande a sinistra, testi e pulsanti a destra; dietro resta la luce dell'app. Le file
+   si nascondono (niente strati trasparenti sopra: sul TV costano) */
+#dettaglio {
+  position: fixed; left: 0; top: 0; width: 100%; height: 100%; z-index: 8;
+  -webkit-animation: appare .24s var(--ease); animation: appare .24s var(--ease);
+}
+#dettaglio[hidden] { display: none; }
+.con-dettaglio #rows, .con-dettaglio #hero, .con-dettaglio #hero-ico, .con-dettaglio #topbar { visibility: hidden; }
+@-webkit-keyframes appare { from { opacity: 0; -webkit-transform: translateY(2rem); } to { opacity: 1; -webkit-transform: none; } }
+@keyframes appare { from { opacity: 0; transform: translateY(2rem); } to { opacity: 1; transform: none; } }
+#det-ico {
+  position: absolute; left: 9.6rem; top: 17.6rem; width: 36rem; height: 36rem; border-radius: 8rem;
+  box-shadow: 0 4rem 8rem rgba(0, 0, 0, .55);
+}
+#det-ico b { line-height: 36rem; font-size: 17rem; }
+#det-testo { position: absolute; left: 56rem; right: 9.6rem; top: 17.6rem; }
+#det-cap {
+  height: 3rem; font-size: 2.4rem; font-weight: 600; letter-spacing: .02em; color: var(--text-2);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+#det-nome {
+  margin-top: .8rem; font-size: 8.4rem; font-weight: 700; line-height: 1.04; letter-spacing: -.035em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* un'app privata: "non verificata" ben visibile, nel colore d'avviso */
+#det-cap.avviso {
+  display: inline-block; height: auto; padding: .7rem 1.8rem; border-radius: 99rem; line-height: 1.3;
+  background: rgba(255, 180, 92, .16); color: #ffb45c;
+}
+/* i nomi lunghi (fino a 40 caratteri) si rimpiccioliscono invece di tagliarsi, nella home e nello Store; la riga resta
+   alta uguale, cosi' il resto del titolo grande non sobbalza */
+#hero-title { line-height: 9.4rem; }
+#det-nome { line-height: 8.8rem; }
+#hero-title.lungo, #det-nome.lungo { font-size: 7.2rem; }
+#hero-title.lunghissimo, #det-nome.lunghissimo { font-size: 5.6rem; }
+#det-info { margin-top: 1.6rem; font-size: 2.6rem; font-weight: 600; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#det-descr {
+  margin-top: 3.2rem; max-width: 110rem; font-size: 3rem; font-weight: 500; line-height: 1.4; color: var(--text);
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden;
+}
+#det-novita {
+  margin-top: 2.8rem; max-width: 110rem; padding: 1.8rem 2.8rem; border-radius: 2rem;
+  background: rgba(255, 255, 255, .07); font-size: 2.5rem; line-height: 1.4; color: var(--text-2);
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+#det-azioni { margin-top: 4.8rem; height: 8.8rem; white-space: nowrap; }
+.det-pill {
+  display: inline-block; vertical-align: middle;
+  height: 8rem; line-height: 8rem; padding: 0 5.2rem; margin-right: 2rem; border-radius: 99rem;
+  background: rgba(255, 255, 255, .1); color: var(--text);
+  font-size: 3rem; font-weight: 700;
+  transition: transform .18s var(--ease), background-color .18s ease;
+  cursor: pointer;
+}
+.det-pill.f { background: var(--pill); color: var(--pill-text); transform: scale(1.08); }
+.det-pill.spenta, .det-pill.spenta.f {
+  background: transparent; box-shadow: inset 0 0 0 .3rem var(--line); color: var(--text-2); transform: none; cursor: default;
+}
+#det-aiuto { margin-top: 3.2rem; font-size: 2.2rem; color: var(--text-3); }
+
+/* il riquadro isolato con l'app: tutto lo schermo; sopra lo store, sotto menu, finestra per scrivere e avvisi */
+#app-tv { position: fixed; left: 0; top: 0; width: 100%; height: 100%; z-index: 25; background: #000; }
+#app-tv[hidden] { display: none; }
+#app-tv iframe { position: absolute; left: 0; top: 0; width: 100%; height: 100%; border: 0; background: #000; }
+#app-velo { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+#app-attesa {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%; padding-top: 38rem;
+  background: var(--bg); text-align: center; transition: opacity .3s ease;
+}
+#app-attesa.via { opacity: 0; pointer-events: none; }
+#app-attesa .st-ico { display: inline-block; width: 14.4rem; height: 14.4rem; border-radius: 3.4rem; box-shadow: 0 2.4rem 4.8rem rgba(0, 0, 0, .5); }
+#app-attesa .st-ico b { line-height: 14.4rem; font-size: 7rem; }
+#app-attesa p { margin-top: 3.6rem; font-size: 3.2rem; font-weight: 600; color: var(--text-2); }
 
 /* ---------------------------------------------------------- avvisi */
 #toast {

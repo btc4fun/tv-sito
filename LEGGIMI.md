@@ -24,12 +24,16 @@ Tutto gira dentro **TizenBrew**: la home non cambia il sistema del TV e si togli
 | `config.json` | Le impostazioni di partenza (link del sito, app preferite, preferiti del browser). Puoi cambiarle anche da qui, ma di solito basta il TV |
 | `index.html`, `home.css`, `home.js` | La home |
 | `browser.html`, `browser.js` | Il browser |
+| `store.html`, `store.js` | Lo **Store**: le app per Home TV, il dettaglio, *Le mie app* e il riquadro isolato dove gira un'app |
+| `store-dati.js` | Le due liste dello Store (ufficiale e *Le mie app*), ognuna per conto suo, con la copia dell'ultimo catalogo |
+| `tv-app.js` | La libreria per chi fa le app dello Store: tasti del telecomando e del telefono, memoria, tastiera |
 | `ui.js` | Pezzi comuni a home e browser (tasti, menu, finestra per scrivere, comandi dal telefono) |
 | `qrcode.js` | Disegna il codice QR per collegare il telefono (libreria libera di Kazuhiko Arase) |
 | `main.js` | Dentro i siti: blocco della pubblicità, schermo intero, frecce del telecomando, cronologia |
 | `service.js` | Il "ponte" con il TV: elenco app, icone, avvio delle app, preferiti e cronologia, riapertura all'accensione, telecomando sul telefono |
 | `package.json` | La carta d'identità del modulo per TizenBrew |
 | `profilo.js` | Il "profilo del TV": l'unico posto dove stanno le differenze tra i TV Samsung (anno, Tizen, motore web, cosa c'è e cosa fare quando manca). `main.js` e `service.js` ne hanno una copia uguale |
+| `visti.js` | *Continua a guardare*: riconosce cosa guardi e da dove riprendere. È la stessa logica su ogni TV: `service.js` ne ha una copia uguale, l'app per Android lo usa così com'è |
 | `LICENSE` | La licenza (MIT): puoi usare, cambiare e condividere la home liberamente |
 | `TERZE-PARTI.md` | Il codice e le liste di altri che la home usa, con le loro licenze |
 
@@ -101,7 +105,7 @@ Da qui in poi il Mac non serve più.
 | Frecce | Si muovono tra i riquadri. La fila scelta resta sempre alla stessa altezza, è il resto che scorre |
 | OK | Apre l'app, il tuo sito o il browser; su *Continua a guardare* riprende il video da dove eri |
 | **OK tenuto premuto** (o **Giallo**) | Menu del riquadro: *Aggiungi/Togli dai preferiti*, *Sposta*, *Nascondi questa app*, *Rinomina* (le app: lasciando il nome vuoto torna quello dell'app); sul tuo sito e sui siti aggiunti anche *Cambia link* e *Cambia nome* (e sui siti aggiunti *Blocco della pubblicità* e *Togli questo sito*); su *Continua a guardare* vedi sotto |
-| **+** (l'ultimo riquadro dei preferiti) | Aggiungi: *Un sito come app* (indirizzo, nome e blocco della pubblicità, normale o completo; quanti ne vuoi, ognuno col suo link), *Un preferito del browser* (diventa un riquadro), *Un'app del TV nei preferiti* |
+| **+** (l'ultimo riquadro dei preferiti) | Aggiungi: *Un sito come app* (indirizzo, nome e blocco della pubblicità, normale o completo; quanti ne vuoi, ognuno col suo link), *Un preferito del browser* (diventa un riquadro), *Un'app del TV nei preferiti*, *Un'app dallo Store*, *Un'app da un indirizzo* |
 | Blu | Impostazioni (oppure vai **su** fino all'ingranaggio e premi OK: serve sui telecomandi senza tasti colorati) |
 | Indietro | Torna al primo riquadro in alto |
 
@@ -115,6 +119,49 @@ Si cambia quando vuoi: **OK tenuto premuto** sul riquadro → *Blocco della pubb
 **Spostare un preferito**: menu → *Sposta* → **sinistra/destra** → **OK** per fermarlo. L'ordine resta salvato.
 
 I tasti colorati sul telecomando SolarCell compaiono premendo **123** (una o due volte).
+
+### Lo Store e Le mie app
+
+Il riquadro **Store** (in fondo ai preferiti, prima del **+**) apre le **app per Home TV**: piccole app fatte apposta per il
+TV, gratuite, che si usano col telecomando. Lo Store è fatto come la home: in alto l'app scelta in grande, con la sua
+icona e la luce del suo colore; sotto le file **In evidenza**, **Aggiornamenti**, **Le tue app**, una per categoria e
+**Le mie app**.
+
+| Cosa | Come |
+| --- | --- |
+| **Cercare** | **Su** dalla prima fila → **Cerca**, **OK** e scrivi un nome, un tipo di app (*giochi*, *strumenti*) o un autore. Mentre scrivi, la finestra dice già quante app trova. **Indietro** torna a tutte le file. Si può cercare anche scrivendo dal telefono |
+| **Vedere un'app** | **OK** sul suo riquadro: la sua pagina, con descrizione, versione, novità e i pulsanti |
+| **Installare** | Nella sua pagina, *Installa*. Va nei **Preferiti** (una volta sola: se la togli non torna) e tra le app, nella sua categoria. Nello Store le installate hanno un segno bianco |
+| **Aprire** | *Apri* nella sua pagina, oppure **OK** sul suo riquadro nella home. L'app gira chiusa nel suo riquadro: non vede le tue scelte e i tuoi dati |
+| **Uscire** | **Indietro** (sempre, anche se l'app si blocca) o **Verde**. **Blu** o **OK tenuto premuto**: il menu dell'app (*Ricarica*, *Esci*) |
+| **Aggiornamenti** | Le app si aggiornano da sole. Quando c'è una versione nuova compare un **pallino** sul riquadro e la fila **Aggiornamenti** nello Store; aprendola leggi le novità |
+| **Disinstallare** | *Disinstalla* nella sua pagina, oppure **OK tenuto premuto** sul riquadro nella home (i suoi dati su questo TV si cancellano) |
+| **Senza internet** | Le app installate restano; lo Store mostra la copia salvata del catalogo e lo dice. Se non l'ha mai scaricato, in cima c'è **Riprova** |
+
+**Le mie app** sono le app che aggiungi tu, da un indirizzo qualsiasi: nello Store, fila *Le mie app* → *Aggiungi*;
+oppure **+** → *Un'app da un indirizzo*, o *Impostazioni* → *Le mie app* → *Aggiungi un indirizzo*.
+- Va bene `utente/repository` di GitHub, oppure un indirizzo **https** qualsiasi. Puoi anche incollarlo dal telefono.
+- Prima di aggiungerla la home ti avvisa: **è codice non verificato**. Le app di quella fonte girano chiuse nel loro
+  riquadro, ma possono mostrarti qualsiasi cosa e usare internet: aggiungi solo fonti di cui ti fidi.
+- Le sue app vanno nella fila **Le mie app**, solo su questo TV: non arrivano mai nello Store né su altri TV. Hanno
+  l'iniziale colorata al posto dell'icona: Home TV non scarica immagini da siti che non conosce.
+- Se l'indirizzo è un sito normale, la home te lo aggiunge come sito, come col **+**.
+
+Le app installate e le fonti private stanno nella memoria del TV, con una copia nel servizio del TV: se TizenBrew viene
+reinstallato, tornano da sole.
+
+**Lo Store sul telefono.** Nel telecomando del telefono, il pulsante con la **borsa** in alto apre lo Store, fatto come
+quello del TV.
+
+| Sul telefono | Cosa fa |
+| --- | --- |
+| **Le file** | *In evidenza* con le copertine, *Le tue app*, una fila per categoria e *Le mie app*, con gli stessi colori del TV |
+| **Cerca** | La casella in alto: nome, tipo di app o autore |
+| **La pagina dell'app** | Tocca un'app: copertina, descrizione, novità e il pulsante grande **Installa sul TV** (poi **Apri sul TV** e **Disinstalla**, che chiede un secondo tocco) |
+| **Aggiungere un'app privata** | In fondo allo Store: incolli l'indirizzo, leggi l'avviso del codice non verificato, poi *Aggiungi lo stesso* |
+
+Lo fa sempre il TV, con gli stessi controlli del telecomando: il telefono mostra quello che vede il TV. Se sul TV c'è un
+sito o un'altra app, installare e disinstallare si fanno appena torni alla home; *Apri sul TV* ci porta subito.
 
 ### Continua a guardare
 
@@ -150,6 +197,10 @@ Sotto i preferiti c'è la fila **Continua a guardare**: i film e le serie che ha
 | **Telefono** → Collega un telefono | Mostra il codice QR per il telecomando sul telefono (vedi sotto) |
 | Telefoni collegati | Quanti sono; OK per scollegarli tutti |
 | Tasti del TV dal telefono | Se il telefono può comandare tutto il TV (anche Netflix e i menu Samsung); OK per chiedere il permesso al TV |
+| **Store** → Catalogo dello Store | Quando è stato scaricato e quante app ha; **OK** per scaricarlo di nuovo subito |
+| Apri lo Store | Le app per Home TV |
+| **Le mie app** → Aggiungi un indirizzo | Un'app o un catalogo privato, da un indirizzo qualsiasi (prima l'avviso del codice non verificato) |
+| Fonti private | Quante fonti e quante app; **OK** per aggiornarle o toglierle |
 | **Questo TV** → Modello, Sistema, TizenBrew, Schermo | Chi è il tuo TV: modello e anno, versione di Tizen e del motore web, versione di TizenBrew, risoluzione |
 | Servizio del TV, Home riconosciuta, App del TV, Riapertura della home, Telefono (porta 8091), Comando completo dal telefono, Tasti colorati, Liste di filtri, Salvataggio, Versione di Home TV | Cosa funziona su questo TV (✕ se manca). **OK** su una voce spiega cosa fare. Se all'accensione della home manca qualcosa di importante, la home lo dice da sola una volta |
 
@@ -175,6 +226,16 @@ Si perde solo se disinstalli TizenBrew o riporti il TV alle impostazioni di fabb
 Il repository su GitHub **deve essere pubblico**: TizenBrew scarica la home attraverso jsDelivr, che legge solo i repository pubblici, e GitHub Pages su un repository privato richiede un abbonamento a pagamento (e anche così il sito resterebbe raggiungibile). Pubblico vuol dire che chi lo trova può **leggere** i file, non cambiarli: modificarli puoi solo tu.
 
 Su GitHub c'è solo il codice della home, uguale per tutti. Le cose tue restano sul TV: il link del tuo sito (se lo metti dal telefono o dal TV), cronologia, preferiti del browser, app nascoste, nome nel saluto, telefoni collegati e *Continua a guardare*. Cose da sapere: le icone dei preferiti e delle schede del browser si chiedono al servizio di icone di Google (che così vede i nomi di quei siti); il carattere della home (Instrument Sans) si scarica da Google Fonts; le liste di filtri si scaricano dai loro siti; e i siti che apri sul TV possono leggere le impostazioni pensate per loro (il blocco della pubblicità, lo schermo intero, il link del tuo sito).
+
+**Chi può comandare il servizio del TV.** Solo la tua home. Il servizio guarda da quale sito arriva ogni domanda, e in più vuole una **chiave segreta** che la home riceve da sola la prima volta e tiene nella sua memoria: non devi scrivere niente, mai.
+
+| Chi prova | Cosa ottiene |
+| --- | --- |
+| **Un sito** aperto sul TV | Solo le cose per i siti: blocco della pubblicità, telefono, cronologia del browser |
+| **Un'app dello Store** | Solo le liste di filtri: gira chiusa nel suo riquadro |
+| **Un programma sul TV** che finge di essere la home | Niente, senza la chiave |
+
+Il limite, detto chiaramente: la home riprende la chiave da sola nei primi 2 minuti dopo l'avvio del servizio (per esempio dopo aver reinstallato TizenBrew). Un programma già installato sul TV che in quei 2 minuti chiede la chiave prima della home potrebbe averla. È un caso molto difficile da costruire, e sui Samsung non c'è modo di evitarlo senza farti scrivere una password.
 
 ## Il telecomando sul telefono
 
@@ -369,6 +430,7 @@ Rispetta virgolette e virgole come nell'esempio: un errore in `config.json` fa u
 
 - **TizenBrew apre una pagina che non esiste (errore 404)**: in `package.json` il nome utente nella riga `websiteURL` non è giusto (deve essere tutto minuscolo), oppure GitHub Pages non è attivo (Fase A, punto 4).
 - **La home dice "Il servizio del TV non riconosce questa pagina"**: in TizenBrew il modulo dev'essere `tuonome/tv-sito`, con lo stesso nome del repository su GitHub.
+- **La home dice "Il servizio del TV non riconosce più questa pagina: riavvia il TV"**: la home ha perso la sua memoria, e con lei la chiave del servizio, mentre il servizio era acceso da più di 2 minuti. Riavvia il TV: tieni premuto il tasto di accensione del telecomando finché compare il logo Samsung. Alla riapertura la home riprende la chiave da sola, e le tue scelte tornano dalla copia sul TV.
 - **La home dice "Sto collegando le app del TV…" e restano solo il tuo sito e il Browser**: il servizio non è partito. Chiudi TizenBrew e riaprilo. Se continua, controlla nelle impostazioni di TizenBrew (pulsanti tondi in alto; nel vecchio 1.x il tasto **Blu**) che in *Impostazioni di Autoavvio per i servizi* ci sia **Home**, e che *Host PC IP* sia `127.0.0.1` (Fase D). In Impostazioni → *App del TV* vedi lo stato.
 - **Il sito si apre ma pubblicità, schermo intero e cronologia non funzionano**: stessa causa, *Host PC IP* deve essere `127.0.0.1`.
 - **In Impostazioni le liste di filtri dicono "Non ancora scaricate"**: il TV non è riuscito a raggiungere internet (o i siti delle liste). Riprova da solo ogni mezz'ora; **OK** su quella voce riprova subito. Nel frattempo vale il blocco interno.

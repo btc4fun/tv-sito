@@ -48,9 +48,56 @@ var UI = (function () {
     return Math.abs(h);
   }
 
-  /* ------------------------------------------------------------ servizio del TV */
+  /* ------------------------------------------------------------ servizio del TV
+   * La home si presenta al servizio con la sua chiave (service.js, "la chiave della home"): ?chiave= in ogni domanda.
+   * La da' il servizio (POST /api/chiave) oppure l'app del TV nell'indirizzo (#chiave=, Android e LG), e resta nella
+   * memoria della home. Se il servizio non la riconosce (memoria persa, servizio nuovo) se ne prende un'altra e si
+   * riprova, una volta: chi usa la home non scrive mai niente. */
 
-  function service(path, body) {
+  var CHIAVE_OK = /^[0-9a-f]{64}$/;
+  var CHIAVE = load('hometv-chiave', '');
+  // quella che l'app del TV mette nell'indirizzo (Android, LG) si usa subito, ma si salva solo quando il servizio la
+  // riconosce (chiaveBuona): un sito potrebbe aprire la home con una chiave finta. Nell'anteprima si lascia stare
+  (function chiaveDallIndirizzo() {
+    var m = /(^#|&)chiave=([0-9a-f]{64})(?=&|$)/.exec(location.hash || '');
+    if (!m) return;
+    if (!DEMO) CHIAVE = m[2];
+    // fuori dall'indirizzo: non si vede e non resta nella cronologia
+    var resto = location.hash.replace(m[0], m[1] === '#' ? '#' : '').replace(/^#&/, '#');
+    try { history.replaceState(null, '', location.pathname + location.search + (resto === '#' ? '' : resto)); } catch (e) {}
+  })();
+  // sempre col parametro, anche vuoto: e' la home (senza, il servizio la tratta come un'altra pagina dello stesso sito)
+  function conChiave(path, k) { return path + (path.indexOf('?') === -1 ? '?' : '&') + 'chiave=' + encodeURIComponent(k || ''); }
+  // il servizio l'ha riconosciuta: si tiene
+  function chiaveBuona(usata) {
+    if (usata && usata === CHIAVE && load('hometv-chiave', '') !== usata) save('hometv-chiave', usata);
+  }
+  // la chiave usata non va: quella salvata (se l'indirizzo ne ha portata un'altra, o se un'altra pagina della home l'ha
+  // appena presa), quella presa intanto da un'altra domanda, oppure una dal servizio. Le domande partite insieme ne
+  // chiedono una sola. Se non c'e' verso, l'app del TV lo sa (window.__hometvSenzaChiave: Android rifa' la home)
+  var chiedendo = null;
+  function rimediaChiave(usata) {
+    var salvata = load('hometv-chiave', '');
+    if (CHIAVE_OK.test(salvata) && salvata !== usata) { CHIAVE = salvata; return Promise.resolve(); }
+    if (CHIAVE && CHIAVE !== usata) return Promise.resolve();
+    if (!chiedendo) {
+      chiedendo = fetch(SERVICE + '/api/chiave', { method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'text/plain' }, body: '{}' })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          chiedendo = null;
+          if (!j || !CHIAVE_OK.test(j.chiave || '')) throw new Error('chiave');
+          CHIAVE = j.chiave;
+          save('hometv-chiave', CHIAVE);
+        }, function (e) { chiedendo = null; throw e; });
+    }
+    // la stessa chiave di prima: il problema e' un altro (niente giri a vuoto)
+    return chiedendo.then(function () { if (CHIAVE === usata) throw new Error('chiave'); })['catch'](function (e) {
+      window.__hometvSenzaChiave = true;
+      throw e;
+    });
+  }
+
+  function service(path, body, riprova) {
     if (DEMO) return Promise.reject(new Error('anteprima'));
     var opts = { cache: 'no-store' };
     if (body !== undefined) {
@@ -58,11 +105,16 @@ var UI = (function () {
       opts.headers = { 'Content-Type': 'text/plain' }; // niente richiesta preliminare CORS
       opts.body = JSON.stringify(body);
     }
-    return fetch(SERVICE + path, opts).then(function (r) {
+    var usata = CHIAVE;
+    return fetch(SERVICE + conChiave(path, usata), opts).then(function (r) {
       return r.json().then(function (j) {
-        if (!r.ok) throw new Error(j && j.error ? j.error : 'errore ' + r.status);
+        if (!r.ok) { var e = new Error(j && j.error ? j.error : 'errore ' + r.status); e.stato = r.status; throw e; }
+        chiaveBuona(usata);
         return j;
       });
+    }).then(null, function (e) {
+      if (riprova || !e || e.message !== 'chiave') throw e;
+      return rimediaChiave(usata).then(function () { return service(path, body, true); }, function () { throw e; });
     });
   }
   // i preferiti del browser alla prima apertura (config.json, se no questi): li usano il browser e il "+" della home
@@ -101,18 +153,26 @@ var UI = (function () {
   /* ------------------------------------------------------------ profilo del TV
    * Il servizio sa del TV (modello, TizenBrew, porte), la pagina sa del suo motore e dello schermo: la pagina gli manda
    * i suoi fatti e riceve il profilo intero. Se il servizio non risponde, il profilo con quello che sa la pagina (lo
-   * stesso profilo.js dice cosa manca e cosa fare). */
+   * stesso profilo.js dice cosa manca e cosa fare). Le chiavette il servizio le guarda solo se lo si chiede (chiavette:
+   * "Questo TV"): l'autodiagnosi della home non deve svegliare il disco USB a ogni apertura. */
   var coloriVisti = false;
   function datiPagina() {
     return { ua: navigator.userAgent, larghezza: window.innerWidth, altezza: window.innerHeight,
       chromium: ProfiloTV.daUserAgent(navigator.userAgent).chromium, variabiliCss: MOTORE.variabiliCss, coloriVisti: coloriVisti };
   }
-  function profiloTv() {
+  function profiloTv(chiavette) {
     var locale = function (e) {
-      return ProfiloTV.componi({ servizio: false, nonAutorizzata: !!(e && e.message === 'pagina non autorizzata'), pagina: datiPagina() });
+      return ProfiloTV.componi({ servizio: false, nonAutorizzata: !!(e && e.message === 'pagina non autorizzata'),
+        senzaChiave: !!(e && e.message === 'chiave'), pagina: datiPagina(),
+        piattaforma: ProfiloTV.piattaforma(window, ON_TV) });
     };
     if (DEMO) return Promise.resolve(locale());
-    return service('/api/tv/pagina', datiPagina()).then(null, locale);
+    // le TV il cui servizio manda solo i fatti (l'app per Android): il profilo lo compone la pagina, con le stesse regole
+    return service('/api/tv/pagina' + (chiavette ? '?chiavette=1' : ''), datiPagina()).then(function (p) {
+      if (!p || !p.fatti || typeof p.fatti !== 'object') return p;
+      p.fatti.pagina = datiPagina();
+      return ProfiloTV.componi(p.fatti);
+    }, locale);
   }
 
   /* ------------------------------------------------------------ avvisi */
@@ -155,12 +215,12 @@ var UI = (function () {
    * del tasto: finche' non lo si vede, OK agisce subito alla pressione.
    */
 
-  var CODES = {
-    37: 'left', 38: 'up', 39: 'right', 40: 'down', 13: 'ok',
-    10009: 'back', 27: 'back', 8: 'back',
-    403: 'red', 404: 'green', 405: 'yellow', 406: 'blue',
-    10252: 'play', 415: 'play', 19: 'play'
-  };
+  // i tasti del telecomando: la tabella e' quella di tutte le pagine (ProfiloTV.TASTI: Samsung, LG, app Android), qui coi
+  // nomi della home. In piu' Backspace (8) come Indietro, sul computer. rew, ff e stop li usano le app dello store
+  var NOMI_TASTI = { sx: 'left', su: 'up', dx: 'right', giu: 'down', ok: 'ok', indietro: 'back', rosso: 'red', verde: 'green',
+    giallo: 'yellow', blu: 'blue', playpausa: 'play', play: 'play', pausa: 'play', stop: 'stop', avanti: 'ff', indietroVeloce: 'rew' };
+  var CODES = { 8: 'back' };
+  for (var codice in ProfiloTV.TASTI) if (Object.prototype.hasOwnProperty.call(ProfiloTV.TASTI, codice)) CODES[codice] = NOMI_TASTI[ProfiloTV.TASTI[codice]];
   var keyupOk = load('ui-keyup-ok', false);
   var okTimer = null, okHeld = false, okDown = false, okDownAt = 0, lastMove = 0;
   var handlers = [];   // pila: l'ultimo (menu aperto) riceve i tasti
@@ -316,21 +376,25 @@ var UI = (function () {
 
   var editorKeys = null, editorScrivi = null, editorChiudi = null;
 
-  // opts: { title, value, placeholder, hint, onSave(value) }
+  // opts: { title, value, placeholder, hint, onSave(value), onCancel() (chiusa senza salvare),
+  //   onInput(value) -> un suggerimento da mostrare al posto dell'aiuto mentre si scrive (lo Store: quante app trova) }
   function openEditor(opts) {
     var box = $('editor');
     if (!box) return;
+    var aiuto0 = opts.hint || 'Scrivi con la tastiera del TV o dal telefono. OK o Fatto per salvare, Indietro per annullare.';
     box.innerHTML = '<div class="editor-card"><h2>' + esc(opts.title) + '</h2>' +
       '<input id="editor-input" type="text" autocomplete="off" spellcheck="false">' +
-      '<p>' + esc(opts.hint || 'Scrivi con la tastiera del TV o dal telefono. OK o Fatto per salvare, Indietro per annullare.') + '</p></div>';
-    var input = $('editor-input');
+      '<p>' + esc(aiuto0) + '</p></div>';
+    var input = $('editor-input'), aiuto = box.getElementsByTagName('p')[0];
     input.value = opts.value || '';
     input.placeholder = opts.placeholder || '';
     box.className = 'open';
-    var closing = false;
+    var closing = false, salvata = false;
 
     function close() {
+      if (closing) return;
       closing = true;
+      if (!salvata && opts.onCancel) setTimeout(opts.onCancel, 0);
       editorScrivi = null;
       editorChiudi = null;
       diciCampo(null);
@@ -341,13 +405,20 @@ var UI = (function () {
       editorKeys = null;
     }
     function saveIt() {
+      if (closing) return;
+      salvata = true;
       var v = String(input.value || '').replace(/^\s+|\s+$/g, '');
       editorScrivi = null;
       close();
       if (opts.onSave) opts.onSave(v);
     }
+    function scritto() {
+      if (!opts.onInput || closing) return;
+      var s = opts.onInput(String(input.value || ''));
+      if (aiuto) aiuto.textContent = s || aiuto0;
+    }
     // testo arrivato dal telefono: va nella casella mentre lo scrivi; con Invio si salva
-    editorScrivi = function (t, invio) { input.value = t; if (invio !== false) saveIt(); };
+    editorScrivi = function (t, invio) { input.value = t; scritto(); if (invio !== false) saveIt(); };
     diciCampo({ etichetta: opts.title, valore: input.value });
     editorKeys = function (a) {
       if (a === 'done' || a === 'ok') saveIt();
@@ -357,6 +428,7 @@ var UI = (function () {
     pushKeys(editorKeys);
     editorChiudi = close;
     input.addEventListener('change', function () { if (!closing && editorKeys) saveIt(); });
+    if (opts.onInput) { input.addEventListener('input', scritto); scritto(); }
     setTimeout(function () { try { input.focus(); input.select(); } catch (e) {} }, 30);
   }
 
@@ -618,7 +690,7 @@ var UI = (function () {
   var DAL_TELEFONO = { su: 'up', giu: 'down', sx: 'left', dx: 'right', ok: 'ok', tieni: 'hold', indietro: 'back',
     rosso: 'red', verde: 'green', giallo: 'yellow', blu: 'blue', playpausa: 'play' };
 
-  // gestori: { testo(t), link(url), sito(url), home() }
+  // gestori: { testo(t), link(url), sito(url), home(), store(evento), video(evento) }
   function ascoltaTelefono(dove, gestori) {
     if (DEMO || typeof fetch !== 'function') return;
     gestori = gestori || {};
@@ -645,6 +717,12 @@ var UI = (function () {
       } else if (e.tipo === 'home') {
         if (sheetKeys) closeSheet();
         if (gestori.home) gestori.home();
+      } else if (e.tipo === 'store') {
+        // lo Store dal telefono (installa, apri, disinstalla, togli, aggiungi, elenco): lo fanno la home e lo Store
+        if (gestori.store) gestori.store(e);
+      } else if (e.tipo === 'video') {
+        // la barra del video sul telefono (vai, salta, play, pausa): lo Store la passa all'app aperta (l'app Video)
+        if (gestori.video) gestori.video(e);
       } else if (e.tipo === 'schede' || e.tipo === 'nuovaScheda') {
         // le schede del browser (dal telefono): la galleria, o una scheda nuova
         if (sheetKeys) closeSheet();
@@ -658,9 +736,19 @@ var UI = (function () {
       inCorso = true;
       partito = Date.now();
       richiesta = MOTORE.abort ? new AbortController() : null;
-      fetch(SERVICE + '/api/telefono/eventi?da=' + seq + '&dove=' + encodeURIComponent(dove),
+      var usata = CHIAVE;
+      fetch(SERVICE + conChiave('/api/telefono/eventi?da=' + seq + '&dove=' + encodeURIComponent(dove), usata),
         richiesta ? { cache: 'no-store', signal: richiesta.signal } : { cache: 'no-store' })
-        .then(function (r) { return r.json(); })
+        .then(function (r) {
+          // chiave da rifare: se ne prende un'altra e si riprova subito (se no fra 5 secondi, come senza servizio)
+          if (r.status === 403) {
+            return rimediaChiave(usata).then(function () { throw new Error('ancora'); });
+          }
+          // un altro errore del servizio (per esempio 500): si riprova tra 5 secondi, non subito
+          if (!r.ok) throw new Error('servizio ' + r.status);
+          chiaveBuona(usata);
+          return r.json();
+        })
         .then(function (j) {
           if (mio !== giroN) return;
           if (j && typeof j.seq === 'number') seq = j.seq;
@@ -670,7 +758,7 @@ var UI = (function () {
             try { esegui(ev[i]); } catch (x) {}
           }
           setTimeout(giro, veloce ? 0 : 30); // col trackpad si richiede subito
-        })['catch'](function () { if (mio === giroN) setTimeout(giro, 5000); });
+        })['catch'](function (e) { if (mio === giroN) setTimeout(giro, e && e.message === 'ancora' ? 0 : 5000); });
     }
     // una richiesta rimasta appesa (pagina rimessa dalla cache del browser, rete) si sostituisce
     function riparti() { if (!document.hidden && (!inCorso || Date.now() - partito > 40000)) giro(); }
@@ -684,6 +772,71 @@ var UI = (function () {
     window.addEventListener('pageshow', function (ev) { if (ev.persisted) { inCorso = false; riparti(); } });
     setInterval(riparti, 10000);
     giro();
+  }
+
+  /* ------------------------------------------------------------ colori di un'immagine
+   * I colori di un'icona (o di una copertina), letti da una copia minuscola (24x14 pixel): a = la meta' sinistra, b = la
+   * destra (piu' scura), edge = il colore del bordo se l'immagine e' "piena" (bordi opachi). null se non si puo' leggere
+   * (un'immagine di un altro sito che non lo permette). Li usano la home (le app del TV) e lo Store */
+
+  var telaColori = null;
+  function tono(c, f) {
+    var mx = Math.max(c[0], c[1], c[2]) || 1;
+    var s = Math.min(210, Math.max(90, mx)) * f / mx;
+    return Math.round(c[0] * s) + ',' + Math.round(c[1] * s) + ',' + Math.round(c[2] * s);
+  }
+  function coloriImmagine(img) {
+    var W = 24, H = 14, d;
+    try {
+      telaColori = telaColori || document.createElement('canvas');
+      telaColori.width = W; telaColori.height = H;
+      var ctx = telaColori.getContext('2d');
+      ctx.clearRect(0, 0, W, H);
+      ctx.drawImage(img, 0, 0, W, H);
+      d = ctx.getImageData(0, 0, W, H).data;
+    } catch (e) { return null; }
+    var acc = [[0, 0, 0, 0], [0, 0, 0, 0]];
+    var edge = [0, 0, 0, 0], edgeN = 0;
+    for (var y = 0; y < H; y++) {
+      for (var x = 0; x < W; x++) {
+        var i = (y * W + x) * 4, a = d[i + 3] / 255;
+        if (x === 0 || y === 0 || x === W - 1 || y === H - 1) {
+          edge[0] += d[i]; edge[1] += d[i + 1]; edge[2] += d[i + 2]; edge[3] += a; edgeN++;
+        }
+        if (a < 0.2) continue;
+        var r = d[i], g = d[i + 1], b = d[i + 2];
+        var mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+        var sat = mx ? (mx - mn) / mx : 0;
+        var w = a * (0.15 + sat * sat * 2) * (mx > 30 ? 1 : 0.3);
+        var k = x < W / 2 ? 0 : 1;
+        acc[k][0] += r * w; acc[k][1] += g * w; acc[k][2] += b * w; acc[k][3] += w;
+      }
+    }
+    if (!acc[0][3] && !acc[1][3]) return null;
+    function avg(v, other) {
+      var s = v[3] ? v : other;
+      return [s[0] / s[3], s[1] / s[3], s[2] / s[3]];
+    }
+    var out = { a: tono(avg(acc[0], acc[1]), 1), b: tono(avg(acc[1], acc[0]), 0.72) };
+    // icona "piena" (bordi opachi): il riquadro prende il colore del bordo
+    if (edgeN && edge[3] / edgeN > 0.92) {
+      out.edge = Math.round(edge[0] / edgeN) + ',' + Math.round(edge[1] / edgeN) + ',' + Math.round(edge[2] / edgeN);
+    }
+    return out;
+  }
+
+  // i colori delle app dello Store, come i loro riquadri: quelli letti dalle loro immagini (tvh-colors, se il TV li ha
+  // gia'), se no dal nome. Per l'elenco del telefono: si legge la memoria una volta sola per tutto l'elenco
+  var TAVOLOZZA = [['59,76,202', '26,35,102'], ['142,63,184', '61,24,87'], ['15,155,142', '10,71,68'], ['217,98,43', '110,38,17'],
+    ['86,96,107', '34,39,45'], ['47,158,90', '18,65,39'], ['194,59,78', '86,21,32'], ['43,123,191', '16,54,90']];
+  function coloriApp() {
+    var c = load('tvh-colors', {}) || {};
+    return function (chiave, nome, tag) {
+      var x = c[chiave];
+      if (x && x.a && x.b && x.tag === tag) return [x.a, x.b];
+      var p = TAVOLOZZA[hash(nome || '') % TAVOLOZZA.length];
+      return [p[0], p[1]];
+    };
   }
 
   /* ------------------------------------------------------------ dimensione: 1rem = 10px a 1920 */
@@ -707,6 +860,6 @@ var UI = (function () {
     onKeys: onKeys, pushKeys: pushKeys, popKeys: popKeys,
     openSheet: openSheet, closeSheet: closeSheet, sheetOpen: sheetOpen,
     openEditor: openEditor, editorOpen: editorOpen, closeEditor: function () { if (editorChiudi) editorChiudi(); }, ascoltaTelefono: ascoltaTelefono,
-    fitScreen: fitScreen, rem: rem, setTransform: setTransform
+    fitScreen: fitScreen, rem: rem, setTransform: setTransform, coloriImmagine: coloriImmagine, coloriApp: coloriApp
   };
 })();

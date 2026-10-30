@@ -33,6 +33,21 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+### audio-tv-codec.js – FFmpeg (il convertitore dell'audio DTS e TrueHD)
+
+- Il file contiene, in base64, un programma WebAssembly costruito da **FFmpeg 9.0.2** (<https://ffmpeg.org/>): i
+  decodificatori DTS (solo il nucleo) e TrueHD/MLP e l'encoder AC3, più le parti di libavcodec e libavutil che servono.
+  `service.js` ne ha una copia uguale.
+- FFmpeg è degli **sviluppatori di FFmpeg** (<https://ffmpeg.org/legal.html>). Le parti usate sono sotto la licenza
+  **GNU LGPL 2.1 o successiva** (costruito senza le parti GPL: `--disable-everything` più quei tre codec). Il sorgente è
+  quello ufficiale di FFmpeg 9.0.2 (<https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz>); la costruzione toglie due righe
+  da una copia di `libavutil/tx.c` (le trasformate double e int32, che questi codec non usano) e mette `solo_nucleo.c` al
+  posto di `dca_xll.c` e `dca_lbr.c` (le estensioni del DTS che non si decodificano). Tutto, con la piccola interfaccia
+  `atv.c`, è nel progetto in `prove/audio-tv/codec/`: chiunque lo può rifare, anche con un FFmpeg cambiato, e mettere il
+  suo al posto di questo (`costruisci.sh` riscrive `audio-tv-codec.js`).
+- Dolby, Dolby Digital e TrueHD sono marchi di Dolby Laboratories; DTS è un marchio di DTS, Inc. Home TV non ha
+  rapporti con loro.
+
 ## Scaricato dal TV (non è dentro il modulo)
 
 Le liste di filtri per il blocco della pubblicità le scarica il TV da solo, dai loro siti ufficiali, e le usa così

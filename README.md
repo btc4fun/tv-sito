@@ -77,7 +77,9 @@ manca) stanno solo in `profilo.js`; `main.js` e `service.js` ne contengono una c
 |---|---|
 | `index.html`, `home.css`, `home.js` | La home |
 | `browser.html`, `browser.js` | Il browser |
-| `ui.js` | Pezzi comuni a home e browser |
+| `store.html`, `store.js`, `store-dati.js` | Lo Store: le app per Home TV con Cerca, la pagina di ogni app, *Le mie app* e il riquadro isolato dove gira un'app |
+| `tv-app.js` | La libreria per chi fa le app dello Store (tasti, memoria, tastiera) |
+| `ui.js` | Pezzi comuni a home, browser e Store |
 | `profilo.js` | Il profilo del TV (le differenze tra i TV) |
 | `main.js` | Dentro i siti: blocco della pubblicità, schermo intero, frecce del telecomando, cronologia |
 | `service.js` | Il servizio sul TV: app, icone, riapertura all'accensione, telefono |

@@ -12,9 +12,40 @@
 (function () {
   'use strict';
 
+  // Aggiornamento a meta' (revisione "TV vecchi e aggiornamento", punto 1): GitHub Pages tiene ogni file in cache 10 minuti,
+  // ognuno con la sua scadenza, e subito dopo un aggiornamento la pagina puo' avere file di due versioni. Se manca un pezzo
+  // che arriva da un altro file, invece della pagina nera si dice cosa fare. L'elenco: tutto quello che questo file usa
+  // degli altri (la prova test_aggiornamento.py controlla che ci sia)
+  if (mancaUnPezzo('UI.$ UI.DEMO UI.ON_TV UI.ascoltaTelefono UI.closeEditor UI.coloriApp UI.coloriImmagine UI.editorOpen UI.esc ' +
+    'UI.hash UI.hostOf UI.iconUrl UI.load UI.onKeys UI.openEditor UI.openSheet UI.popKeys UI.preferitiBrowser UI.preferitiIniziali ' +
+    'UI.profiloTv UI.pushKeys UI.rem UI.saluto UI.save UI.service UI.setTransform UI.sheetOpen UI.startClock UI.toast UI.validUrl ' +
+    'ProfiloTV.altraTv ProfiloTV.piattaforma StoreDati.azioneTelefono StoreDati.copia StoreDati.imposta StoreDati.mie.aggiornaTutte ' +
+    'StoreDati.mie.app StoreDati.mie.fonti StoreDati.mie.togliApp StoreDati.perRiquadro StoreDati.perTelefono StoreDati.perche ' +
+    'StoreDati.ripristina StoreDati.servizio StoreDati.ufficiale.aggiorna StoreDati.ufficiale.catalogo StoreDati.ufficiale.disinstalla ' +
+    'StoreDati.ufficiale.installata StoreDati.ufficiale.installate')) return;
+  function mancaUnPezzo(elenco) {
+    var l = elenco.split(' '), i, j, o, p;
+    for (i = 0; i < l.length; i++) {
+      for (p = l[i].split('.'), o = window, j = 0; j < p.length && o !== undefined && o !== null; j++) o = o[p[j]];
+      if (o === undefined || o === null) {
+        var d = document.createElement('div');
+        d.id = 'aggiornamento';
+        d.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;z-index:2147483647;background:#0b0d12;color:#fff;' +
+          'display:flex;align-items:center;justify-content:center;text-align:center;font:600 46px/1.4 sans-serif;padding:0 12%;box-sizing:border-box';
+        var altra = false; // sulle altre TV (Android, LG) l'app si chiama Home TV: lo sa il profilo, se c'e'
+        try { altra = ProfiloTV.altraTv({ piattaforma: ProfiloTV.piattaforma(window) }); } catch (e) {}
+        d.textContent = 'Home TV si sta aggiornando: ' + (altra ? 'chiudi Home TV e riaprila' : 'esci da TizenBrew e riaprilo');
+        (document.body || document.documentElement).appendChild(d);
+        try { console.log('[HomeTV] manca ' + l[i] + ': file di due versioni (cache di GitHub Pages)'); } catch (e) {}
+        return true;
+      }
+    }
+    return false;
+  }
+
   var $ = UI.$;
   var DEMO = UI.DEMO;
-  var VERSIONE = '1.2.2';
+  var VERSIONE = '1.3.0';
 
   /* ============================================================ dati */
 
@@ -29,6 +60,11 @@
   // Vince la modifica piu' recente (ogni salvataggio ha la sua ora, "rev").
   var ripristinoFatto = DEMO;
   var vuotoAvvio = vuoto(prefs), revAvvio = prefs.rev || 0;
+  // le liste dello Store mai scritte su questo TV (letto prima di qualsiasi scrittura): solo cosi' si capisce che la
+  // memoria e' stata cancellata davvero. "Vuote" non basta: un'app disinstallata nello Store tornerebbe dalla copia vecchia
+  var storeMaiScritto = (function () {
+    try { return localStorage.getItem('tvh-store') === null && localStorage.getItem('tvh-mie') === null; } catch (e) { return false; }
+  })();
   // memoria vuota = nessuna scelta vera (ghVisto e rev li scrive gia' adottaGithub, appena arriva config.json)
   function vuoto(o) {
     if (!o || typeof o !== 'object') return true;
@@ -36,7 +72,19 @@
     return true;
   }
   var NON_AUTORIZZATA = 'pagina non autorizzata';
-  var MSG_NOME_GITHUB = 'Il servizio del TV non riconosce questa pagina: in TizenBrew aggiungi il modulo tuonome/tv-sito';
+  // le altre TV (Android, Fire TV, LG): il servizio e' quello dell'app Home TV, non di TizenBrew
+  var ALTRA_TV = !DEMO && ProfiloTV.altraTv({ piattaforma: ProfiloTV.piattaforma(window, UI.ON_TV) });
+  var RIAPRI = ALTRA_TV ? 'chiudi Home TV e riaprila' : 'riapri TizenBrew';
+  var MSG_NOME_GITHUB = ALTRA_TV ? 'Il servizio del TV non riconosce questa pagina: rifai l\'installazione con Installa Home TV' :
+    'Il servizio del TV non riconosce questa pagina: in TizenBrew aggiungi il modulo tuonome/tv-sito';
+  // la home ha perso la sua chiave del servizio e non l'ha potuta riprendere (UI.service): la riprende alla riapertura
+  // dell'app (Android, LG) o all'avvio del servizio (Samsung: col riavvio del TV)
+  var SENZA_CHIAVE = 'chiave';
+  var MSG_CHIAVE = ALTRA_TV ? 'Il servizio del TV non riconosce più questa pagina: chiudi Home TV e riaprila' :
+    'Il servizio del TV non riconosce più questa pagina: riavvia il TV (tieni premuto il tasto di accensione finché compare il logo Samsung)';
+  function msgServizio(e, altrimenti) {
+    return e && e.message === NON_AUTORIZZATA ? MSG_NOME_GITHUB : e && e.message === SENZA_CHIAVE ? MSG_CHIAVE : altrimenti;
+  }
   var apps = DEMO ? null : UI.load('tvh-apps', null);
   var colors = UI.load('tvh-colors', {});
   var last = UI.load('tvh-last', null);
@@ -140,7 +188,8 @@
     sito: { a: '255,123,71', b: '168,50,27' },
     web: { a: '34,195,174', b: '11,87,98' },
     yt: { a: '235,55,55', b: '122,16,24' },
-    gear: { a: '120,132,156', b: '40,46,60' }
+    gear: { a: '120,132,156', b: '40,46,60' },
+    store: { a: '139,92,246', b: '59,31,122' }
   };
   var PALETTE = [
     ['59,76,202', '26,35,102'], ['142,63,184', '61,24,87'], ['15,155,142', '10,71,68'],
@@ -150,7 +199,7 @@
 
   function colorsFor(item) {
     if (HOUSE[item.kind]) return HOUSE[item.kind];
-    if (item.id && colors[item.id]) return colors[item.id];
+    if (item.id && colors[item.id] && (!colors[item.id].tag || colors[item.id].tag === item.tag)) return colors[item.id];
     var p = PALETTE[UI.hash(item.nomeVero || item.name || '') % PALETTE.length]; // un'app rinominata tiene il suo colore
     return { a: p[0], b: p[1] };
   }
@@ -176,52 +225,8 @@
       'radial-gradient(110rem 70rem at 0% 60%, rgba(' + c.b + ',' + (0.32 * k) + ') 0%, rgba(' + c.b + ',0) 70%),var(--bg)';
   }
 
-  // Colori dell'icona, letti da una copia minuscola (24x14 pixel).
-  var tinyCanvas = null;
-  function tone(c, f) {
-    var mx = Math.max(c[0], c[1], c[2]) || 1;
-    var s = Math.min(210, Math.max(90, mx)) * f / mx;
-    return Math.round(c[0] * s) + ',' + Math.round(c[1] * s) + ',' + Math.round(c[2] * s);
-  }
-  function extractColors(img) {
-    var W = 24, H = 14, d;
-    try {
-      tinyCanvas = tinyCanvas || document.createElement('canvas');
-      tinyCanvas.width = W; tinyCanvas.height = H;
-      var ctx = tinyCanvas.getContext('2d');
-      ctx.clearRect(0, 0, W, H);
-      ctx.drawImage(img, 0, 0, W, H);
-      d = ctx.getImageData(0, 0, W, H).data;
-    } catch (e) { return null; }
-    var acc = [[0, 0, 0, 0], [0, 0, 0, 0]];
-    var edge = [0, 0, 0, 0], edgeN = 0;
-    for (var y = 0; y < H; y++) {
-      for (var x = 0; x < W; x++) {
-        var i = (y * W + x) * 4, a = d[i + 3] / 255;
-        if (x === 0 || y === 0 || x === W - 1 || y === H - 1) {
-          edge[0] += d[i]; edge[1] += d[i + 1]; edge[2] += d[i + 2]; edge[3] += a; edgeN++;
-        }
-        if (a < 0.2) continue;
-        var r = d[i], g = d[i + 1], b = d[i + 2];
-        var mx = Math.max(r, g, b), mn = Math.min(r, g, b);
-        var sat = mx ? (mx - mn) / mx : 0;
-        var w = a * (0.15 + sat * sat * 2) * (mx > 30 ? 1 : 0.3);
-        var k = x < W / 2 ? 0 : 1;
-        acc[k][0] += r * w; acc[k][1] += g * w; acc[k][2] += b * w; acc[k][3] += w;
-      }
-    }
-    if (!acc[0][3] && !acc[1][3]) return null;
-    function avg(v, other) {
-      var s = v[3] ? v : other;
-      return [s[0] / s[3], s[1] / s[3], s[2] / s[3]];
-    }
-    var out = { a: tone(avg(acc[0], acc[1]), 1), b: tone(avg(acc[1], acc[0]), 0.72) };
-    // icona "piena" (bordi opachi): il riquadro prende il colore del bordo
-    if (edgeN && edge[3] / edgeN > 0.92) {
-      out.edge = Math.round(edge[0] / edgeN) + ',' + Math.round(edge[1] / edgeN) + ',' + Math.round(edge[2] / edgeN);
-    }
-    return out;
-  }
+  // i colori dell'icona (ui.js: li usa anche lo Store)
+  function extractColors(img) { return UI.coloriImmagine(img); }
 
   /* ============================================================ modello: file e riquadri */
 
@@ -264,6 +269,45 @@
   function ytItem() { return { key: 'yt', kind: 'yt', name: 'YouTube', cat: 'video' }; }
   </solo-pubblica> */
   var AGGIUNGI = { key: 'aggiungi', kind: 'aggiungi', name: 'Aggiungi' };
+  // lo Store (store.html) e le app web installate: quelle dello store ufficiale (ws:<id>) e "Le mie app"
+  // (mia:<fonte>:<id>). Le due liste le tiene store-dati.js, ognuna per conto suo: qui si fanno solo i riquadri
+  function storeItem() { return { key: 'store', kind: 'store', name: 'Store' }; }
+  function mieTutteItem(n) { return { key: 'mie-tutte', kind: 'store', name: 'Tutte le mie app', mie: n }; }
+  function appWebItem(p, kind) {
+    var v = p.voce || {};
+    // tag: da quale immagine (e versione) vengono i colori salvati del riquadro; cambia l'immagine, si rileggono
+    return { key: p.riquadro, kind: kind, id: p.riquadro, name: v.nome || p.id || 'App', icona: v.icona || '', copertina: v.copertina || '',
+      tag: (v.copertina || v.icona || '') + '|' + (v.versione || ''), cat: v.categoria || 'altre',
+      descr: v.descrizione || '', stato: p.stato || '', perche: p.perche || '', nuova: !!p.nuova, versione: v.versione || '',
+      nomeFonte: p.nomeFonte || '', sito: p.sito || '' };
+  }
+  // un'app dello Store che su questo TV non va (StoreDati.perche): il motore web, oppure il servizio del TV che non ha
+  // ancora quello che chiede (l'app Video dove chiavette e ponti non ci sono); un servizio di prima, sui Samsung, si
+  // aggiorna riavviando il TV. lungo = per il titolo grande
+  function nonVa(perche, lungo) {
+    if (perche === 'vecchio' && !ALTRA_TV) return lungo ? 'Riavvia il TV: Home TV si aggiorna' : 'Riavvia il TV';
+    if (perche === 'servizio' || perche === 'vecchio') return lungo ? 'Su questo TV non funziona ancora' : 'Non ancora su questo TV';
+    return 'Non va su questo TV';
+  }
+  function appStore() {
+    var out = [];
+    StoreDati.ufficiale.installate().forEach(function (x) {
+      var p = StoreDati.perRiquadro('ws:' + x.id);
+      if (!p) return;
+      if (!p.voce) p.voce = { nome: x.nome || x.id };
+      out.push(appWebItem(p, 'ws'));
+    });
+    return out;
+  }
+  function mieApp() {
+    return StoreDati.mie.app().map(function (a) { return appWebItem(StoreDati.perRiquadro(a.riquadro) || { riquadro: a.riquadro, voce: a.voce }, 'mia'); });
+  }
+  function primaFrase(t) {
+    t = String(t || '');
+    var p = t.indexOf('. ');
+    if (p > 0 && p < 100) t = t.slice(0, p);
+    return t.length > 100 ? t.slice(0, 99) + '\u2026' : t;
+  }
 
   function nascosta(a) {
     var ids = prefs.nascoste || [];
@@ -298,7 +342,13 @@
     var byKey = { sito: sitoItem(), web: webItem() };
     if (yt) byKey.yt = ytItem();
     altriSiti().forEach(function (s) { var it = altroSitoItem(s); byKey[it.key] = it; });
-    var items = list.map(appItem);
+    var web = appStore(), mie = mieApp();
+    byKey.store = storeItem();
+    byKey.store.nuova = web.concat(mie).some(function (it) { return it.nuova; });
+    mie.forEach(function (it) { byKey[it.key] = it; });
+    // le app dello store stanno tra quelle del TV, nella loro categoria (in ordine di nome)
+    var items = list.map(appItem).concat(web);
+    items.sort(function (x, y) { return x.name.toLowerCase() < y.name.toLowerCase() ? -1 : 1; });
     for (var i = 0; i < items.length; i++) byKey[items[i].key] = items[i];
 
     var favKeys = chiaviPreferiti(list);
@@ -313,6 +363,12 @@
       var ytApp = findByName(list, 'YouTube'), dopo = ytApp ? favKeys.indexOf('app:' + ytApp.id) : -1;
       if (dopo !== -1) favKeys.splice(dopo + 1, 0, 'yt'); else favKeys.push('yt');
     }
+    // le app installate dallo Store stanno nei preferiti, prima dello Store, tranne quelle che hai tolto tu (non si
+    // salva niente: i preferiti automatici restano automatici)
+    var tolte = prefs.storeTolte || [];
+    web.forEach(function (it) { if (favKeys.indexOf(it.key) === -1 && tolte.indexOf(it.key) === -1) primaDelloStore(favKeys, it.key); });
+    // lo Store in fondo ai preferiti (prima del +), finche' non lo togli tu
+    if (favKeys.indexOf('store') === -1 && !prefs.storeTolto) favKeys.push('store');
     var fav = [];
     for (var f = 0; f < favKeys.length; f++) if (byKey[favKeys[f]]) fav.push(byKey[favKeys[f]]);
     fav.push(AGGIUNGI); // in fondo: il "+"
@@ -320,6 +376,8 @@
     rows = [{ id: 'preferiti', titolo: 'Preferiti', items: fav }];
     // subito sotto i preferiti: quello che stavi guardando (al massimo 10, una scheda per film o serie)
     if (visti.length) rows.push({ id: 'continua', titolo: 'Continua a guardare', items: visti.map(continuaItem) });
+    // le app private, aggiunte su questo TV: una fila tutta loro
+    if (mie.length) rows.push({ id: 'mie', titolo: 'Le mie app', items: mie.length > 20 ? mie.slice(0, 20).concat([mieTutteItem(mie.length)]) : mie });
     // YouTube per la TV c'e' anche tra le app, accanto a YouTube: da li' si rimette nei preferiti
     var tutte = items.slice(), y = 0;
     if (yt) {
@@ -361,7 +419,9 @@
       '<circle cx="34.5" cy="34.5" r="7.6" fill="#0b5c56" stroke="#fff" stroke-width="2.8"/>' +
       '<path d="M31.1 33.4a3.8 3.8 0 0 1 3.6-3" fill="none" stroke="#9df0e2" stroke-width="1.6" stroke-linecap="round"/>' +
       '<path d="M40 40l4.6 4.6" stroke="#fff" stroke-width="3.6" stroke-linecap="round"/></svg>',
-    yt: '<svg class="glyph" viewBox="0 0 48 48" aria-hidden="true"><path fill-rule="evenodd" d="M24 4a20 20 0 1 1 0 40 20 20 0 0 1 0-40zM19 14.5v19L34.5 24z"/></svg>'
+    yt: '<svg class="glyph" viewBox="0 0 48 48" aria-hidden="true"><path fill-rule="evenodd" d="M24 4a20 20 0 1 1 0 40 20 20 0 0 1 0-40zM19 14.5v19L34.5 24z"/></svg>',
+    // lo Store: una borsa
+    store: '<svg class="glyph" viewBox="0 0 48 48" aria-hidden="true"><path fill-rule="evenodd" d="M17 16v-3a7 7 0 0 1 14 0v3h7.4l1.8 26H7.8l1.8-26zm3.5 0h7v-3a3.5 3.5 0 0 0-7 0z"/></svg>'
   };
 
   function continuaItem(v) { return { key: 'c:' + v.id, kind: 'continua', id: 'c:' + v.id, name: v.nome, v: v }; }
@@ -404,6 +464,23 @@
       cls += item.kind === 'sito' ? ' sito' : ' web';
       var sotto = item.kind === 'sito' ? (UI.validUrl(item.url) ? UI.hostOf(item.url) : 'Imposta il link') : 'Cerca e naviga';
       inner = GLYPH[item.kind] + '<div class="label">' + UI.esc(item.name) + '<small>' + UI.esc(sotto) + '</small></div>';
+    } else if (item.kind === 'store') {
+      cls += ' store';
+      inner = GLYPH.store + (item.mie ? '<div class="label">Le mie app<small>Tutte, ' + item.mie + ' app</small></div>' :
+        '<div class="label">Store<small>App per Home TV</small></div>');
+    } else if (item.kind === 'ws' || item.kind === 'mia') {
+      cls += ' appweb';
+      style = ' style="background:' + cardBg(item) + '"';
+      var sottoWeb = item.stato === 'ritirata' ? 'Non più disponibile' : item.stato === 'nonAdatta' ? nonVa(item.perche) :
+        item.nuova ? 'Versione nuova' : item.kind === 'mia' ? 'Non verificata' : (TITOLI[item.cat] || 'Dallo Store');
+      // la copertina (disegnata per il riquadro) copre icona e nome; l'icona si carica solo se la copertina non arriva.
+      // Il colore del riquadro e della luce si legge dall'immagine che si vede (data-colore)
+      var copertina = item.kind === 'ws' && item.copertina && item.stato !== 'ritirata' && item.stato !== 'nonAdatta';
+      var dati = ' data-ws="' + UI.esc(item.key) + '" data-tag="' + UI.esc(item.tag) + '" data-colore="1"';
+      inner = '<span class="app-ico"><b>' + UI.esc(item.name.charAt(0).toUpperCase()) + '</b>' + (item.icona && item.kind === 'ws' ?
+        '<img class="app-ico-img" alt="" decoding="async"' + (copertina ? ' data-src="' + UI.esc(item.icona) + '"' : dati + ' src="' + UI.esc(item.icona) + '"') + '>' : '') +
+        '</span><div class="label">' + UI.esc(item.name) + '<small>' + UI.esc(sottoWeb) + '</small></div>' +
+        (copertina ? '<img class="copertina-img" alt="" decoding="async"' + dati + ' src="' + UI.esc(item.copertina) + '">' : '');
     // <solo-completa>
     } else if (item.kind === 'yt') {
       // come il Browser, col suo colore: si distingue dall'app YouTube a colpo d'occhio
@@ -420,6 +497,7 @@
         inner = '<div class="label">' + UI.esc(item.name) + '</div>';
       }
     }
+    if (item.nuova) inner += '<i class="pallino"></i>'; // una versione nuova (sullo Store: almeno un'app)
     return '<div class="tile" data-key="' + UI.esc(item.key) + '"><div class="lift"><div class="' + cls + '"' + style + '>' +
       inner + '</div><div class="arrows"><i>‹</i><i>›</i></div></div></div>';
   }
@@ -613,7 +691,17 @@
         'Il link non è ancora impostato: mandalo dal telefono o tieni premuto OK', chips];
     }
     if (it.kind === 'aggiungi') {
-      return ['Preferiti', 'Aggiungi', 'Un sito come app (anche da un preferito del browser), un\'app del TV, le app nascoste', chip('OK', 'Scegli')];
+      return ['Preferiti', 'Aggiungi', 'Un sito come app, un\'app dallo Store o da un indirizzo, un\'app del TV, le app nascoste', chip('OK', 'Scegli')];
+    }
+    if (it.kind === 'store') {
+      if (it.mie) return ['Le mie app', 'Tutte le mie app', it.mie + ' app private, aggiunte su questo TV', chip('OK', 'Apri')];
+      return ['App per Home TV', 'Store', it.nuova ? 'Ci sono app con una versione nuova' : 'Installa le app, aprile e aggiornale; e aggiungi le tue', chips];
+    }
+    if (it.kind === 'ws' || it.kind === 'mia') {
+      var nota = it.stato === 'ritirata' ? 'Non è più disponibile: tieni premuto OK per toglierla' : it.stato === 'nonAdatta' ? nonVa(it.perche, true) :
+        it.stato === 'attesa' ? 'Aspetto il catalogo dello Store' : it.nuova ? 'Versione nuova ' + it.versione + ': aprila per le novità' :
+        it.kind === 'mia' ? 'Non verificata · da ' + (it.sito || 'una fonte privata') : (primaFrase(it.descr) || 'Dallo Store');
+      return [it.kind === 'mia' ? 'Le mie app' : (TITOLI[it.cat] || 'App'), it.name, nota, chips];
     }
     if (it.kind === 'web') return ['Navigazione', 'Browser', 'Preferiti, cronologia e ricerca, senza pubblicità', chips];
     // <solo-completa>
@@ -651,7 +739,11 @@
     // si cambia solo quello che cambia (le scritte uguali non si ridisegnano)
     function put() {
       if (heroCap.textContent !== d[0]) heroCap.textContent = d[0];
-      if (heroTitle.textContent !== d[1]) heroTitle.textContent = d[1];
+      if (heroTitle.textContent !== d[1]) {
+        heroTitle.textContent = d[1];
+        // un nome lungo si rimpicciolisce invece di tagliarsi (come nello Store)
+        heroTitle.className = d[1].length > 31 ? 'lunghissimo' : d[1].length > 24 ? 'lungo' : '';
+      }
       if (heroSub.textContent !== d[2]) heroSub.textContent = d[2];
       if (heroChips.__html !== d[3]) { heroChips.__html = d[3]; heroChips.innerHTML = d[3]; }
       heroText.className = 'hero-text';
@@ -737,6 +829,9 @@
       return;
     }
     if (item.kind === 'web') { location.href = 'browser.html'; return; }
+    // lo Store e le sue app (nel riquadro isolato di store.html: Indietro torna qui)
+    if (item.kind === 'store') { location.href = item.mie ? 'store.html#mie&da=home' : 'store.html#da=home'; return; }
+    if (item.kind === 'ws' || item.kind === 'mia') { location.href = 'store.html#apri=' + encodeURIComponent(item.key) + '&da=home'; return; }
     if (DEMO) { UI.toast('Anteprima: sul TV qui si apre ' + item.name); return; }
     // <solo-completa>
     if (item.kind === 'yt') { UI.toast('Apro YouTube…'); location.href = YT_SENZA_SPOT; return; }
@@ -767,8 +862,37 @@
     if (DEMO) { UI.toast('Anteprima: sul TV qui riprende ' + item.name); return; }
     UI.toast((daCapo ? 'Riparto dall\'inizio: ' : 'Riprendo ') + item.name + '…');
     UI.service('/api/visti/riprendi', { id: item.v.id, daCapo: !!daCapo }).then(function (j) {
-      location.href = j && UI.validUrl(j.url) ? j.url : item.v.url;
-    }, function () { location.href = item.v.url; });
+      vaiContinua(j && UI.validUrl(j.url) ? j.url : item.v.url, item, daCapo);
+    }, function () { vaiContinua(item.v.url, item, daCapo); });
+  }
+  // un video di un'app ufficiale dello Store (l'app Video, dalle chiavette): si riapre nello Store, che le da' quello che
+  // le serve; l'indirizzo che l'app ha dato ("#/...") le arriva come ancora, col punto della scheda o "da capo"
+  function vaiContinua(u, item, daCapo) {
+    var a = appDelloStore(u);
+    if (!a) { location.href = u; return; }
+    if (!StoreDati.ufficiale.installata(a.id)) {
+      UI.toast((a.nome || 'L\'app') + ' non è installata: la trovi nello Store');
+      location.href = 'store.html#app=' + encodeURIComponent(a.id) + '&da=home';
+      return;
+    }
+    var ancora = a.ancora + (a.ancora.indexOf('?') === -1 ? '?' : '&') + (daCapo ? 'dacapo=1' : 't=' + Math.round(Number(item.v.posizione) || 0));
+    location.href = 'store.html#apri=' + encodeURIComponent('ws:' + a.id) + '&da=home&ancora=' + encodeURIComponent(ancora);
+  }
+  // Qualsiasi indirizzo della cartella di un'app ufficiale (anche con "?..." prima di "#", senza "#", con maiuscole o
+  // "%76" nel percorso) si apre nello Store, nel riquadro isolato: mai a pagina intera sul sito della home, dove l'app
+  // vedrebbe la memoria della home (revisione d'insieme, punto 2). All'app passa solo l'ancora, da "#"
+  function appDelloStore(u) {
+    var c = StoreDati.ufficiale.catalogo(), l = c && c.app ? c.app : [], i, x, b, via, k = u.indexOf('#');
+    try { x = new URL(u); } catch (e) { return null; }
+    try { via = decodeURIComponent(x.pathname); } catch (e) { via = x.pathname; }
+    var dove = x.origin + via.toLowerCase() + '/', ancora = k === -1 ? '' : u.slice(k);
+    for (i = 0; i < l.length; i++) {
+      try { b = new URL(l[i].url); } catch (e) { continue; }
+      if (dove.indexOf((b.origin + b.pathname.toLowerCase()).replace(/\/?$/, '/')) === 0) return { id: l[i].id, nome: l[i].nome, ancora: ancora };
+    }
+    // catalogo non ancora letto: le app ufficiali stanno accanto alla home, in tv-app-<id>/
+    var m = /^\/tv-app-([a-z0-9][a-z0-9-]{1,39})(\/|$)/i.exec(via);
+    return m && x.origin === location.origin ? { id: m[1].toLowerCase(), nome: '', ancora: ancora } : null;
   }
   function cambiaContinua(azione, item, corpo, fatto) {
     var b = corpo || {};
@@ -802,6 +926,12 @@
     ] });
   }
 
+  // un riquadro nuovo nei preferiti: in fondo, ma prima dello Store (che resta l'ultimo, prima del +)
+  function primaDelloStore(keys, k) {
+    var i = keys.indexOf('store');
+    if (i === -1) keys.push(k); else keys.splice(i, 0, k);
+    return keys;
+  }
   function favKeysNow() {
     var k = [];
     for (var i = 0; i < rows[0].items.length; i++) if (rows[0].items[i].kind !== 'aggiungi') k.push(rows[0].items[i].key);
@@ -826,23 +956,53 @@
         items.push({ label: 'Togli questo sito', action: function () { setTimeout(function () { togliSito(item); }, 120); } });
       }
     }
-    if (item.kind === 'app' || item.kind === 'yt') {
+    if (item.kind === 'app' || item.kind === 'yt' || item.kind === 'store' || item.kind === 'ws' || item.kind === 'mia') {
       if (fav) items.push({ label: 'Togli dai preferiti', action: function () { toggleFav(item); } });
       else items.push({ label: 'Aggiungi ai preferiti', action: function () { toggleFav(item); } });
     }
+    if (item.kind === 'ws') {
+      items.push({ label: 'Informazioni', action: function () { location.href = 'store.html#app=' + encodeURIComponent(item.key.slice(3)) + '&da=home'; } });
+      items.push({ label: 'Disinstalla', action: function () { setTimeout(function () { togliAppWeb(item); }, 120); } });
+    }
+    if (item.kind === 'mia') items.push({ label: 'Togli da Le mie app', action: function () { setTimeout(function () { togliAppWeb(item); }, 120); } });
     if (item.kind === 'app') {
       items.push({ label: 'Rinomina', action: function () { rinominaApp(item); } });
       items.push({ label: 'Nascondi questa app', action: function () { nascondi(item); } });
     }
-    UI.openSheet({ title: item.name, subtitle: item.kind === 'app' || item.kind === 'yt' ? (TITOLI[item.cat] || 'App') : (item.kind === 'sito' ? (item.sid ? 'Un tuo sito' : 'Il tuo sito') : 'Browser'), items: items });
+    var sopra = item.kind === 'app' || item.kind === 'yt' ? (TITOLI[item.cat] || 'App') : item.kind === 'sito' ? (item.sid ? 'Un tuo sito' : 'Il tuo sito') :
+      item.kind === 'store' ? 'App per Home TV' : item.kind === 'ws' ? 'Dallo Store' : item.kind === 'mia' ? 'Le mie app · non verificata' : 'Browser';
+    UI.openSheet({ title: item.name, subtitle: sopra, items: items });
+  }
+  // disinstallare un'app dello Store o togliere un'app privata: sparisce dalla home con i suoi dati su questo TV
+  function togliAppWeb(item) {
+    var mia = item.kind === 'mia';
+    UI.openSheet({ title: (mia ? 'Togliere ' : 'Disinstallare ') + item.name + '?', subtitle: 'Sparisce dalla home e i suoi dati su questo TV si cancellano.', items: [
+      { label: mia ? 'Togli' : 'Disinstalla', action: function () {
+        var p = StoreDati.perRiquadro(item.key);
+        if (p && p.tipo === 'ws') StoreDati.ufficiale.disinstalla(p.id);
+        else if (p) StoreDati.mie.togliApp(p.fonte, p.id);
+        if (prefs.preferiti) prefs.preferiti = prefs.preferiti.filter(function (k) { return k !== item.key; });
+        if (prefs.storeTolte) prefs.storeTolte = prefs.storeTolte.filter(function (k) { return k !== item.key; });
+        salvaPrefs();
+        render(true);
+        UI.toast(item.name + (mia ? ' tolta' : ' disinstallata'));
+      } },
+      { label: 'Annulla', action: function () {} }
+    ] });
   }
 
   function toggleFav(item) {
     var keys = favKeysNow();
     var at = keys.indexOf(item.key);
-    if (at === -1) { keys.push(item.key); UI.toast(item.name + ' aggiunta ai preferiti'); }
+    if (at === -1) { keys = item.kind === 'store' ? keys.concat([item.key]) : primaDelloStore(keys, item.key); UI.toast(item.name + ' aggiunta ai preferiti'); }
     else { keys.splice(at, 1); UI.toast(item.name + ' tolta dai preferiti'); }
     if (item.kind === 'yt') { if (at === -1) delete prefs.ytTolto; else prefs.ytTolto = true; } // tolto da te: non torna da solo
+    if (item.kind === 'store') { if (at === -1) delete prefs.storeTolto; else prefs.storeTolto = true; }
+    if (item.kind === 'ws') {
+      var t = (prefs.storeTolte || []).filter(function (k) { return k !== item.key; });
+      if (at !== -1) t.push(item.key);
+      prefs.storeTolte = t;
+    }
     prefs.preferiti = keys;
     salvaPrefs();
     render(true);
@@ -944,6 +1104,12 @@
         action: telStato.collegati ? scollegaTelefoni : null },
       { label: 'Tasti del TV dal telefono', value: TASTI_STATO[telStato.tasti] || TASTI_STATO.mai,
         action: telStato.tasti === 'ok' ? null : chiediPermessoTasti },
+      { group: 'Store' },
+      { label: 'Catalogo dello Store', value: statoStore(), action: aggiornaStoreOra },
+      { label: 'Apri lo Store', value: '', action: function () { location.href = 'store.html#da=home'; } },
+      { group: 'Le mie app' },
+      { label: 'Aggiungi un indirizzo', value: 'catalogo, app o sito', action: function () { location.href = 'store.html#aggiungi&da=home'; } },
+      { label: 'Fonti private', value: statoMie(), action: StoreDati.mie.fonti().length ? function () { location.href = 'store.html#fonti&da=home'; } : null },
       { group: 'Questo TV' }
     ].concat(righeQuestoTv(), [{ label: 'Versione di Home TV', info: VERSIONE }]).filter(function (x) { return !!x; });
   }
@@ -954,10 +1120,11 @@
     if (DEMO) return [{ label: 'Televisore', info: 'Anteprima sul computer' }];
     var p = profiloTv;
     if (!p) return [{ label: 'Televisore', info: serviceState }];
+    var altra = ProfiloTV.altraTv(p);
     var righe = [
       { label: 'Modello', info: (p.modello || 'Non letto') + (p.anno ? ' (' + p.anno + ')' : '') },
-      { label: 'Sistema', info: (p.tizen ? 'Tizen ' + p.tizen : 'Tizen') + (p.chromium ? ' · motore web ' + p.chromium : '') },
-      { label: 'TizenBrew', info: p.tizenbrew || 'Versione non letta' },
+      { label: 'Sistema', info: (altra ? p.sistema || 'Non letto' : p.tizen ? 'Tizen ' + p.tizen : 'Tizen') + (p.chromium ? ' · motore web ' + p.chromium : '') },
+      altra ? { label: 'App Home TV', info: p.servizio || 'Versione non letta' } : { label: 'TizenBrew', info: p.tizenbrew || 'Versione non letta' },
       { label: 'Schermo', info: p.risoluzione || (window.innerWidth + 'x' + window.innerHeight) }
     ];
     (p.diagnosi || []).forEach(function (d) {
@@ -1093,7 +1260,7 @@
   function creaSito(nome, url, blocco) {
     var s = { id: 's' + Date.now().toString(36), nome: nome || UI.hostOf(url), url: url, blocco: blocco === 'completo' ? 'completo' : 'normale' };
     prefs.siti = altriSiti().concat([s]);
-    if (prefs.preferiti) prefs.preferiti = favKeysNow().concat(['sito:' + s.id]);
+    if (prefs.preferiti) prefs.preferiti = primaDelloStore(favKeysNow(), 'sito:' + s.id);
     applyPrefs();
     UI.toast(s.nome + ' aggiunto alla home (blocco ' + s.blocco + ')');
   }
@@ -1134,15 +1301,17 @@
         if (!v) return;
         if (!/^https?:\/\//i.test(v)) v = 'https://' + v;
         if (!UI.validUrl(v)) { UI.toast('Questo non sembra un indirizzo valido'); return; }
-        var nome = UI.hostOf(v).split('.')[0];
-        nome = nome.charAt(0).toUpperCase() + nome.slice(1);
-        setTimeout(function () {
-          UI.openEditor({ title: 'Nome del riquadro', value: nome, onSave: function (n) {
-            setTimeout(function () { scegliBlocco(n || nome, '', function (b) { creaSito(n || nome, v, b); }); }, 120);
-          } });
-        }, 120);
+        setTimeout(function () { nomeNuovoSito(v); }, 120);
       }
     });
+  }
+  // il nome del riquadro e il blocco della pubblicita', poi il sito va nella home (anche un sito arrivato dallo Store)
+  function nomeNuovoSito(v) {
+    var nome = UI.hostOf(v).split('.')[0];
+    nome = nome.charAt(0).toUpperCase() + nome.slice(1);
+    UI.openEditor({ title: 'Nome del riquadro', value: nome, onSave: function (n) {
+      setTimeout(function () { scegliBlocco(n || nome, '', function (b) { creaSito(n || nome, v, b); }); }, 120);
+    } });
   }
   function togliSito(item) {
     UI.openSheet({
@@ -1176,7 +1345,9 @@
   function menuAggiungi() {
     var voci = [{ label: 'Un sito come app', action: function () { setTimeout(aggiungiSito, 120); } },
       { label: 'Un preferito del browser', action: function () { setTimeout(daPreferitoBrowser, 120); } },
-      { label: 'Un\'app del TV nei preferiti', action: function () { setTimeout(appNeiPreferiti, 120); } }];
+      { label: 'Un\'app del TV nei preferiti', action: function () { setTimeout(appNeiPreferiti, 120); } },
+      { label: 'Un\'app dallo Store', action: function () { location.href = 'store.html#da=home'; } },
+      { label: 'Un\'app da un indirizzo', value: 'anche privata', action: function () { location.href = 'store.html#aggiungi&da=home'; } }];
     if ((prefs.nascoste || []).length) voci.push({ label: 'Rimetti le app nascoste (' + prefs.nascoste.length + ')', action: mostraNascoste });
     UI.openSheet({ title: 'Aggiungi alla home', subtitle: 'Un sito diventa un riquadro come il tuo sito', items: voci });
   }
@@ -1199,7 +1370,8 @@
   function appNeiPreferiti() {
     if (!DEMO && !apps) { UI.toast('App del TV non ancora lette: riprova tra poco'); return; }
     // YouTube per la TV solo col blocco avanzato acceso
-    var fav = favKeysNow(), lista = (conYt() ? [ytItem()] : []).concat(appVisibili().map(appItem)).filter(function (it) { return fav.indexOf(it.key) === -1; });
+    var fav = favKeysNow(), lista = (conYt() ? [ytItem()] : []).concat(appVisibili().map(appItem), [storeItem()], appStore(), mieApp())
+      .filter(function (it) { return fav.indexOf(it.key) === -1; });
     if (!lista.length) { UI.toast('Tutte le app sono gi\u00e0 nei preferiti'); return; }
     UI.openSheet({ title: 'Quale app?', subtitle: 'Va nei preferiti, in alto',
       items: lista.slice(0, 60).map(function (it) { return { label: it.name, action: function () { toggleFav(it); } }; }) });
@@ -1244,6 +1416,45 @@
     if (d.toDateString() === new Date(oggi.getTime() - 86400000).toDateString()) return 'ieri ' + ora;
     return d.getDate() + ' ' + MESI_BREVI[d.getMonth()];
   }
+  // lo Store: il catalogo ufficiale (a ogni avvio, poi dopo 10 minuti) e le fonti private (una volta al giorno). Senza
+  // internet restano le liste salvate. Sul TV i cataloghi dei siti che non li lasciano leggere li scarica il servizio
+  if (!DEMO) StoreDati.imposta({ servizio: function (u) { return UI.service('/api/store/scarica?url=' + encodeURIComponent(u)); } });
+  var storeInCorso = false;
+  function aggiornaStore(forza) {
+    if (storeInCorso) return Promise.resolve();
+    storeInCorso = true;
+    function fine() { storeInCorso = false; render(); if (settingsOpen) drawSettings(); }
+    funzioniServizio();
+    return Promise.all([StoreDati.ufficiale.aggiorna(forza), StoreDati.mie.aggiornaTutte(false)]).then(fine, fine);
+  }
+  // cosa sa fare il servizio di questo TV ("funzioni" di GET /api/status): le app dello Store che chiedono altro restano
+  // spente (l'app Video dove chiavette e ponti non ci sono). Lo ricorda StoreDati: alla prossima accensione si sa subito.
+  // Fuori dall'attesa dello Store: un servizio che non risponde non deve fermare l'aggiornamento delle app
+  function funzioniServizio() {
+    if (DEMO) return;
+    UI.service('/api/status').then(function (s) { if (StoreDati.servizio(s)) render(); }, function () {});
+  }
+  function statoStore() {
+    var c = StoreDati.ufficiale.catalogo();
+    if (storeInCorso && !(c && c.scaricato)) return 'Controllo…';
+    if (!c || !c.scaricato) return c && c.esito === 'nonTrovato' ? 'Non c\'è ancora' : 'Non raggiungibile';
+    var n = 0;
+    for (var i = 0; i < c.app.length; i++) if (!c.app[i].ritirata) n++;
+    return (c.esito === 'ok' ? '' : 'copia di ') + quandoBreve(c.scaricato) + ' · ' + (n === 1 ? '1 app' : n + ' app');
+  }
+  function statoMie() {
+    var f = StoreDati.mie.fonti().length, a = StoreDati.mie.app().length;
+    return f ? (f === 1 ? '1 fonte' : f + ' fonti') + ' · ' + (a === 1 ? '1 app' : a + ' app') : 'Nessuna';
+  }
+  function aggiornaStoreOra() {
+    UI.toast('Aggiorno lo Store…');
+    StoreDati.ufficiale.aggiorna(true).then(function (r) {
+      UI.toast(r.esito === 'ok' ? 'Store aggiornato' : r.esito === 'offline' ? 'Senza internet: resta la copia salvata' : 'Lo Store non risponde: resta la copia salvata', 3500);
+      render();
+      if (settingsOpen) drawSettings();
+    });
+    return 'keep';
+  }
   function statoListe() {
     if (DEMO) return 'EasyList, Italia';
     var s = adbStato;
@@ -1268,19 +1479,21 @@
       UI.toast('Scarico le liste di filtri aggiornate…', 3000);
       setTimeout(checkAdblock, 6000);
       setTimeout(checkAdblock, 20000);
-    }, function () { UI.toast('Il servizio del TV non risponde: riapri TizenBrew', 4000); });
+    }, function () { UI.toast('Il servizio del TV non risponde: ' + RIAPRI, 4000); });
   }
 
   function checkService() {
     if (DEMO) return;
     UI.service('/api/status').then(function (s) {
       serviceState = 'Collegate (' + s.apps + ' app)';
+      if (StoreDati.servizio(s)) render();
       if (settingsOpen) drawSettings();
     }, function (e) {
-      serviceState = e && e.message === NON_AUTORIZZATA ? MSG_NOME_GITHUB : 'Non collegate: riapri TizenBrew';
+      serviceState = msgServizio(e, 'Non collegate: ' + RIAPRI);
       if (settingsOpen) drawSettings();
     });
-    UI.profiloTv().then(function (p) { profiloTv = p; if (settingsOpen) drawSettings(); });
+    // le impostazioni (Questo TV): anche le chiavette, che il servizio guarda solo qui
+    UI.profiloTv(true).then(function (p) { profiloTv = p; if (settingsOpen) drawSettings(); });
   }
 
   // Autodiagnosi all'avvio: se sul TV manca qualcosa di importante lo si dice una volta (con cosa fare); il dettaglio
@@ -1328,6 +1541,8 @@
       selettoriExtra: cfg.selettoriExtra || [],
       // liste di filtri scelte in config.json (vuoto = quelle predefinite: EasyList, EasyList Italy; col blocco avanzato anche anti-adblock)
       listeFiltri: Array.isArray(cfg.listeFiltri) ? cfg.listeFiltri : [],
+      // le app dello Store e le fonti private (solo cosa e' installato e da dove): tornano se TizenBrew si reinstalla
+      store: StoreDati.copia(),
       home: prefs
     };
     UI.service('/api/prefs', out)['catch'](function () {});
@@ -1361,7 +1576,7 @@
       UI.toast('Sul TV compare una richiesta per "Home TV": scegli Consenti', 5000);
       setTimeout(function () { checkTelefono(); }, 8000);
       setTimeout(function () { checkTelefono(); }, 20000);
-    }, function () { UI.toast('Il servizio del TV non risponde: riapri TizenBrew', 4000); });
+    }, function () { UI.toast('Il servizio del TV non risponde: ' + RIAPRI, 4000); });
   }
   var pairEl = $('pair'), pairKeys = null, pairTimer = null, pairRinnovo = null, qrPronto = null;
 
@@ -1475,7 +1690,7 @@
       pairRinnovo = setInterval(function () {
         UI.service('/api/telefono/codice', {}).then(mostraAbbina, function () {});
       }, 9 * 60 * 1000);
-    }, function () { UI.toast('Il servizio del TV non risponde: riapri TizenBrew', 4000); });
+    }, function () { UI.toast('Il servizio del TV non risponde: ' + RIAPRI, 4000); });
   }
 
   function scollegaTelefoni() {
@@ -1580,9 +1795,24 @@
   /* ============================================================ icone */
 
   var saveColorsTimer = null;
+  // le app dello Store: il colore del riquadro e della luce dalla loro copertina (o icona), come le app del TV
+  function coloreAppWeb(img) {
+    var id = img.getAttribute('data-ws'), tag = img.getAttribute('data-tag');
+    if (!id || (colors[id] && colors[id].tag === tag)) return;
+    var c = UI.coloriImmagine(img);
+    if (!c) return;
+    colors[id] = { a: c.a, b: c.b, tag: tag };
+    clearTimeout(saveColorsTimer);
+    saveColorsTimer = setTimeout(function () { UI.save('tvh-colors', colors); }, 1500);
+    var item = { id: id, kind: 'ws', name: '', tag: tag };
+    var carte = rowsEl.querySelectorAll('.tile[data-key="' + id.replace(/"/g, '') + '"] .card');
+    for (var i = 0; i < carte.length; i++) carte[i].style.background = cardBg(item);
+    if (cur && cur.item.id === id) { lastWash = ''; setAmbient(cur.item); }
+  }
   rowsEl.addEventListener('load', function (ev) {
     var img = ev.target;
     if (!img || img.tagName !== 'IMG') return;
+    if (img.getAttribute('data-colore')) { coloreAppWeb(img); return; }
     var id = img.getAttribute('data-id');
     if (!id || colors[id]) return;
     var c = extractColors(img);
@@ -1604,6 +1834,15 @@
     if (!img || img.tagName !== 'IMG') return;
     // l'immagine di Continua a guardare: resta la scheda colorata col titolo
     if (img.className === 'cont-foto') { img.parentNode.removeChild(img); return; }
+    // l'icona di un'app dello Store: resta l'iniziale sotto
+    if (img.className === 'app-ico-img') { img.parentNode.removeChild(img); return; }
+    // la sua copertina: restano icona e nome
+    if (img.className === 'copertina-img') {
+      var ico = img.parentNode.querySelector('.app-ico-img');
+      img.parentNode.removeChild(img);
+      if (ico && ico.getAttribute('data-src')) { ico.src = ico.getAttribute('data-src'); ico.removeAttribute('data-src'); }
+      return;
+    }
     var card = img.parentNode;
     var tile = card.parentNode.parentNode;
     var key = tile.getAttribute('data-key') || '';
@@ -1648,7 +1887,7 @@
     }, function (e) {
       tries++;
       if (!apps && cur && cur.area === 'rows' && cur.r === 0) {
-        heroSub.textContent = e && e.message === NON_AUTORIZZATA ? MSG_NOME_GITHUB : 'Sto collegando le app del TV…';
+        heroSub.textContent = msgServizio(e, 'Sto collegando le app del TV…');
         heroKey = '';
       }
       appsTimer = setTimeout(getApps, tries < 20 ? 1500 : 10000);
@@ -1673,8 +1912,13 @@
         }
         adottaGithub();
       }
+      // memoria cancellata (TizenBrew reinstallato): tornano anche le app dello Store e le fonti private. Solo in quel
+      // caso (le liste dello Store mai scritte): liste vuote perche' hai disinstallato tutto non si riempiono di nuovo
+      // con la copia vecchia
+      var tornate = vuotoAvvio && storeMaiScritto && p && p.store ? StoreDati.ripristina(p.store) : false;
       ripristinoFatto = true;
       applyPrefs();
+      if (tornate) aggiornaStore(true);
     }, function (e) {
       // pagina non riconosciuta dal servizio: niente copia da leggere. Se no si riprova sempre (prima ogni 2 secondi,
       // poi ogni 15): mai scrivere sul servizio prima di aver letto la sua copia, se no la si cancellerebbe
@@ -1709,7 +1953,7 @@
   }
 
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden) { getApps(); getConfig(); prendiNovita(); getVisti(); }
+    if (!document.hidden) { getApps(); getConfig(); prendiNovita(); getVisti(); aggiornaStore(false); }
   });
   window.addEventListener('resize', function () {
     measure();
@@ -1774,7 +2018,28 @@
   getApps();
   getVisti();
   restorePrefs();
+  // lo Store: il catalogo si scarica a ogni accensione (qualche secondo dopo: prima le app del TV); tornando nella home
+  // dallo Store o dal browser solo se ha piu' di 10 minuti
+  var primoAvvio = true, uStore = '';
+  try { primoAvvio = !sessionStorage.getItem('tvh-avviata'); sessionStorage.setItem('tvh-avviata', '1'); } catch (e) {}
+  setTimeout(function () { aggiornaStore(primoAvvio); }, 3000);
+  // un sito arrivato dallo Store ("È un sito, non un'app"): si aggiunge come col +. Passa per sessionStorage (lo scrive
+  // solo lo Store, dopo l'avviso): un link da fuori non puo' far aggiungere un sito
+  try { uStore = sessionStorage.getItem('tvh-sito-dallo-store') || ''; sessionStorage.removeItem('tvh-sito-dallo-store'); } catch (e) {}
+  if (UI.validUrl(uStore)) setTimeout(function () { nomeNuovoSito(uStore); }, 400);
+  // lo Store dal telefono: l'azione la fa StoreDati (stessi controlli del telecomando), poi la home si ridisegna, salva la
+  // copia sul servizio e manda al telefono l'elenco aggiornato (con l'esito, che il telefono dice)
+  function storeDalTelefono(e) {
+    StoreDati.azioneTelefono(e).then(function (r) {
+      if (r.apri) { location.href = 'store.html#apri=' + encodeURIComponent(r.apri) + '&da=home'; return; }
+      if (r.testo) UI.toast(r.testo, 4000);
+      if (e.azione !== 'elenco') { render(); syncService(); }
+      UI.service('/api/telefono/store', StoreDati.perTelefono(e.azione === 'elenco' ? null : { azione: e.azione, ok: r.ok, testo: r.testo },
+        UI.coloriApp()))['catch'](function () {});
+    });
+  }
   UI.ascoltaTelefono('Home', {
+    store: storeDalTelefono,
     // testo senza una casella aperta: diventa una ricerca nel browser
     testo: function (t, invio) { if (invio) location.href = 'browser.html?q=' + encodeURIComponent(t); },
     link: function (u) { location.href = u; },

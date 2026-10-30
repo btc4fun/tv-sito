@@ -71,6 +71,7 @@
     }, function (e) {
       UI.toast(e && e.message === 'pagina non autorizzata' ?
         'Il servizio del TV non riconosce questa pagina: in TizenBrew aggiungi il modulo tuonome/tv-sito' :
+        e && e.message === 'chiave' ? 'Il servizio del TV non riconosce più questa pagina: torna alla home, che spiega cosa fare' :
         'Cronologia del TV non raggiungibile: riapri TizenBrew', 5000);
     });
   }

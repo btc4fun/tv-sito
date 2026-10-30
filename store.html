@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Store</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="home.css?v=1.3.0-60c4ce26">
+</head>
+<body class="pagina-store">
+  <!-- la luce dell'app scelta, come nella home: disegnata in piccolo e allargata dal TV (leggera) -->
+  <div id="ambient"><canvas class="wash on" id="wash-a" width="192" height="108"></canvas><canvas class="wash" id="wash-b" width="192" height="108"></canvas></div>
+
+  <header id="topbar">
+    <div id="greeting">Store<span id="store-stato"></span></div>
+    <div id="topright">
+      <div id="cerca" class="cerca-pill" data-scrive="Cerca nello Store">
+        <svg viewBox="0 0 48 48" aria-hidden="true"><path d="M21 6a15 15 0 0 1 11.9 24.1l9.5 9.5-2.8 2.8-9.5-9.5A15 15 0 1 1 21 6zm0 4a11 11 0 1 0 0 22 11 11 0 0 0 0-22z"/></svg>
+        <span id="cerca-testo">Cerca</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- l'app scelta in grande -->
+  <section id="hero">
+    <div class="hero-text" id="hero-text">
+      <div id="hero-cap"></div>
+      <h1 id="hero-title">Store</h1>
+      <p id="hero-sub">&nbsp;</p>
+      <div id="hero-chips"></div>
+    </div>
+  </section>
+  <div id="hero-ico" class="st-ico"></div>
+
+  <main id="rows"></main>
+
+  <!-- il dettaglio di un'app: icona, testi, pulsanti -->
+  <div id="dettaglio" hidden>
+    <div id="det-ico" class="st-ico"></div>
+    <div id="det-testo">
+      <div id="det-cap"></div>
+      <h1 id="det-nome"></h1>
+      <p id="det-info"></p>
+      <p id="det-descr"></p>
+      <div id="det-novita"></div>
+      <div id="det-azioni"></div>
+      <p id="det-aiuto">Sinistra e destra per scegliere &middot; OK per confermare &middot; Indietro per tornare</p>
+    </div>
+  </div>
+
+  <!-- il riquadro isolato dove gira un'app: i tasti li tiene questa pagina e li passa all'app (tv-app.js) -->
+  <div id="app-tv" hidden>
+    <div id="app-attesa"><div id="app-attesa-ico" class="st-ico"></div><p id="app-attesa-testo"></p></div>
+    <div id="app-velo"></div>
+  </div>
+
+  <div id="sheet"></div>
+  <div id="editor"></div>
+  <div id="toast"></div>
+
+  <script src="profilo.js?v=1.3.0-7c052b55"></script>
+  <script src="ui.js?v=1.3.0-b19af978"></script>
+  <script src="store-dati.js?v=1.3.0-d09948cc"></script>
+  <script src="store.js?v=1.3.0-61fcd74d"></script>
+</body>
+</html>
