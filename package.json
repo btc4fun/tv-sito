@@ -1,10 +1,10 @@
 {
   "name": "tv-sito",
-  "version": "1.2.2",
-  "description": "Home per il TV Samsung: app installate, il mio sito, browser con blocco della pubblicità",
+  "version": "1.3.0",
+  "description": "Home TV, canale di prova: la versione nuova solo su questo TV",
   "packageType": "mods",
-  "appName": "Home TV",
-  "websiteURL": "https://btc4fun.github.io/tv-sito/",
+  "appName": "Home TV (prova)",
+  "websiteURL": "https://btc4fun.github.io/tv-sito/prova/",
   "main": "main.js",
   "serviceFile": "service.js",
   "keys": [

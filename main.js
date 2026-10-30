@@ -10,6 +10,9 @@
  */
 (function () {
   'use strict';
+  // le pagine senza un indirizzo vero (la pagina vuota da cui parte ogni riquadro, about:blank): niente, e senza segnale.
+  // Un riquadro che poi apre una pagina dello stesso sito tiene la stessa finestra, e li' main.js deve poter partire
+  if (!/^https?:$/.test(location.protocol)) return;
   // una sola volta per pagina (il segnale non compare tra le proprieta' della finestra)
   if (window.__hometvAttivo) return;
   try { Object.defineProperty(window, '__hometvAttivo', { value: true, enumerable: false }); } catch (e) { return; }
@@ -135,13 +138,32 @@
       var s = String(ua || ''), t = /Tizen\s*([\d.]+)/i.exec(s), c = /Chrome\/(\d+)/.exec(s);
       var tizen = t ? t[1] : '', chromium = c ? +c[1] : 0;
       if (!chromium && tizen && perTizen(tizen)) chromium = perTizen(tizen).chromium;
-      return { suTv: /Tizen|SMART-TV|SmartTV/i.test(s), tizen: tizen, chromium: chromium };
+      // sul TV: Samsung (Tizen), LG (webOS: "Web0S ... SmartTV") e l'app Home TV per Android (che si presenta cosi')
+      return { suTv: /Tizen|SMART-TV|SmartTV|Web0S|HomeTV-Android/i.test(s), tizen: tizen, chromium: chromium };
     }
     // siamo sul TV? Lo dice lo user agent; ma TizenBrew permette di cambiarlo (sue impostazioni, User Agent): allora
     // vale anche l'oggetto tizen nella pagina, o l'averlo gia' visto dal servizio del TV che risponde (ricordato)
     function suTv(w, ricordato) {
       return daUserAgent(w.navigator.userAgent).suTv || typeof w.tizen !== 'undefined' || !!ricordato;
     }
+    // la piattaforma (docs/piano-altre-tv.md): 'tizen' (Samsung, anche il simulatore sul Mac che si crede un Samsung),
+    // 'android' e 'firetv' (l'app Home TV per Android, che lo dice nello user agent; le Fire TV hanno i modelli AFT...),
+    // 'webos' (LG), 'browser' (un computer). La usano le app dello Store (info.piattaforma) e il servizio (/api/status)
+    function piattaforma(w, suTvGia) {
+      var ua = String((w && w.navigator && w.navigator.userAgent) || '');
+      if (/HomeTV-Android/.test(ua)) return /\bAFT/.test(ua) ? 'firetv' : 'android';
+      if (/Web0S|webOS/.test(ua) || (w && typeof w.PalmSystem !== 'undefined')) return 'webos';
+      return suTvGia || suTv(w) ? 'tizen' : 'browser';
+    }
+    // I tasti del telecomando, uguali per tutte le pagine (ui.js nella home, main.js nei siti): codice -> tasto. Samsung e LG
+    // hanno gli stessi codici per i colori e i tasti video; Indietro e' 10009 su Samsung e 461 su LG; l'app per Android
+    // passa alla pagina i suoi tasti con questi codici (Indietro come Esc, 27). La libreria delle app (tv-app.js) ha i suoi
+    var TASTI = {
+      37: 'sx', 38: 'su', 39: 'dx', 40: 'giu', 13: 'ok',
+      10009: 'indietro', 461: 'indietro', 27: 'indietro',
+      403: 'rosso', 404: 'verde', 405: 'giallo', 406: 'blu',
+      10252: 'playpausa', 415: 'play', 19: 'pausa', 413: 'stop', 417: 'avanti', 412: 'indietroVeloce'
+    };
     // con lo user agent che non dice TV si chiede al servizio del TV, ma non sui computer e sui telefoni Apple:
     // l'anteprima della home sul computer resta un'anteprima
     function daChiedereAlServizio(w) {
@@ -159,6 +181,10 @@
       out.abort = typeof w.AbortController === 'function'; // Chromium 66
       out.puntatore = typeof w.PointerEvent === 'function'; // Chromium 55
       out.proxy = typeof w.Proxy === 'function'; // Chromium 49
+      // JavaScript moderno (classi, frecce, let, Map, Promise): Chromium 49, i TV dal 2018. Lo chiedono le app dello store
+      // nei loro requisiti. Si prova dalle funzioni che ci sono, senza eval (i siti con CSP la vietano)
+      out.es6 = typeof w.Symbol === 'function' && typeof w.Map === 'function' && typeof w.Promise === 'function' &&
+        typeof w.Proxy === 'function' && typeof w.Reflect === 'object' && w.Reflect !== null;
       return out;
     }
     // rimette quello che manca e serve al nostro codice (TV 2017, Chromium 47); dove c'e' gia' non cambia niente
@@ -263,6 +289,12 @@
 
     // fisso: riprovare non cambia niente (per esempio il motore web del TV), quindi lo si dice subito
     function r(si, testo, fare, fisso) { return { si: si, testo: testo || '', fare: fare || '', fisso: !!fisso }; }
+    // le altre TV (f.piattaforma: Android, Fire TV, LG): la stessa home, ma il servizio e' quello dell'app Home TV, non di
+    // TizenBrew. f.sistema = "Android 12", "Fire OS 7", "webOS 6"; f.puoAprirsi = l'app puo' riaprire la home da sola;
+    // f.riaccensione = false: su questo TV la riapertura all'accensione non c'e' proprio (LG)
+    function altraTv(f) { return f.piattaforma === 'android' || f.piattaforma === 'firetv' || f.piattaforma === 'webos'; }
+    var RIAPRI_APP = 'Chiudi Home TV e riaprila';
+    var REINSTALLA = 'Rifai l\'installazione col programma Installa Home TV: scrive sul TV l\'indirizzo della tua home';
     function chromiumPagina(f) {
       var p = f.pagina || {};
       return p.chromium || (p.ua ? daUserAgent(p.ua).chromium : 0);
@@ -270,29 +302,45 @@
 
     function haServizio(f) {
       if (f.servizio) return r(true, 'Il servizio del TV risponde');
+      // la home ha perso la sua chiave del servizio (ui.js): la riprende all'avvio dell'app o del servizio
+      if (f.senzaChiave) {
+        return r(false, 'Il servizio del TV non riconosce pi\u00f9 questa pagina', altraTv(f) ? RIAPRI_APP :
+          'Riavvia il TV: tieni premuto il tasto di accensione del telecomando finch\u00e9 compare il logo Samsung', true);
+      }
       if (f.nonAutorizzata) {
+        if (altraTv(f)) return r(false, 'Il servizio del TV non riconosce questa pagina', REINSTALLA, true);
         return r(false, 'Il servizio del TV non riconosce questa pagina',
           'In TizenBrew aggiungi il modulo tuonome/tv-sito (tuonome = il tuo nome su GitHub)', true);
       }
       var c = chromiumPagina(f);
       if (c && c < CHROMIUM_LOCALE) {
+        if (altraTv(f)) return r(false, 'Su questo TV (motore web ' + c + ') la home non pu\u00f2 parlare con il servizio del TV',
+          'Funzionano il tuo sito e il browser; le app del TV e il telefono no', true);
         return r(false, 'Su questo TV (motore web ' + c + ') la home non pu\u00f2 parlare con il servizio del TV',
           'Funzionano il tuo sito e il browser; le app del TV, il telefono e la riaccensione no. Serve un TV del 2018 o pi\u00f9 nuovo. ' +
           'Se il TV \u00e8 pi\u00f9 nuovo: chiudi TizenBrew e riaprilo', true);
       }
+      if (altraTv(f)) return r(false, 'Il servizio del TV non risponde', RIAPRI_APP + '; se continua, spegni e riaccendi il TV');
       return r(false, 'Il servizio del TV non risponde',
         'Chiudi TizenBrew e riaprilo. Se continua: nelle impostazioni di TizenBrew (pulsanti tondi in alto) controlla l\'autoavvio e che Host PC IP sia 127.0.0.1; ' +
         'se TizenBrew \u00e8 vecchio, aggiornalo');
     }
     function haAppTv(f) {
       if (!f.servizio) return r(null, 'Non si sa (servizio del TV non raggiungibile)');
-      if (!f.tizen) return r(false, 'Il servizio non vede le app del TV', 'Riapri TizenBrew; se continua aggiorna TizenBrew');
-      if (f.appTv && f.appTv.errore) return r(false, 'Elenco delle app non letto: ' + f.appTv.errore, 'Riapri TizenBrew');
+      if (!f.tizen && !altraTv(f)) return r(false, 'Il servizio non vede le app del TV', 'Riapri TizenBrew; se continua aggiorna TizenBrew');
+      if (f.appTv && f.appTv.errore) return r(false, 'Elenco delle app non letto: ' + f.appTv.errore, altraTv(f) ? RIAPRI_APP : 'Riapri TizenBrew');
       return r(true, 'Collegate' + (f.appTv && f.appTv.n ? ' (' + f.appTv.n + ' app)' : ''));
     }
     function haRiaccensione(f) {
       if (!f.servizio) return r(null, 'Non si sa (servizio del TV non raggiungibile)');
       if (f.apriAllAccensione === false) return r(false, 'Spenta nelle impostazioni');
+      if (altraTv(f)) {
+        if (f.riaccensione === false) return r(false, 'Su questo TV la home non si riapre da sola all\'accensione',
+          'Aprila dal menu delle app del TV (puoi metterla per prima)', true);
+        if (f.puoAprirsi === false) return r(false, 'Il TV non lascia riaprire la home da sola',
+          'Rifai l\'installazione col programma Installa Home TV: d\u00e0 a Home TV il permesso di aprirsi sopra le altre app');
+        return r(true, 'S\u00ec, quando il TV si riaccende');
+      }
       if (!f.tizen) return r(false, 'Il servizio non pu\u00f2 aprire app su questo TV', 'Riapri TizenBrew; se continua aggiorna TizenBrew');
       if (f.statoAccensione) return r(true, 'S\u00ec (il TV dice quando si accende)');
       return r(true, 'S\u00ec, ma solo quando il TV si risveglia dallo standby (questo TV non dice se \u00e8 acceso)');
@@ -310,6 +358,8 @@
       if (!f.servizio) return r(null, 'Non si sa (servizio del TV non raggiungibile)');
       var t = f.telefono || {};
       if (t.attivo) return r(true, 'S\u00ec (porta 8091)');
+      if (altraTv(f)) return r(false, 'Il TV non ha lasciato aprire la porta del telefono' + (t.errore ? ' (' + t.errore + ')' : ''),
+        RIAPRI_APP + '; se continua, un\'altra app usa la porta 8091');
       return r(false, 'Il TV non ha lasciato aprire la porta del telefono' + (t.errore ? ' (' + t.errore + ')' : ''),
         'Tutto il resto funziona; per il telefono usa SmartThings. Se TizenBrew Installer \u00e8 rimasto aperto sul TV, chiudilo e riavvia il TV');
     }
@@ -321,8 +371,8 @@
     function haTastiColorati(f) {
       if (f.coloriVisti) return r(true, 'S\u00ec (gi\u00e0 usati)');
       return r(null, 'Non ancora visti',
-        'Senza tasti colorati: nella home OK tenuto premuto e l\'ingranaggio in alto; nei siti OK tenuto premuto apre il menu rapido (il Blu). ' +
-        'Sui telecomandi SolarCell i colori compaiono premendo 123');
+        'Senza tasti colorati: nella home OK tenuto premuto e l\'ingranaggio in alto; nei siti OK tenuto premuto apre il menu rapido (il Blu)' +
+        (altraTv(f) ? '' : '. Sui telecomandi SolarCell i colori compaiono premendo 123'));
     }
     function haListe(f) {
       var l = f.liste || {};
@@ -335,15 +385,17 @@
       if (!f.servizio) return r(null, 'Non si sa (servizio del TV non raggiungibile)');
       if (f.salvataggio === 'tv') return r(true, 'Sulla memoria del TV');
       return r(false, 'Solo temporaneo: spegnendo il TV si perdono cronologia e impostazioni del servizio',
-        'Aggiorna TizenBrew; la home tiene comunque una sua copia delle impostazioni');
+        (altraTv(f) ? '' : 'Aggiorna TizenBrew; ') + 'la home tiene comunque una sua copia delle impostazioni');
     }
     function haCasa(f) {
       if (!f.servizio || f.casa === undefined) return r(null, '');
       if (f.casa) return r(true, 'S\u00ec');
+      if (altraTv(f)) return r(false, 'Il servizio non sa qual \u00e8 la tua home', REINSTALLA);
       return r(false, 'Il servizio non trova la home tra i moduli di TizenBrew', 'In TizenBrew il modulo deve essere tuonome/tv-sito');
     }
     // versione di Tizen e TizenBrew: solo per dire cosa fare, mai per spegnere una funzione
     function haTizenSupportato(f) {
+      if (altraTv(f)) return f.sistema ? r(true, String(f.sistema)) : r(null, 'Versione del sistema non letta');
       var t = numero(f.tizenVer || daUserAgent((f.pagina || {}).ua).tizen);
       if (!t) return r(null, 'Versione di Tizen non letta');
       if (t < TIZEN_MINIMO) return r(false, 'Tizen ' + t.toFixed(1) + ': TizenBrew funziona da Tizen 3.0 (TV del 2017 o pi\u00f9 nuovi)',
@@ -352,12 +404,41 @@
       return r(true, 'Tizen ' + t.toFixed(1));
     }
 
+    // l'app Video: le chiavette attaccate al TV si leggono? (nel servizio videoteca.prova: si apre la prima chiavetta)
+    function haChiavette(f) {
+      var c = f.chiavette;
+      if (!f.servizio || !c || c.stato === 'nonPrevisto') return r(null, '');
+      if (c.stato === 'ok') return r(true, c.dischi === 1 ? 'S\u00ec, il servizio legge la chiavetta attaccata' :
+        'S\u00ec, il servizio legge le ' + c.dischi + ' chiavette o dischi attaccati');
+      if (c.stato === 'nessuna') return r(null, 'Nessuna chiavetta attaccata', 'Attacca una chiavetta o un disco USB per provarle');
+      var fare = 'I film delle chiavette si vedono col lettore del TV (Sorgente, USB); con il server sul computer si vedono anche nell\'app Video';
+      if (c.stato === 'permesso') return r(false, 'Il TV non lascia leggere le chiavette al servizio di Home TV', fare, true);
+      if (c.stato === 'assente') return r(false, 'Il TV non mostra le chiavette al servizio di Home TV', fare, true);
+      return r(null, 'Non si sa: errore leggendo le chiavette', 'Stacca e riattacca la chiavetta');
+    }
+
+    /* ------------------------------------------------------------ l'app Video: cosa legge il <video> di questo TV
+     * I codec dentro i file (MKV, MP4) che il lettore del TV decodifica da solo; quelli che non legge l'app li toglie dal
+     * file servito (videoteca.js) e sceglie un'altra traccia. Samsung, dalle tabelle "TV Video Specifications": DTS tolto
+     * dal 2018 (Tizen 4), TrueHD mai nelle tabelle, AV1 dal 2020 (Tizen 5.5). FLAC nei video parte in ritardo (jellyfin-web
+     * lo converte): 'ultimo' = si usa solo se non c'e' altro. Le altre TV per ora come i Samsung recenti. */
+    function videoLetti(f) {
+      f = f || {};
+      var altra = altraTv(f), tizen = altra ? 0 : numero(f.tizenVer || daUserAgent((f.pagina || {}).ua).tizen);
+      return {
+        audio: { AC3: true, EAC3: true, AAC: true, MP3: true, MP2: true, PCM: true, OPUS: true, VORBIS: true, FLAC: 'ultimo',
+          DTS: !altra && tizen > 0 && tizen < 4, TRUEHD: false },
+        video: { HEVC: true, AVC: true, AV1: altra || !tizen || tizen >= 5.5, VP9: true, VP8: true, MPEG2: true, MPEG4: true, VC1: true }
+      };
+    }
+
     // riassunto per "Questo TV" (impostazioni) e per l'autodiagnosi all'avvio: le voci in ordine, con lo stato
     var VOCI = [
       ['servizio', 'Servizio del TV', haServizio], ['tizen', 'Sistema', haTizenSupportato], ['casa', 'Home riconosciuta', haCasa],
       ['app', 'App del TV', haAppTv], ['riaccensione', 'Riapertura della home', haRiaccensione],
       ['telefono', 'Telefono (porta 8091)', haPortaTelefono], ['tastiVeri', 'Comando completo dal telefono', haTastiVeri],
-      ['colori', 'Tasti colorati', haTastiColorati], ['liste', 'Liste di filtri', haListe], ['salvataggio', 'Salvataggio', haSalvataggio]
+      ['colori', 'Tasti colorati', haTastiColorati], ['liste', 'Liste di filtri', haListe], ['salvataggio', 'Salvataggio', haSalvataggio],
+      ['chiavette', 'Chiavette USB (app Video)', haChiavette]
     ];
     function diagnosi(f) {
       var out = [];
@@ -371,27 +452,29 @@
     }
     // il profilo completo: chi e' il TV (riconosciuto con le API, lo user agent come ripiego) e cosa sa fare
     function componi(f) {
-      var ua = daUserAgent((f.pagina || {}).ua);
-      var anno = annoDaPiattaforma(f.modelloPiattaforma) || annoDaModello(f.modello) || 0;
-      var tizen = f.tizenVer || ua.tizen || (perAnno(anno) ? perAnno(anno).tizen : '');
+      var ua = daUserAgent((f.pagina || {}).ua), altra = altraTv(f);
+      // l'anno si legge solo dai modelli Samsung
+      var anno = altra ? 0 : annoDaPiattaforma(f.modelloPiattaforma) || annoDaModello(f.modello) || 0;
+      var tizen = altra ? '' : f.tizenVer || ua.tizen || (perAnno(anno) ? perAnno(anno).tizen : '');
       var chromium = chromiumPagina(f) || (perTizen(tizen) ? perTizen(tizen).chromium : 0);
       var d = diagnosi(f), capacita = {}; // true = c'e', false = manca, null = non si sa ancora
       for (var i = 0; i < d.length; i++) capacita[d[i].id] = d[i].stato === 'ok' ? true : d[i].stato === 'manca' ? false : null;
       return {
         nome: f.nome || '', modello: f.modello || '', anno: anno, tizen: tizen, chromium: chromium,
         risoluzione: f.risoluzione || ((f.pagina || {}).larghezza ? f.pagina.larghezza + 'x' + f.pagina.altezza : ''),
-        tizenbrew: f.tizenbrew || '', servizio: f.versioneServizio || '', capacita: capacita, diagnosi: d
+        tizenbrew: f.tizenbrew || '', servizio: f.versioneServizio || '', capacita: capacita, diagnosi: d,
+        piattaforma: altra ? f.piattaforma : 'tizen', sistema: altra ? String(f.sistema || '') : tizen ? 'Tizen ' + tizen : ''
       };
     }
 
     return {
       ANNI: ANNI, OK_TENUTO_MS: OK_TENUTO_MS, annoDaModello: annoDaModello, annoDaPiattaforma: annoDaPiattaforma,
       daUserAgent: daUserAgent, perTizen: perTizen, perAnno: perAnno, tizenbrewPerAnno: tizenbrewPerAnno,
-      serveCertificato: serveCertificato, suTv: suTv, daChiedereAlServizio: daChiedereAlServizio,
+      serveCertificato: serveCertificato, suTv: suTv, piattaforma: piattaforma, TASTI: TASTI, daChiedereAlServizio: daChiedereAlServizio,
       motore: motore, ripara: ripara, selettore: selettore, variabiliCss: variabiliCss, scorriPagina: scorriPagina, mostra: mostra,
       haServizio: haServizio, haAppTv: haAppTv, haRiaccensione: haRiaccensione, haTastiVeri: haTastiVeri, haPortaTelefono: haPortaTelefono,
-      haTastiColorati: haTastiColorati, riapriDopoSonno: riapriDopoSonno, haListe: haListe, haSalvataggio: haSalvataggio, haCasa: haCasa, haTizenSupportato: haTizenSupportato,
-      diagnosi: diagnosi, componi: componi
+      haTastiColorati: haTastiColorati, altraTv: altraTv, riapriDopoSonno: riapriDopoSonno, haListe: haListe, haSalvataggio: haSalvataggio, haCasa: haCasa, haTizenSupportato: haTizenSupportato,
+      haChiavette: haChiavette, videoLetti: videoLetti, diagnosi: diagnosi, componi: componi
     };
   })();
   /* </profilo:generato> */
@@ -399,7 +482,7 @@
   ProfiloTV.ripara(window);
   var MOTORE = ProfiloTV.motore(window);
 
-  var VERSIONE = '1.2.2';
+  var VERSIONE = '1.3.0';
   var SERVIZIO = 'http://127.0.0.1:8090';
   var IN_FRAME = false;
   try { IN_FRAME = window.top !== window.self; } catch (e) { IN_FRAME = true; }
@@ -467,7 +550,13 @@
     try { localStorage.setItem('hometv-casa', u); } catch (e) {}
   }
   // la home e il browser della home hanno gia' il loro codice (lo segnalano con questo)
-  function paginaDiCasa() { return window.__hometvCasa === true; }
+  // vale solo sulle pagine della home (o di prova) e nel riquadro di un'app dello Store: un sito qualsiasi non puo'
+  // spegnere Home TV su se stesso mettendo questo segno
+  function paginaDiCasa() {
+    if (window.__hometvCasa !== true) return false;
+    return (LAUNCHER_HOST && HOST === LAUNCHER_HOST) || HOST === 'localhost' || HOST === '127.0.0.1' ||
+      (IN_FRAME && window.name === 'hometv-app' && sopraUnaHome());
+  }
 
   // Pagine con il loro codice o interne: qui non si fa nulla.
   if (!/^https?:$/.test(location.protocol)) return;
@@ -475,6 +564,20 @@
   if ((HOST === '127.0.0.1' || HOST === 'localhost') && location.port === '8090') return;
   if (/\.github\.io$/i.test(HOST) && /^\/tv-sito\//.test(location.pathname)) return;
   if ((HOST === '127.0.0.1' || HOST === 'localhost') && location.port === '8081') return;
+  // dentro il riquadro di un'app dello store (store.html): l'app ha la sua libreria (tv-app.js) e i tasti glieli passa
+  // la home. Qui niente blocco della pubblicita' ne' pulizie, che la potrebbero rompere. Vale solo se la pagina sopra e'
+  // una home (github.io, o le pagine delle prove): un sito qualsiasi non puo' spegnere il blocco nei suoi riquadri
+  function sopraUnaHome() {
+    var a = null;
+    // solo il riquadro diretto della pagina principale (lo Store), non un riquadro dentro un altro riquadro
+    try { if (window.parent !== window.top) return false; } catch (e) { return false; }
+    try { a = location.ancestorOrigins; } catch (e) {}
+    if (!a || !a.length) return true;
+    var cima = String(a[0]);
+    return /^https:\/\/[a-z0-9-]+\.github\.io$/i.test(cima) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(cima) ||
+      /^chrome-extension:\/\//i.test(cima);
+  }
+  if (IN_FRAME && window.name === 'hometv-app' && sopraUnaHome()) return;
 
   var bloccati = 0;
   var DEBUG = false;
@@ -580,6 +683,9 @@
   var SICURI = []; // il tuo sito e i domini consentiti (dal servizio): mai pubblicita' per le liste
   // nei riquadri piccoli (quasi sempre pubblicita' 300x250) le liste non si caricano: bastano quelle interne
   var PICCOLO = IN_FRAME && window.innerWidth > 0 && (window.innerWidth < 480 || window.innerHeight < 270);
+  // ... e neanche in quelli che all'inizio non si vedono (larghi o alti 0: contatori, pubblicita' nascoste, un pannello che
+  // deve ancora aprirsi): niente attesa del servizio in un riquadro che non mostra niente. Valgono le liste interne
+  var NASCOSTO = IN_FRAME && (window.innerWidth === 0 || window.innerHeight === 0);
   var LISTE = null;
   var QUI = dominioBase(HOST);
   var origXHROpen = XMLHttpRequest.prototype.open, origXHRSend = XMLHttpRequest.prototype.send;
@@ -735,7 +841,7 @@
   }
 
   function caricaListe() {
-    if (!bloccoAttivo || PICCOLO || typeof XMLHttpRequest !== 'function') return false;
+    if (!bloccoAttivo || PICCOLO || NASCOSTO || typeof XMLHttpRequest !== 'function') return false;
     try {
       var x = new XMLHttpRequest();
       origXHROpen.call(x, 'GET', SERVIZIO + '/api/adblock?host=' + encodeURIComponent(HOST), false); // attesa voluta
@@ -747,7 +853,7 @@
 
   // il servizio non c'era (TV appena acceso): si riprova piu' tardi, senza aspettare
   function riprovaListe(tentativo) {
-    if (listePronte || !bloccoAttivo || PICCOLO || typeof window.fetch !== 'function') return;
+    if (listePronte || !bloccoAttivo || PICCOLO || NASCOSTO || typeof window.fetch !== 'function') return;
     setTimeout(function () {
       origFetchListe(SERVIZIO + '/api/adblock?host=' + encodeURIComponent(HOST), { cache: 'no-store' })
         .then(function (r) { return r.text(); })
@@ -756,6 +862,16 @@
           if (LISTE) { applicaStili(); pianificaPulizia(); }
         })['catch'](function () { if (tentativo < 3) riprovaListe(tentativo + 1); });
     }, 4000 * tentativo);
+  }
+  // un riquadro nato nascosto che poi si apre (un lettore in un contenitore nascosto, un pannello): le liste del servizio
+  // arrivano appena si vede, senza attesa. Se resta piccolo (una pubblicita' 300x250) valgono le interne, come per PICCOLO
+  if (NASCOSTO) {
+    ascoltaSicuro(window, 'resize', function () {
+      if (!NASCOSTO || window.innerWidth === 0 || window.innerHeight === 0) return;
+      NASCOSTO = false;
+      if (window.innerWidth < 480 || window.innerHeight < 270) return;
+      riprovaListe(0);
+    });
   }
   var origFetchListe = typeof window.fetch === 'function' ? window.fetch.bind(window) : null;
 
@@ -1636,7 +1752,7 @@
   // Se per caso il telecomando finisce qui dentro, lo si restituisce alla pagina.
   if (MINUSCOLO) {
     window.addEventListener('keydown', function (ev) {
-      if ([37, 38, 39, 40, 13, 10009, 27, 403, 404, 405, 406].indexOf(ev.keyCode) === -1) return;
+      if ([37, 38, 39, 40, 13, 10009, 461, 27, 403, 404, 405, 406].indexOf(ev.keyCode) === -1) return;
       ev.preventDefault();
       // era piccolo all'apertura ma ora e' grande (un pannello che si apriva): si ricarica col codice completo (una volta)
       if (window.innerWidth >= 300 && window.innerHeight >= 200) {
@@ -7527,7 +7643,11 @@
       // la fetch vera, presa prima degli agganci del blocco della pubblicita': un indirizzo nuovo a ogni giro non va valutato
       (origFetchListe || fetch)(SERVIZIO + '/api/telefono/eventi?da=' + seq + '&dove=' + encodeURIComponent(dove),
         richiesta ? { cache: 'no-store', signal: richiesta.signal } : { cache: 'no-store' })
-        .then(function (r) { return r.json(); })
+        .then(function (r) {
+          // il servizio dice di no (403, pagina non riconosciuta): si riprova tra 5 secondi, non subito
+          if (!r.ok) throw new Error('servizio ' + r.status);
+          return r.json();
+        })
         .then(function (j) {
           if (mio !== giroN) return; // richiesta superata da una nuova (vedi riparti)
           if (j && typeof j.seq === 'number') seq = j.seq;
@@ -7650,13 +7770,8 @@
 
   /* ================================================================ tasti */
 
-  var TASTI = {
-    37: 'sx', 38: 'su', 39: 'dx', 40: 'giu', 13: 'ok',
-    10009: 'indietro', 27: 'indietro',
-    10252: 'playpausa', 415: 'play', 19: 'pausa', 413: 'stop',
-    417: 'avanti', 412: 'indietroVeloce',
-    403: 'rosso', 404: 'verde', 405: 'giallo', 406: 'blu'
-  };
+  // la tabella dei tasti e' quella di tutte le pagine (profilo: Samsung, LG con Indietro 461, l'app per Android)
+  var TASTI = ProfiloTV.TASTI;
   var ultimoMovimento = 0;
   var AL_LETTORE = { ok: 1, playpausa: 1, play: 1, pausa: 1, sx: 1, dx: 1, su: 1, giu: 1, indietro: 1, stop: 1, avanti: 1, indietroVeloce: 1 };
 

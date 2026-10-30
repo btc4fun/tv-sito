@@ -26,6 +26,7 @@
  *   POST /api/telefono/campo         sul TV si sta scrivendo in un campo (lo dicono le pagine)
  *   POST /api/telefono/video         il video nel lettore TV: titolo, durata, a che punto e', pausa
  *   POST /api/telefono/sotto         il puntatore e' sopra un campo dove si scrive (per la tastiera del telefono)
+ *   POST /api/telefono/store         l'elenco dello Store per il telefono (solo la home e lo Store)
  *   POST /api/visti/cerca            "eri gia' a questo punto?" (le pagine, quando parte un video)
  *   GET  /api/visti                  Continua a guardare (la home)
  *   POST /api/visti/riprendi         { id, daCapo }  la home apre una scheda: la pagina riprende da sola
@@ -34,6 +35,8 @@
  *   GET  /api/adblock/ver            versione delle liste
  *   GET  /api/adblock/stato          stato delle liste (per le impostazioni della home)
  *   POST /api/adblock/aggiorna       scarica di nuovo le liste
+ *   GET  /api/store/scarica?url=     il catalogo di una fonte privata dello Store, per la home { testo } (solo https,
+ *                                    mai indirizzi locali, fino a 300 KB: per i siti che non lo lasciano leggere)
  *
  * Sulla rete di casa, solo per il telefono: http://<indirizzo del TV>:8091
  *   GET  /                           la pagina del telecomando
@@ -168,13 +171,32 @@
       var s = String(ua || ''), t = /Tizen\s*([\d.]+)/i.exec(s), c = /Chrome\/(\d+)/.exec(s);
       var tizen = t ? t[1] : '', chromium = c ? +c[1] : 0;
       if (!chromium && tizen && perTizen(tizen)) chromium = perTizen(tizen).chromium;
-      return { suTv: /Tizen|SMART-TV|SmartTV/i.test(s), tizen: tizen, chromium: chromium };
+      // sul TV: Samsung (Tizen), LG (webOS: "Web0S ... SmartTV") e l'app Home TV per Android (che si presenta cosi')
+      return { suTv: /Tizen|SMART-TV|SmartTV|Web0S|HomeTV-Android/i.test(s), tizen: tizen, chromium: chromium };
     }
     // siamo sul TV? Lo dice lo user agent; ma TizenBrew permette di cambiarlo (sue impostazioni, User Agent): allora
     // vale anche l'oggetto tizen nella pagina, o l'averlo gia' visto dal servizio del TV che risponde (ricordato)
     function suTv(w, ricordato) {
       return daUserAgent(w.navigator.userAgent).suTv || typeof w.tizen !== 'undefined' || !!ricordato;
     }
+    // la piattaforma (docs/piano-altre-tv.md): 'tizen' (Samsung, anche il simulatore sul Mac che si crede un Samsung),
+    // 'android' e 'firetv' (l'app Home TV per Android, che lo dice nello user agent; le Fire TV hanno i modelli AFT...),
+    // 'webos' (LG), 'browser' (un computer). La usano le app dello Store (info.piattaforma) e il servizio (/api/status)
+    function piattaforma(w, suTvGia) {
+      var ua = String((w && w.navigator && w.navigator.userAgent) || '');
+      if (/HomeTV-Android/.test(ua)) return /\bAFT/.test(ua) ? 'firetv' : 'android';
+      if (/Web0S|webOS/.test(ua) || (w && typeof w.PalmSystem !== 'undefined')) return 'webos';
+      return suTvGia || suTv(w) ? 'tizen' : 'browser';
+    }
+    // I tasti del telecomando, uguali per tutte le pagine (ui.js nella home, main.js nei siti): codice -> tasto. Samsung e LG
+    // hanno gli stessi codici per i colori e i tasti video; Indietro e' 10009 su Samsung e 461 su LG; l'app per Android
+    // passa alla pagina i suoi tasti con questi codici (Indietro come Esc, 27). La libreria delle app (tv-app.js) ha i suoi
+    var TASTI = {
+      37: 'sx', 38: 'su', 39: 'dx', 40: 'giu', 13: 'ok',
+      10009: 'indietro', 461: 'indietro', 27: 'indietro',
+      403: 'rosso', 404: 'verde', 405: 'giallo', 406: 'blu',
+      10252: 'playpausa', 415: 'play', 19: 'pausa', 413: 'stop', 417: 'avanti', 412: 'indietroVeloce'
+    };
     // con lo user agent che non dice TV si chiede al servizio del TV, ma non sui computer e sui telefoni Apple:
     // l'anteprima della home sul computer resta un'anteprima
     function daChiedereAlServizio(w) {
@@ -192,6 +214,10 @@
       out.abort = typeof w.AbortController === 'function'; // Chromium 66
       out.puntatore = typeof w.PointerEvent === 'function'; // Chromium 55
       out.proxy = typeof w.Proxy === 'function'; // Chromium 49
+      // JavaScript moderno (classi, frecce, let, Map, Promise): Chromium 49, i TV dal 2018. Lo chiedono le app dello store
+      // nei loro requisiti. Si prova dalle funzioni che ci sono, senza eval (i siti con CSP la vietano)
+      out.es6 = typeof w.Symbol === 'function' && typeof w.Map === 'function' && typeof w.Promise === 'function' &&
+        typeof w.Proxy === 'function' && typeof w.Reflect === 'object' && w.Reflect !== null;
       return out;
     }
     // rimette quello che manca e serve al nostro codice (TV 2017, Chromium 47); dove c'e' gia' non cambia niente
@@ -296,6 +322,12 @@
 
     // fisso: riprovare non cambia niente (per esempio il motore web del TV), quindi lo si dice subito
     function r(si, testo, fare, fisso) { return { si: si, testo: testo || '', fare: fare || '', fisso: !!fisso }; }
+    // le altre TV (f.piattaforma: Android, Fire TV, LG): la stessa home, ma il servizio e' quello dell'app Home TV, non di
+    // TizenBrew. f.sistema = "Android 12", "Fire OS 7", "webOS 6"; f.puoAprirsi = l'app puo' riaprire la home da sola;
+    // f.riaccensione = false: su questo TV la riapertura all'accensione non c'e' proprio (LG)
+    function altraTv(f) { return f.piattaforma === 'android' || f.piattaforma === 'firetv' || f.piattaforma === 'webos'; }
+    var RIAPRI_APP = 'Chiudi Home TV e riaprila';
+    var REINSTALLA = 'Rifai l\'installazione col programma Installa Home TV: scrive sul TV l\'indirizzo della tua home';
     function chromiumPagina(f) {
       var p = f.pagina || {};
       return p.chromium || (p.ua ? daUserAgent(p.ua).chromium : 0);
@@ -303,29 +335,45 @@
 
     function haServizio(f) {
       if (f.servizio) return r(true, 'Il servizio del TV risponde');
+      // la home ha perso la sua chiave del servizio (ui.js): la riprende all'avvio dell'app o del servizio
+      if (f.senzaChiave) {
+        return r(false, 'Il servizio del TV non riconosce pi\u00f9 questa pagina', altraTv(f) ? RIAPRI_APP :
+          'Riavvia il TV: tieni premuto il tasto di accensione del telecomando finch\u00e9 compare il logo Samsung', true);
+      }
       if (f.nonAutorizzata) {
+        if (altraTv(f)) return r(false, 'Il servizio del TV non riconosce questa pagina', REINSTALLA, true);
         return r(false, 'Il servizio del TV non riconosce questa pagina',
           'In TizenBrew aggiungi il modulo tuonome/tv-sito (tuonome = il tuo nome su GitHub)', true);
       }
       var c = chromiumPagina(f);
       if (c && c < CHROMIUM_LOCALE) {
+        if (altraTv(f)) return r(false, 'Su questo TV (motore web ' + c + ') la home non pu\u00f2 parlare con il servizio del TV',
+          'Funzionano il tuo sito e il browser; le app del TV e il telefono no', true);
         return r(false, 'Su questo TV (motore web ' + c + ') la home non pu\u00f2 parlare con il servizio del TV',
           'Funzionano il tuo sito e il browser; le app del TV, il telefono e la riaccensione no. Serve un TV del 2018 o pi\u00f9 nuovo. ' +
           'Se il TV \u00e8 pi\u00f9 nuovo: chiudi TizenBrew e riaprilo', true);
       }
+      if (altraTv(f)) return r(false, 'Il servizio del TV non risponde', RIAPRI_APP + '; se continua, spegni e riaccendi il TV');
       return r(false, 'Il servizio del TV non risponde',
         'Chiudi TizenBrew e riaprilo. Se continua: nelle impostazioni di TizenBrew (pulsanti tondi in alto) controlla l\'autoavvio e che Host PC IP sia 127.0.0.1; ' +
         'se TizenBrew \u00e8 vecchio, aggiornalo');
     }
     function haAppTv(f) {
       if (!f.servizio) return r(null, 'Non si sa (servizio del TV non raggiungibile)');
-      if (!f.tizen) return r(false, 'Il servizio non vede le app del TV', 'Riapri TizenBrew; se continua aggiorna TizenBrew');
-      if (f.appTv && f.appTv.errore) return r(false, 'Elenco delle app non letto: ' + f.appTv.errore, 'Riapri TizenBrew');
+      if (!f.tizen && !altraTv(f)) return r(false, 'Il servizio non vede le app del TV', 'Riapri TizenBrew; se continua aggiorna TizenBrew');
+      if (f.appTv && f.appTv.errore) return r(false, 'Elenco delle app non letto: ' + f.appTv.errore, altraTv(f) ? RIAPRI_APP : 'Riapri TizenBrew');
       return r(true, 'Collegate' + (f.appTv && f.appTv.n ? ' (' + f.appTv.n + ' app)' : ''));
     }
     function haRiaccensione(f) {
       if (!f.servizio) return r(null, 'Non si sa (servizio del TV non raggiungibile)');
       if (f.apriAllAccensione === false) return r(false, 'Spenta nelle impostazioni');
+      if (altraTv(f)) {
+        if (f.riaccensione === false) return r(false, 'Su questo TV la home non si riapre da sola all\'accensione',
+          'Aprila dal menu delle app del TV (puoi metterla per prima)', true);
+        if (f.puoAprirsi === false) return r(false, 'Il TV non lascia riaprire la home da sola',
+          'Rifai l\'installazione col programma Installa Home TV: d\u00e0 a Home TV il permesso di aprirsi sopra le altre app');
+        return r(true, 'S\u00ec, quando il TV si riaccende');
+      }
       if (!f.tizen) return r(false, 'Il servizio non pu\u00f2 aprire app su questo TV', 'Riapri TizenBrew; se continua aggiorna TizenBrew');
       if (f.statoAccensione) return r(true, 'S\u00ec (il TV dice quando si accende)');
       return r(true, 'S\u00ec, ma solo quando il TV si risveglia dallo standby (questo TV non dice se \u00e8 acceso)');
@@ -343,6 +391,8 @@
       if (!f.servizio) return r(null, 'Non si sa (servizio del TV non raggiungibile)');
       var t = f.telefono || {};
       if (t.attivo) return r(true, 'S\u00ec (porta 8091)');
+      if (altraTv(f)) return r(false, 'Il TV non ha lasciato aprire la porta del telefono' + (t.errore ? ' (' + t.errore + ')' : ''),
+        RIAPRI_APP + '; se continua, un\'altra app usa la porta 8091');
       return r(false, 'Il TV non ha lasciato aprire la porta del telefono' + (t.errore ? ' (' + t.errore + ')' : ''),
         'Tutto il resto funziona; per il telefono usa SmartThings. Se TizenBrew Installer \u00e8 rimasto aperto sul TV, chiudilo e riavvia il TV');
     }
@@ -354,8 +404,8 @@
     function haTastiColorati(f) {
       if (f.coloriVisti) return r(true, 'S\u00ec (gi\u00e0 usati)');
       return r(null, 'Non ancora visti',
-        'Senza tasti colorati: nella home OK tenuto premuto e l\'ingranaggio in alto; nei siti OK tenuto premuto apre il menu rapido (il Blu). ' +
-        'Sui telecomandi SolarCell i colori compaiono premendo 123');
+        'Senza tasti colorati: nella home OK tenuto premuto e l\'ingranaggio in alto; nei siti OK tenuto premuto apre il menu rapido (il Blu)' +
+        (altraTv(f) ? '' : '. Sui telecomandi SolarCell i colori compaiono premendo 123'));
     }
     function haListe(f) {
       var l = f.liste || {};
@@ -368,15 +418,17 @@
       if (!f.servizio) return r(null, 'Non si sa (servizio del TV non raggiungibile)');
       if (f.salvataggio === 'tv') return r(true, 'Sulla memoria del TV');
       return r(false, 'Solo temporaneo: spegnendo il TV si perdono cronologia e impostazioni del servizio',
-        'Aggiorna TizenBrew; la home tiene comunque una sua copia delle impostazioni');
+        (altraTv(f) ? '' : 'Aggiorna TizenBrew; ') + 'la home tiene comunque una sua copia delle impostazioni');
     }
     function haCasa(f) {
       if (!f.servizio || f.casa === undefined) return r(null, '');
       if (f.casa) return r(true, 'S\u00ec');
+      if (altraTv(f)) return r(false, 'Il servizio non sa qual \u00e8 la tua home', REINSTALLA);
       return r(false, 'Il servizio non trova la home tra i moduli di TizenBrew', 'In TizenBrew il modulo deve essere tuonome/tv-sito');
     }
     // versione di Tizen e TizenBrew: solo per dire cosa fare, mai per spegnere una funzione
     function haTizenSupportato(f) {
+      if (altraTv(f)) return f.sistema ? r(true, String(f.sistema)) : r(null, 'Versione del sistema non letta');
       var t = numero(f.tizenVer || daUserAgent((f.pagina || {}).ua).tizen);
       if (!t) return r(null, 'Versione di Tizen non letta');
       if (t < TIZEN_MINIMO) return r(false, 'Tizen ' + t.toFixed(1) + ': TizenBrew funziona da Tizen 3.0 (TV del 2017 o pi\u00f9 nuovi)',
@@ -385,12 +437,41 @@
       return r(true, 'Tizen ' + t.toFixed(1));
     }
 
+    // l'app Video: le chiavette attaccate al TV si leggono? (nel servizio videoteca.prova: si apre la prima chiavetta)
+    function haChiavette(f) {
+      var c = f.chiavette;
+      if (!f.servizio || !c || c.stato === 'nonPrevisto') return r(null, '');
+      if (c.stato === 'ok') return r(true, c.dischi === 1 ? 'S\u00ec, il servizio legge la chiavetta attaccata' :
+        'S\u00ec, il servizio legge le ' + c.dischi + ' chiavette o dischi attaccati');
+      if (c.stato === 'nessuna') return r(null, 'Nessuna chiavetta attaccata', 'Attacca una chiavetta o un disco USB per provarle');
+      var fare = 'I film delle chiavette si vedono col lettore del TV (Sorgente, USB); con il server sul computer si vedono anche nell\'app Video';
+      if (c.stato === 'permesso') return r(false, 'Il TV non lascia leggere le chiavette al servizio di Home TV', fare, true);
+      if (c.stato === 'assente') return r(false, 'Il TV non mostra le chiavette al servizio di Home TV', fare, true);
+      return r(null, 'Non si sa: errore leggendo le chiavette', 'Stacca e riattacca la chiavetta');
+    }
+
+    /* ------------------------------------------------------------ l'app Video: cosa legge il <video> di questo TV
+     * I codec dentro i file (MKV, MP4) che il lettore del TV decodifica da solo; quelli che non legge l'app li toglie dal
+     * file servito (videoteca.js) e sceglie un'altra traccia. Samsung, dalle tabelle "TV Video Specifications": DTS tolto
+     * dal 2018 (Tizen 4), TrueHD mai nelle tabelle, AV1 dal 2020 (Tizen 5.5). FLAC nei video parte in ritardo (jellyfin-web
+     * lo converte): 'ultimo' = si usa solo se non c'e' altro. Le altre TV per ora come i Samsung recenti. */
+    function videoLetti(f) {
+      f = f || {};
+      var altra = altraTv(f), tizen = altra ? 0 : numero(f.tizenVer || daUserAgent((f.pagina || {}).ua).tizen);
+      return {
+        audio: { AC3: true, EAC3: true, AAC: true, MP3: true, MP2: true, PCM: true, OPUS: true, VORBIS: true, FLAC: 'ultimo',
+          DTS: !altra && tizen > 0 && tizen < 4, TRUEHD: false },
+        video: { HEVC: true, AVC: true, AV1: altra || !tizen || tizen >= 5.5, VP9: true, VP8: true, MPEG2: true, MPEG4: true, VC1: true }
+      };
+    }
+
     // riassunto per "Questo TV" (impostazioni) e per l'autodiagnosi all'avvio: le voci in ordine, con lo stato
     var VOCI = [
       ['servizio', 'Servizio del TV', haServizio], ['tizen', 'Sistema', haTizenSupportato], ['casa', 'Home riconosciuta', haCasa],
       ['app', 'App del TV', haAppTv], ['riaccensione', 'Riapertura della home', haRiaccensione],
       ['telefono', 'Telefono (porta 8091)', haPortaTelefono], ['tastiVeri', 'Comando completo dal telefono', haTastiVeri],
-      ['colori', 'Tasti colorati', haTastiColorati], ['liste', 'Liste di filtri', haListe], ['salvataggio', 'Salvataggio', haSalvataggio]
+      ['colori', 'Tasti colorati', haTastiColorati], ['liste', 'Liste di filtri', haListe], ['salvataggio', 'Salvataggio', haSalvataggio],
+      ['chiavette', 'Chiavette USB (app Video)', haChiavette]
     ];
     function diagnosi(f) {
       var out = [];
@@ -404,27 +485,29 @@
     }
     // il profilo completo: chi e' il TV (riconosciuto con le API, lo user agent come ripiego) e cosa sa fare
     function componi(f) {
-      var ua = daUserAgent((f.pagina || {}).ua);
-      var anno = annoDaPiattaforma(f.modelloPiattaforma) || annoDaModello(f.modello) || 0;
-      var tizen = f.tizenVer || ua.tizen || (perAnno(anno) ? perAnno(anno).tizen : '');
+      var ua = daUserAgent((f.pagina || {}).ua), altra = altraTv(f);
+      // l'anno si legge solo dai modelli Samsung
+      var anno = altra ? 0 : annoDaPiattaforma(f.modelloPiattaforma) || annoDaModello(f.modello) || 0;
+      var tizen = altra ? '' : f.tizenVer || ua.tizen || (perAnno(anno) ? perAnno(anno).tizen : '');
       var chromium = chromiumPagina(f) || (perTizen(tizen) ? perTizen(tizen).chromium : 0);
       var d = diagnosi(f), capacita = {}; // true = c'e', false = manca, null = non si sa ancora
       for (var i = 0; i < d.length; i++) capacita[d[i].id] = d[i].stato === 'ok' ? true : d[i].stato === 'manca' ? false : null;
       return {
         nome: f.nome || '', modello: f.modello || '', anno: anno, tizen: tizen, chromium: chromium,
         risoluzione: f.risoluzione || ((f.pagina || {}).larghezza ? f.pagina.larghezza + 'x' + f.pagina.altezza : ''),
-        tizenbrew: f.tizenbrew || '', servizio: f.versioneServizio || '', capacita: capacita, diagnosi: d
+        tizenbrew: f.tizenbrew || '', servizio: f.versioneServizio || '', capacita: capacita, diagnosi: d,
+        piattaforma: altra ? f.piattaforma : 'tizen', sistema: altra ? String(f.sistema || '') : tizen ? 'Tizen ' + tizen : ''
       };
     }
 
     return {
       ANNI: ANNI, OK_TENUTO_MS: OK_TENUTO_MS, annoDaModello: annoDaModello, annoDaPiattaforma: annoDaPiattaforma,
       daUserAgent: daUserAgent, perTizen: perTizen, perAnno: perAnno, tizenbrewPerAnno: tizenbrewPerAnno,
-      serveCertificato: serveCertificato, suTv: suTv, daChiedereAlServizio: daChiedereAlServizio,
+      serveCertificato: serveCertificato, suTv: suTv, piattaforma: piattaforma, TASTI: TASTI, daChiedereAlServizio: daChiedereAlServizio,
       motore: motore, ripara: ripara, selettore: selettore, variabiliCss: variabiliCss, scorriPagina: scorriPagina, mostra: mostra,
       haServizio: haServizio, haAppTv: haAppTv, haRiaccensione: haRiaccensione, haTastiVeri: haTastiVeri, haPortaTelefono: haPortaTelefono,
-      haTastiColorati: haTastiColorati, riapriDopoSonno: riapriDopoSonno, haListe: haListe, haSalvataggio: haSalvataggio, haCasa: haCasa, haTizenSupportato: haTizenSupportato,
-      diagnosi: diagnosi, componi: componi
+      haTastiColorati: haTastiColorati, altraTv: altraTv, riapriDopoSonno: riapriDopoSonno, haListe: haListe, haSalvataggio: haSalvataggio, haCasa: haCasa, haTizenSupportato: haTizenSupportato,
+      haChiavette: haChiavette, videoLetti: videoLetti, diagnosi: diagnosi, componi: componi
     };
   })();
   /* </profilo:generato> */
@@ -438,11 +521,14 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.2.2';
+  var VERSION = '1.3.0';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
+  // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
+  // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
+  var ALTRA = typeof HOMETV_PIATTAFORMA === 'object' && HOMETV_PIATTAFORMA ? HOMETV_PIATTAFORMA : null;
 
   var SHARE = '/home/owner/share';
-  var CACHE_DIR = fs.existsSync(SHARE) ? SHARE : require('os').tmpdir();
+  var CACHE_DIR = ALTRA && ALTRA.dati ? ALTRA.dati : fs.existsSync(SHARE) ? SHARE : require('os').tmpdir();
   var FILE_APPS = pathLib.join(CACHE_DIR, 'hometv-apps.json');
   var FILE_SETTINGS = pathLib.join(CACHE_DIR, 'hometv-settings.json');
   var FILE_PREFS = pathLib.join(CACHE_DIR, 'hometv-prefs.json');
@@ -455,6 +541,7 @@
 
   var ICON_ROOTS = ['/opt/', '/usr/'];
   if (typeof HOMETV_PROVE_ICONE === 'string') ICON_ROOTS.push(HOMETV_PROVE_ICONE); // solo nelle prove sul computer
+  if (ALTRA && ALTRA.icone) ICON_ROOTS = ICON_ROOTS.concat(ALTRA.icone); // dove l'altra TV tiene le icone delle app
   var ICON_TYPES = {
     '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
     '.webp': 'image/webp', '.svg': 'image/svg+xml', '.gif': 'image/gif'
@@ -465,12 +552,21 @@
   // cosi' il nome utente non va scritto a mano in nessun file.
   var PROVE = typeof HOMETV_PROVE !== 'undefined' && HOMETV_PROVE === true; // solo nelle prove sul computer
   var FILE_TIZENBREW = typeof HOMETV_PROVE_TIZENBREW === 'string' ? HOMETV_PROVE_TIZENBREW : '/home/owner/share/tizenbrewConfig.json';
+  // Canale di prova (docs/consegna/prepara-prova.sh lo mette a 'prova'): questo servizio e' quello del modulo
+  // "tuonome/tv-sito@prova" e la sua home sta in https://tuonome.github.io/tv-sito/prova/. Vuoto = la home di tutti.
+  var CANALE = 'prova';
   var casa = { origin: '', base: '', letto: 0, utenti: [] };
 
   function trovaCasa() {
     if (PROVE && typeof HOMETV_PROVE_CASA === 'string') { // prove sul computer: home su localhost
       casa.base = HOMETV_PROVE_CASA;
       casa.origin = HOMETV_PROVE_CASA.replace(/^(https?:\/\/[^\/]+).*$/, '$1').toLowerCase();
+      return casa;
+    }
+    if (ALTRA) { // l'indirizzo della home lo scrive l'installatore nell'app dell'altra TV
+      var b = String(ALTRA.casa() || '');
+      casa.base = /^https:\/\/[^\/]+\//i.test(b) ? b : '';
+      casa.origin = casa.base ? casa.base.replace(/^(https?:\/\/[^\/]+).*$/, '$1').toLowerCase() : '';
       return casa;
     }
     // il file di TizenBrew si rilegge ogni minuto (ogni 5 secondi se la home non si e' ancora trovata), non a ogni richiesta
@@ -480,16 +576,19 @@
     var moduli = conf && Array.isArray(conf.modules) ? conf.modules : [];
     var gh = [];
     for (var i = 0; i < moduli.length; i++) {
-      var m = /^gh\/([A-Za-z0-9\-]+)\/([A-Za-z0-9._\-]+?)(@[^\/]*)?$/.exec(String(moduli[i]).trim());
-      if (m) gh.push({ utente: m[1], repo: m[2] });
+      var m = /^gh\/([A-Za-z0-9\-]+)\/([A-Za-z0-9._\-]+?)(?:@([^\/]*))?$/.exec(String(moduli[i]).trim());
+      if (m) gh.push({ utente: m[1], repo: m[2], canale: m[3] || '' });
     }
     casa.utenti = gh.map(function (g) { return 'https://' + g.utente.toLowerCase() + '.github.io'; });
-    var scelto = null;
-    for (var j = 0; j < gh.length; j++) if (gh[j].repo.toLowerCase() === 'tv-sito') { scelto = gh[j]; break; }
+    // prima il tv-sito del canale di questo servizio ("tv-sito" o "tv-sito@prova": sul TV ci possono essere tutti e due),
+    // poi un tv-sito qualsiasi (anche "@v1.2.2"), poi l'unico modulo GitHub
+    var scelto = null, j;
+    for (j = 0; j < gh.length && !scelto; j++) if (gh[j].repo.toLowerCase() === 'tv-sito' && gh[j].canale === CANALE) scelto = gh[j];
+    for (j = 0; j < gh.length && !scelto; j++) if (gh[j].repo.toLowerCase() === 'tv-sito') scelto = gh[j];
     if (!scelto && gh.length === 1) scelto = gh[0];
     if (scelto) {
       casa.origin = 'https://' + scelto.utente.toLowerCase() + '.github.io';
-      casa.base = casa.origin + '/' + scelto.repo + '/';
+      casa.base = casa.origin + '/' + scelto.repo + '/' + (CANALE ? CANALE + '/' : '');
     }
     return casa;
   }
@@ -500,15 +599,19 @@
   // GitHub dei moduli installati; se il file di TizenBrew non si legge proprio
   // (spostato da un aggiornamento), qualsiasi pagina github.io, come prima:
   // meglio una home che funziona.
-  function originFidata(origin) {
+  function originDellaHome(origin) {
     if (!origin) return false;
     var o = String(origin).toLowerCase();
     var c = trovaCasa();
-    if (c.origin) { if (o === c.origin) return true; }
-    else if (c.utenti.length) { if (c.utenti.indexOf(o) !== -1) return true; }
-    else if (/^https:\/\/[a-z0-9\-]+\.github\.io$/.test(o)) return true;
-    return PROVE && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o);
+    if (c.origin) return o === c.origin;
+    if (c.utenti.length) return c.utenti.indexOf(o) !== -1;
+    return /^https:\/\/[a-z0-9\-]+\.github\.io$/.test(o);
   }
+  // solo nelle prove sul computer: anche le altre pagine su localhost (i siti di prova) sono fidate, senza chiave
+  function paginaDiProva(origin) {
+    return PROVE && !!origin && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(String(origin).toLowerCase());
+  }
+  function originFidata(origin) { return originDellaHome(origin) || paginaDiProva(origin); }
   // Risposte solo a chi chiama 127.0.0.1:8090 (niente trucchi con nomi di dominio che puntano qui).
   var HOST_OK = /^(127\.0\.0\.1|localhost):8090$/i;
   var OPEN_ROUTES = {
@@ -541,6 +644,21 @@
 
   function log(msg) {
     try { console.log('[hometv] ' + msg); } catch (e) { /* niente console */ }
+  }
+  // l'ultima rete: un errore sfuggito da qualche parte non spegne il servizio, che sul TV resterebbe morto fino al
+  // riavvio (niente home, telefono, blocco della pubblicita'). Si annota e si va avanti; le scritture dei file sono
+  // "tutto o niente" (scriviJson), quindi non restano dati a meta'. Se pero' gli errori sono tanti (20 in 10 minuti)
+  // qualcosa e' rotto a fondo, e girare a vuoto consuma il TV: allora il servizio si ferma davvero
+  var erroriSfuggiti = [];
+  if (typeof process !== 'undefined' && process.on) {
+    process.on('uncaughtException', function (e) {
+      log('errore sfuggito: ' + String(e && e.stack || e).slice(0, 1000));
+      var ora = Date.now();
+      erroriSfuggiti = erroriSfuggiti.filter(function (t) { return ora - t < 600000; });
+      erroriSfuggiti.push(ora);
+      if (erroriSfuggiti.length > 20) { log('troppi errori: il servizio si ferma'); process.exit(1); }
+    });
+    process.on('unhandledRejection', function (r) { log('promessa rifiutata senza risposta: ' + String(r && r.stack || r).slice(0, 500)); });
   }
 
   function leggiJson(file, def) {
@@ -603,6 +721,51 @@
   if (typeof browserData.schedaAttiva !== 'string') browserData.schedaAttiva = '';
 
   function salvaBrowser() { scriviJson(FILE_BROWSER, browserData); }
+
+  /* ---------------------------------------------------------- la chiave della home
+   * Oltre all'Origin (che una pagina non puo' falsificare, ma un programma installato sul TV si'), la home presenta una
+   * chiave segreta del servizio: ?chiave= in ogni domanda che non e' per i siti (UI.service). Il servizio la crea la prima
+   * volta e la tiene nei suoi dati; chi si presenta con l'Origin della home ma senza chiave e' trattato come un sito.
+   * La home la riceve senza che tu scriva niente:
+   *  - sui Samsung con POST /api/chiave: la prima volta (anche una home nuova, cioe' un altro account), e poi dopo ogni
+   *    avvio del servizio (all'accensione vera del TV, o quando TizenBrew lo fa ripartire), finche' la home non si
+   *    presenta con la chiave giusta e al massimo per 2 minuti: se la home perde la sua memoria (TizenBrew
+   *    reinstallato), la riprende da sola;
+   *  - su LG dall'app stessa (lg/avvio.js la chiede al servizio dell'app e la passa nell'indirizzo); POST /api/chiave
+   *    resta come riserva, ma solo nei primi 2 minuti dopo l'avvio (il servizio di LG parte quando si apre l'app).
+   * Non serve alle domande aperte ai siti (liste di filtri, eventi del telefono...), alle icone e al ritorno alla home. */
+  var FILE_CHIAVE = pathLib.join(CACHE_DIR, 'hometv-chiave.json');
+  var AVVIO_SERVIZIO = process.hrtime(); // l'orologio monotono: l'ora del TV puo' saltare quando arriva dalla rete
+  function msDallAvvio() { var d = process.hrtime(AVVIO_SERVIZIO); return d[0] * 1000 + d[1] / 1e6; }
+  var FINESTRA_CHIAVE = typeof HOMETV_PROVE_FINESTRA_CHIAVE === 'number' ? HOMETV_PROVE_FINESTRA_CHIAVE : 120000;
+  var chiaveDati = leggiJson(FILE_CHIAVE, null);
+  if (!chiaveDati || typeof chiaveDati.chiave !== 'string' || !/^[0-9a-f]{64}$/.test(chiaveDati.chiave)) {
+    chiaveDati = { chiave: require('crypto').randomBytes(32).toString('hex'), consegnata: '' };
+    // subito, non in background: una seconda copia del servizio avviata subito dopo (TizenBrew lo fa) legge la stessa
+    try { fs.writeFileSync(FILE_CHIAVE + '.tmp', JSON.stringify(chiaveDati)); fs.renameSync(FILE_CHIAVE + '.tmp', FILE_CHIAVE); }
+    catch (e) { log('chiave non salvata: ' + (e.code || e.message)); }
+  }
+  var finestraChiave = true; // si chiude alla prima domanda con la chiave giusta: la home c'e' e ce l'ha
+  if (ALTRA) ALTRA.chiave = chiaveDati.chiave; // le altre TV la danno alla loro app (LG: servizio-lg.js)
+  // nelle prove con le pagine su localhost la chiave si da' sempre (ogni prova parte da una pagina nuova); le regole vere
+  // valgono come sul TV (test_sicurezza.sh)
+  var CHIAVE_SEMPRE = PROVE && typeof HOMETV_PROVE_CHIAVE_STRETTA === 'undefined';
+  function chiaveGiusta(c) {
+    var a = String(c || ''), b = chiaveDati.chiave, d = a.length ^ b.length;
+    for (var i = 0; i < b.length; i++) d |= (a.charCodeAt(i) || 0) ^ b.charCodeAt(i);
+    return d === 0;
+  }
+  // consegnata = l'origine della home che l'ha avuta: una home nuova (un altro account in TizenBrew) la riceve da sola.
+  // Su LG la da' l'app (lg/avvio.js, nell'indirizzo) e la home non la chiede mai qui: resta solo la riserva nei primi
+  // minuti dopo l'avvio. Se no, "mai consegnata" la darebbe sempre a chi scrive l'Origin della home (trovato dal revisore)
+  // Con piu' home possibili (le riserve di originDellaHome: file di TizenBrew che non si legge, piu' moduli) la regola "una
+  // volta a ogni home" la darebbe a ognuna in ogni momento: anche li' solo la finestra
+  function chiaveDaDare(origin) {
+    if (CHIAVE_SEMPRE) return true;
+    var finestra = finestraChiave && msDallAvvio() < FINESTRA_CHIAVE;
+    if (ALTRA || !trovaCasa().origin) return finestra;
+    return chiaveDati.consegnata !== String(origin).toLowerCase() || finestra;
+  }
 
   // Le schede del browser. Sul TV c'e' una finestra sola: una scheda e' una pagina ricordata, che resta finche' non la
   // chiudi (anche spegnendo il TV). Mentre navighi dal browser la scheda attiva segue le pagine che apri; tornando alla
@@ -698,6 +861,7 @@
   var cache = { at: 0, apps: leggiJson(FILE_APPS, null), pending: null };
 
   function fetchApps() {
+    if (ALTRA) return ALTRA.app();
     return new Promise(function (resolve, reject) {
       if (!HAS_TIZEN) { reject(new Error('API tizen non disponibile')); return; }
       var finito = false;
@@ -755,6 +919,7 @@
   }
 
   function launchApp(id) {
+    if (ALTRA) return ALTRA.apri(id);
     return new Promise(function (resolve, reject) {
       if (!HAS_TIZEN) { reject(new Error('API tizen non disponibile')); return; }
       try {
@@ -787,13 +952,13 @@
     res.end(JSON.stringify(body));
   }
 
-  function readBody(req) {
+  function readBody(req, max) {
     return new Promise(function (resolve, reject) {
       var chunks = [];
       var size = 0;
       req.on('data', function (chunk) {
         size += chunk.length;
-        if (size > 64 * 1024) { reject(new Error('richiesta troppo grande')); req.destroy(); return; }
+        if (size > (max || 64 * 1024)) { reject(new Error('richiesta troppo grande')); req.destroy(); return; }
         chunks.push(chunk);
       });
       req.on('end', function () {
@@ -843,10 +1008,8 @@
       return { url: s && typeof s.url === 'string' ? s.url : '', blocco: s && s.blocco === 'completo' ? 'completo' : 'normale' };
     });
     // aperto da "Continua a guardare": la pagina fa partire il video e riprende da li'
-    if (intentoContinua && Date.now() < intentoContinua.scade) {
-      out.continua = { url: intentoContinua.url, posizione: intentoContinua.posizione, fresco: Date.now() - intentoContinua.creato < 30000,
-        riproduci: !!intentoContinua.riproduci };
-    }
+    var continua = visti.intento();
+    if (continua) out.continua = continua;
     // sito appena aperto con un link dal telefono: e' voluto, non una pagina "esterna" da cui tornare indietro
     if (tel.ultimoLink && Date.now() - tel.ultimoLink.at < 60000) out.linkDalTelefono = tel.ultimoLink.host;
     return out;
@@ -864,33 +1027,70 @@
     var route = req.method + ' ' + url.pathname;
     var origin = req.headers.origin;
     var aperta = !!OPEN_ROUTES[route];
+    // le pagine senza indirizzo (le app dello Store nel loro riquadro isolato): solo le liste di filtri, niente altro
+    // (ne' le scelte della home, ne' i comandi del telefono, ne' la cronologia o Continua a guardare)
+    if (origin === 'null' && route !== 'GET /api/adblock' && route !== 'GET /api/adblock/ver') aperta = false;
+    // i comandi del telefono (anche il testo scritto) e i download dello Store: solo a pagine che dicono chi sono.
+    // Senza Origin arriva anche una pagina caricata in un riquadro (un'app dello Store potrebbe aprirne uno per prendersi
+    // i comandi del telefono): passa solo chi si presenta con X-HomeTV-Ponte, che una pagina non puo' mettere in una
+    // richiesta senza Origin (il ponte del simulatore, TV sul Mac)
+    if (!origin && !req.headers['x-hometv-ponte'] && (route === 'GET /api/telefono/eventi' || route === 'GET /api/store/scarica')) {
+      sendJson(req, res, 403, { error: 'pagina non autorizzata' }, true);
+      return;
+    }
 
     if (!HOST_OK.test(String(req.headers.host || ''))) {
       sendJson(req, res, 403, { error: 'indirizzo non autorizzato' });
       return;
     }
+    // l'app Video: il gettone nel percorso basta (il <video> non ha Origin, il riquadro dello Store ha "null")
+    if (Videoteca.gestisci(videoteca, gettoniVideo, req, res, url, { punto: puntoVideo })) return;
     if (req.method === 'OPTIONS') {
       res.writeHead(204, headers(req, 'text/plain', null, true));
       res.end();
       return;
     }
-    var fidata = !origin || originFidata(origin);
+    var comeLaHome = !origin || originDellaHome(origin);
+    // l'Origin della home ma nessun parametro chiave (la home lo mette sempre, anche vuoto): un'altra pagina dello stesso
+    // sito, per esempio un'altra cartella dello stesso account su GitHub, dove c'e' main.js. Vale come un sito
+    if (origin && comeLaHome && url.query.chiave === undefined) comeLaHome = false;
+    // la chiave alla home (solo a una pagina che si presenta come la home, e solo quando si puo': vedi chiaveDaDare)
+    if (route === 'POST /api/chiave') {
+      if (!origin || !originFidata(origin)) { sendJson(req, res, 403, { error: 'pagina non autorizzata' }, true); return; }
+      if (!chiaveDaDare(origin)) { sendJson(req, res, 403, { error: 'chiave' }); return; }
+      if (!ALTRA && chiaveDati.consegnata !== String(origin).toLowerCase()) {
+        chiaveDati.consegnata = String(origin).toLowerCase();
+        scriviJson(FILE_CHIAVE, chiaveDati, true);
+      }
+      sendJson(req, res, 200, { chiave: chiaveDati.chiave });
+      return;
+    }
+    // le icone (immagini) e il ritorno alla home (una navigazione) non portano la chiave: non dicono niente di tuo
+    var libera = route === 'GET /api/icon' || route === 'GET /casa';
+    var conChiave = chiaveGiusta(url.query.chiave);
+    if (conChiave) finestraChiave = false;
+    var fidata = comeLaHome ? conChiave || libera : paginaDiProva(origin);
+    // con l'Origin della home ma senza la chiave giusta niente, neanche le domande aperte ai siti: la home capisce che deve
+    // chiedere la chiave, invece di prendere le risposte per i siti (le scelte senza la sua copia) e poi scriverci sopra
+    if (origin && comeLaHome && !fidata) { sendJson(req, res, 403, { error: 'chiave' }); return; }
     if (!aperta && !fidata) {
       // leggibile dalla pagina, cosi' la home puo' spiegare cosa non va
-      sendJson(req, res, 403, { error: 'pagina non autorizzata' }, true);
+      sendJson(req, res, 403, { error: comeLaHome ? 'chiave' : 'pagina non autorizzata' }, true);
       return;
     }
 
     if (route === 'GET /api/icon') { serveIcon(req, res, url.query.path); return; }
 
     if (route === 'GET /api/status') {
-      sendJson(req, res, 200, { ok: true, version: VERSION, tizen: HAS_TIZEN, apps: cache.apps ? cache.apps.length : 0, casa: trovaCasa().base });
+      // piattaforma e api: il contratto del servizio (docs/contratto-servizio.md), uguale per ogni TV
+      sendJson(req, res, 200, { ok: true, version: VERSION, piattaforma: ALTRA ? ALTRA.nome : 'tizen', api: 3, tizen: HAS_TIZEN, apps: cache.apps ? cache.apps.length : 0,
+        casa: trovaCasa().base });
       return;
     }
     // profilo del TV (impostazioni "Questo TV" e autodiagnosi della home)
-    if (route === 'GET /api/tv') { sendJson(req, res, 200, profiloTv()); return; }
+    if (route === 'GET /api/tv') { conChiavette(function () { sendJson(req, res, 200, profiloTv()); }); return; }
     if (route === 'POST /api/tv/pagina') {
-      readBody(req).then(function (body) { salvaPagina(body || {}); sendJson(req, res, 200, profiloTv()); })['catch'](fail(req, res));
+      readBody(req).then(function (body) { salvaPagina(body || {}); conChiavette(function () { sendJson(req, res, 200, profiloTv()); }); })['catch'](fail(req, res));
       return;
     }
     // "torna alla home" da qualsiasi pagina, anche senza sapere dov'e'
@@ -997,6 +1197,24 @@
       return;
     }
     if (route === 'GET /api/adblock/stato') { sendJson(req, res, 200, statoAdblock()); return; }
+    // l'app Video: il gettone per l'app ufficiale che la home apre (lo Store controlla il permesso nel catalogo), e via
+    // quando la chiude
+    if (route === 'POST /api/video/gettone') { sendJson(req, res, 200, gettoniVideo.nuovo()); return; }
+    if (route === 'POST /api/video/gettone/via') {
+      readBody(req).then(function (b) {
+        gettoniVideo.togli(b.gettone);
+        sendJson(req, res, 200, { ok: true });
+      })['catch'](fail(req, res, 400));
+      return;
+    }
+    // lo Store: il catalogo di una fonte privata che la pagina non riesce a leggere da sola
+    if (route === 'GET /api/store/scarica') {
+      storeScaricaFonte(String(url.query.url || ''), function (err, t) {
+        if (err) { sendJson(req, res, err.stato === 404 ? 404 : 502, { error: err.stato === 404 ? 'nonTrovato' : 'offline' }); return; }
+        sendJson(req, res, 200, { testo: t });
+      });
+      return;
+    }
     if (route === 'POST /api/adblock/aggiorna') {
       adbAggiorna(true);
       sendJson(req, res, 200, statoAdblock());
@@ -1005,15 +1223,15 @@
     if (route === 'GET /api/telefono/eventi') { attendiEventi(req, res, url.query); return; }
     if (route === 'POST /api/visti/cerca') {
       readBody(req).then(function (body) {
-        sendJson(req, res, 200, cercaVisto(body), true);
+        sendJson(req, res, 200, visti.cerca(body), true);
       })['catch'](fail(req, res, 400, true));
       return;
     }
-    if (route === 'GET /api/visti') { sendJson(req, res, 200, { visti: vistiPerHome(), totale: visti.length }); return; }
+    if (route === 'GET /api/visti') { sendJson(req, res, 200, visti.perHome()); return; }
     if (route === 'POST /api/visti/riprendi' || route === 'POST /api/visti/togli' || route === 'POST /api/visti/rinomina' ||
       route === 'POST /api/visti/visto' || route === 'POST /api/visti/svuota') {
       readBody(req).then(function (body) {
-        sendJson(req, res, 200, cambiaVisti(route.slice(16), body || {}));
+        sendJson(req, res, 200, visti.cambia(route.slice(16), body || {}));
       })['catch'](fail(req, res, 400));
       return;
     }
@@ -1029,6 +1247,16 @@
         cambiaVideo(body);
         sendJson(req, res, 200, { ok: true }, true);
       })['catch'](fail(req, res, 400, true));
+      return;
+    }
+    if (route === 'POST /api/telefono/store') {
+      readBody(req, 512 * 1024).then(function (body) {
+        tel.store = elencoStore(body);
+        tel.storeVer++;
+        tel.ultimoAscolto = Date.now(); // la home (o lo Store) c'e': l'ha appena mandato
+        cambiaStato();
+        sendJson(req, res, 200, { ok: true });
+      })['catch'](fail(req, res, 400));
       return;
     }
     if (route === 'POST /api/telefono/campo') {
@@ -1091,6 +1319,8 @@
   // stato: 'mai' (mai provato), 'attesa' (il TV sta chiedendo il permesso), 'ok', 'negato', 'assente'
   var rem = { stato: remoto.stato === 'ok' || remoto.stato === 'negato' ? remoto.stato : 'mai', token: remoto.token || '',
     sock: null, pronto: false, coda: [], tentativo: 0, ultimoErrore: '', indicePorta: 0, buffer: null, frammenti: null };
+  // le altre TV (LG) non hanno l'ingresso dei telecomandi di Samsung: niente tasti veri, il telefono comanda le pagine
+  if (ALTRA) rem.stato = 'assente';
 
   function salvaRemoto() { scriviJson(FILE_REMOTO, { stato: rem.stato, token: rem.token }); }
 
@@ -1253,6 +1483,7 @@
 
   // chiedere il permesso sul TV (prima volta, o di nuovo dopo un "no")
   function chiediPermessoRemoto() {
+    if (ALTRA) { rem.stato = 'assente'; return; }
     if (rem.stato === 'negato' || rem.stato === 'assente') rem.stato = 'mai';
     rem.indicePorta = 0;
     chiudiRemoto();
@@ -1283,8 +1514,11 @@
     codice: '', codiceScade: 0, codiceErrori: 0,
     eventi: [], seq: 0,
     attese: [], ultimoAscolto: 0, dove: '',
-    campo: null, ver: 1, attesaStato: [], video: null, ultimoLink: null, sotto: null
+    campo: null, ver: 1, attesaStato: [], video: null, ultimoLink: null, sotto: null,
+    // lo Store dal telefono: l'ultimo elenco mandato dal TV, e le azioni che aspettano la home
+    store: null, storeVer: 0, storeCoda: [], inCoda: false
   };
+  var ID_STORE = /^[a-z0-9][a-z0-9-]{1,39}$/, RIQUADRO_STORE = /^(ws:[a-z0-9][a-z0-9-]{1,39}|mia:f[a-z0-9]{1,16}:[a-z0-9][a-z0-9-]{1,39})$/;
   var telefoni = leggiJson(FILE_TELEFONI, []);
   if (!Array.isArray(telefoni)) telefoni = [];
 
@@ -1356,9 +1590,31 @@
     if (!tel.campo || Date.now() - tel.campo.at > 10 * 60 * 1000) return null;
     return { etichetta: tel.campo.etichetta, tipo: tel.campo.tipo, valore: tel.campo.valore };
   }
+  // l'elenco dello Store per il telefono, come lo manda la home: solo campi conosciuti, testi corti, immagini http(s)
+  var STATI_STORE = { installa: 1, installata: 1, nuova: 1, nonAdatta: 1, ritirata: 1, orfana: 1, ok: 1 };
+  function elencoStore(b) {
+    function una(x, mia) {
+      if (!x || typeof x !== 'object') return null;
+      var chiave = mia ? String(x.riquadro || '') : 'ws:' + String(x.id || '');
+      if (!RIQUADRO_STORE.test(chiave)) return null;
+      var img = function (u) { return !mia && /^https?:\/\/[^\s"'<>()]{1,500}$/i.test(String(u || '')) ? String(u) : ''; };
+      var colore = Array.isArray(x.colore) && x.colore.length === 2 && /^\d{1,3},\d{1,3},\d{1,3}$/.test(x.colore[0]) &&
+        /^\d{1,3},\d{1,3},\d{1,3}$/.test(x.colore[1]) ? [x.colore[0], x.colore[1]] : null;
+      return { chiave: chiave, nome: testo(x.nome, 40), descrizione: testo(x.descrizione, mia ? 200 : 400), novita: testo(x.novita, 200),
+        autore: testo(x.autore, 40), categoria: testo(x.categoria, 30), versione: testo(x.versione, 20), icona: img(x.icona),
+        copertina: img(x.copertina), colore: colore, sito: mia ? testo(x.sito, 80) : '', evidenza: x.evidenza === true,
+        stato: STATI_STORE[x.stato] === 1 ? x.stato : 'ok' };
+    }
+    var app = (Array.isArray(b.app) ? b.app.slice(0, 250) : []).map(function (x) { return una(x, false); }).filter(Boolean);
+    var mie = (Array.isArray(b.mie) ? b.mie.slice(0, 300) : []).map(function (x) { return una(x, true); }).filter(Boolean);
+    var e = b.esito && typeof b.esito === 'object' ? { azione: testo(b.esito.azione, 20), ok: b.esito.ok === true, testo: testo(b.esito.testo, 160), at: Date.now() } : null;
+    return { at: Date.now(), catalogo: testo(b.catalogo, 120), app: app, mie: mie, esito: e || (tel.store && tel.store.esito) || null };
+  }
+  // la home o lo Store sono aperti sul TV (le azioni dello Store le fanno solo loro)
+  function storeInAscolto() { return inAscolto() && (tel.dove === 'Home' || tel.dove === 'Store'); }
   function statoPerTelefono() {
     return { ok: true, ascolta: inAscolto(), dove: tel.dove, tasti: rem.stato, campo: campoAttivo(), video: videoAttuale(), sotto: sottoAttuale(),
-      ver: tel.ver };
+      ver: tel.ver, storeVer: tel.storeVer };
   }
 
   // Il video nel lettore TV, per il telefono (titolo, barra del tempo, pausa). Le pagine lo dicono
@@ -1368,7 +1624,7 @@
   function posizioneVideo(v) { return v.posizione + (v.inPausa ? 0 : (Date.now() - v.at) / 1000); }
   function cambiaVideo(body) {
     if (!body || typeof body !== 'object') return;
-    if (body.pagina && (body.attivo === true || body.memo === true)) { try { registraVisto(body); } catch (e) { log('continua a guardare: ' + e.message); } }
+    if (body.pagina && (body.attivo === true || body.memo === true)) { try { visti.registra(body); } catch (e) { log('continua a guardare: ' + e.message); } }
     if (body.memo === true) return; // solo il punto in cui si lascia il video: il telefono non c'entra
     var chi = testo(body.chi, 20);
     var prima = tel.video && Date.now() - tel.video.at <= VIDEO_SCADE ? tel.video : null;
@@ -1414,485 +1670,2776 @@
     return s && Date.now() - s.at < 10 * 60 * 1000 ? { etichetta: s.etichetta, tipo: s.tipo } : null;
   }
   /* ---------------------------------------------------------- continua a guardare
-   * Il TV ricorda cosa guardi nei siti (film, puntate delle serie) per riprendere da dove eri: una scheda
-   * per film o per serie (l'ultima puntata) su ogni sito, la home ne mostra al massimo 10. Anche cambiando
-   * sito solo con "Riprendi anche su un altro sito" (Impostazioni della home, spenta all'inizio): allora la
-   * scheda passa al sito nuovo e un altro sito propone il punto. Lo stesso sito lo decide solo stessoSito.
-   * La stessa opera si riconosce dal nome (ripulito da nome del sito, "HD", "4K", accenti,
-   * articoli), da stagione e puntata e dalla durata. Le regole, per non sbagliare mai:
-   *  - si riprende da soli solo lo stesso video (stessa pagina e stessa durata) o una scheda scelta
-   *    nella home; su un'altra pagina (o su un altro sito, con l'opzione) si propone e basta
-   *    ("Eri a 22:15 su ...: OK per riprendere");
-   *  - nel dubbio non si unisce e non si propone niente: meglio una scheda in piu' che una sbagliata;
-   *  - un video si ricorda dopo un minuto che lo guardi, e solo se dura almeno 5 minuti (non trailer).
+   * La logica e' in tv-sito/visti.js, la stessa su ogni TV (qui la sua copia): il servizio le da' i dati salvati e
+   * le scelte della home, e la chiama dalle domande delle pagine. */
+  /* <visti:generato> copia di tv-sito/visti.js (prove/incorpora_visti.py): non modificare qui */
+  /*
+   * Home TV - CONTINUA A GUARDARE: cosa guardi nei siti, per riprendere da dove eri. La stessa logica su ogni TV:
+   * service.js (Samsung e LG) ne ha una copia, messa da prove/incorpora_visti.py tra i segnaposto <visti:generato>;
+   * l'app Android fa girare questo file cosi' com'e' in un motore web nascosto (android/src/it/hometv/tv/Visti.java).
+   * Si modifica SOLO questo file, poi si lancia lo script; le prove controllano che la copia sia uguale.
+   * Solo ES5 e solo ASCII (\uXXXX per le lettere accentate).
+   *
+   *   var v = VistiTV.crea({ dati: [...], salva: function (elenco, subito) {}, prefs: function () { return prefs; },
+   *                          casuale: function (byte) { return 'esadecimale'; } });
+   *   v.registra(corpo)        un video che va avanti o si lascia (POST /api/telefono/video, con la pagina)
+   *   v.cerca(corpo)           POST /api/visti/cerca: { ok, continua | stesso | proposta }
+   *   v.perHome()              GET /api/visti: { visti, totale }
+   *   v.cambia(azione, corpo)  POST /api/visti/riprendi | togli | rinomina | visto | svuota
+   *   v.riproduci(url)         "Riproduci sul TV" dal telefono: la pagina fa partire il suo video
+   *   v.intento()              per le scelte delle pagine (prefs.continua), oppure null
    */
-  var FILE_VISTI = pathLib.join(CACHE_DIR, 'hometv-visti.json');
-  var MAX_SCHEDE = 10, MAX_VISTI = 30, MIN_DURATA = 300, MIN_VISTO = 60;
-  // lo stesso sito? Per ora lo stesso nome, con o senza "www." davanti. E' l'unico posto che lo decide (proposta
-  // "Eri a ...", schede, pagina riaperta dalla home)
-  function stessoSito(a, b) {
-    a = String(a || '').toLowerCase().replace(/^www\./, '');
-    b = String(b || '').toLowerCase().replace(/^www\./, '');
-    return !!a && a === b;
-  }
-  // "Riprendi anche su un altro sito" (spenta all'inizio): se no proposta e schede restano del loro sito
-  function riprendiAltrove() { return !!prefs && prefs.riprendiAltroSito === true; }
-  function sitoBuono(e, p) { return riprendiAltrove() || stessoSito(hostLink(e.url), hostLink(p.url)); }
-  var visti = leggiJson(FILE_VISTI, []);
-  if (!Array.isArray(visti)) visti = [];
-  var intentoContinua = null;
+  var VistiTV = (function () {
+    'use strict';
 
-  var ACCENTI = [[/[\u00e0-\u00e5]/g, 'a'], [/[\u00e8-\u00eb]/g, 'e'], [/[\u00ec-\u00ef]/g, 'i'], [/[\u00f2-\u00f6\u00f8]/g, 'o'],
-    [/[\u00f9-\u00fc]/g, 'u'], [/\u00f1/g, 'n'], [/\u00e7/g, 'c'], [/[\u00fd\u00ff]/g, 'y'], [/\u00df/g, 'ss']];
-  // parole che non dicono quale opera e' (articoli, preposizioni)
-  var VUOTE = { il: 1, lo: 1, la: 1, i: 1, gli: 1, le: 1, l: 1, un: 1, uno: 1, una: 1, di: 1, da: 1, del: 1, della: 1, dello: 1, dei: 1,
-    degli: 1, delle: 1, al: 1, allo: 1, alla: 1, ai: 1, agli: 1, alle: 1, su: 1, sul: 1, in: 1, nel: 1, nella: 1, con: 1, per: 1, e: 1, ed: 1,
-    the: 1, a: 1, an: 1, of: 1, and: 1, on: 1, at: 1, to: 1 };
-  // parole messe dai siti attorno al titolo
-  var RUMORE = { streaming: 1, guarda: 1, guardare: 1, watch: 1, online: 1, gratis: 1, gratuito: 1, free: 1, hd: 1, fullhd: 1, uhd: 1,
-    '4k': 1, '2160p': 1, '1080p': 1, '720p': 1, '480p': 1, ita: 1, italiano: 1, eng: 1, english: 1, sub: 1, subita: 1, subbed: 1,
-    sottotitoli: 1, sottotitolato: 1, doppiato: 1, dubbed: 1, completo: 1, completa: 1, full: 1, download: 1 };
-  // in testa o in coda al nome non dicono quale opera e' (Film Dune, La casa di carta serie tv)
-  var GENERICHE = { film: 1, movie: 1, serie: 1, series: 1, tv: 1, show: 1, anime: 1, documentario: 1 };
-  // numeri romani e scritti in lettere diventano cifre (Rocky II = Rocky 2, Dune parte due = Dune parte 2)
-  var ROMANI = { ii: '2', iii: '3', iv: '4', vi: '6', vii: '7', viii: '8', ix: '9', xi: '11', xii: '12', xiii: '13',
-    due: '2', tre: '3', quattro: '4', cinque: '5', sei: '6', sette: '7', otto: '8', nove: '9', dieci: '10',
-    two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9', ten: '10' };
-  function parole(s) {
-    s = String(s || '').toLowerCase();
-    for (var i = 0; i < ACCENTI.length; i++) s = s.replace(ACCENTI[i][0], ACCENTI[i][1]);
-    return s.replace(/&/g, ' e ').split(/[^a-z0-9]+/).filter(function (x) { return !!x; });
-  }
-  // il nome del sito: nel titolo non conta (si toglie come frase intera, non parola per parola)
-  function frasiSito(p) {
-    var f = [], h = hostLink(p.url).replace(/^www\./, '').split('.');
-    if (h.length > 1) h.pop();
-    var nome = parole(h.join(' '));
-    if (nome.length) f.push(nome);
-    var primo = parole(h[0] || '');
-    if (primo.length && primo.join(' ') !== nome.join(' ')) f.push(primo);
-    var og = parole(p.ogSito);
-    if (og.length && og.length <= 4) f.push(og);
-    return f;
-  }
-  function togliFrasi(lista, frasi) {
-    for (var k = 0; k < frasi.length; k++) {
-      var fr = frasi[k];
-      for (var i = 0; i + fr.length <= lista.length; i++) {
-        var uguale = true;
-        for (var j = 0; j < fr.length; j++) if (lista[i + j] !== fr[j]) { uguale = false; break; }
-        if (uguale) { lista.splice(i, fr.length); i--; }
+    function crea(o) {
+      o = o || {};
+      function salva(subito) { if (o.salva) o.salva(visti, subito); }
+      function casuale(byte) {
+        if (o.casuale) return o.casuale(byte);
+        for (var s = '', i = 0; i < byte * 2; i++) s += Math.floor(Math.random() * 16).toString(16);
+        return s;
       }
-    }
-    return lista;
-  }
-  // chiave per confrontare: niente rumore, articoli, nome del sito, anno; numeri romani in cifre
-  function chiaveDi(nome, frasi) {
-    var p = togliFrasi(parole(nome), frasi || []), out = [];
-    for (var i = 0; i < p.length; i++) {
-      var w = Object.prototype.hasOwnProperty.call(ROMANI, p[i]) ? ROMANI[p[i]] : p[i];
-      if (VUOTE[w] === 1 || RUMORE[w] === 1 || /^(19[2-9]\d|20[0-4]\d)$/.test(w)) continue;
-      out.push(w);
-    }
-    while (out.length > 1 && GENERICHE[out[0]] === 1) out.shift();
-    while (out.length > 1 && GENERICHE[out[out.length - 1]] === 1) out.pop();
-    // una parola generica da sola ("Film HD", "Serie TV") non dice quale opera e'
-    if (out.length === 1 && GENERICHE[out[0]] === 1) return '';
-    return out.join(' ');
-  }
-  // somiglianza tra due nomi (0..1): coppie di lettere in comune; regge errori di battitura e piccole differenze
-  function coppie(s) {
-    var m = {}, n = 0;
-    s = ' ' + s + ' ';
-    for (var i = 0; i < s.length - 1; i++) { var c = s.substr(i, 2); m[c] = (m[c] || 0) + 1; n++; }
-    return { m: m, n: n };
-  }
-  function somiglianza(a, b) {
-    if (!a || !b) return 0;
-    if (a === b) return 1;
-    var A = coppie(a), B = coppie(b), comuni = 0;
-    for (var k in A.m) if (Object.prototype.hasOwnProperty.call(B.m, k)) comuni += Math.min(A.m[k], B.m[k]);
-    return 2 * comuni / (A.n + B.n);
-  }
-  // stagione e puntata: S01E05, S1 \u00b7 E5, 1x05, Stagione 1 Episodio 5, Season 1 Episode 5, Stag. 1 Ep. 5...
-  var RE_SE = [
-    /\bs(\d{1,2})\s{0,3}[ .:\-_\u00b7\u2022]?\s{0,3}e(?:p\.?)?\s{0,3}(\d{1,4})\b/i,
-    /\b(\d{1,2})\s{0,3}[x\u00d7]\s{0,3}(\d{1,4})\b/i,
-    /\b(?:stagione|stag\.?|st\.?|season)\s*(\d{1,2})\b[^0-9]{0,24}?\b(?:episodio|episode|puntata|ep\.?|e)\s*(\d{1,4})\b/i
-  ];
-  var RE_EP = /\b(?:episodio|episode|puntata|ep\.?)\s*(\d{1,4})\b/i;
-  var RE_STAG = /\b(?:stagione|stag\.?|season)\s*(\d{1,2})\b/i;
-  function trovaSE(t) {
-    t = String(t || '');
-    for (var i = 0; i < RE_SE.length; i++) {
-      var m = RE_SE[i].exec(t);
-      if (m && +m[2] > 0) return { s: +m[1] || null, e: +m[2], prima: t.slice(0, m.index), dopo: t.slice(m.index + m[0].length) };
-    }
-    var e = RE_EP.exec(t);
-    if (!e || !(+e[1] > 0)) return null;
-    var s = RE_STAG.exec(t);
-    var inizio = s && s.index < e.index ? s.index : e.index;
-    return { s: s ? +s[1] || null : null, e: +e[1], prima: t.slice(0, inizio), dopo: t.slice(e.index + e[0].length) };
-  }
-  function togliSE(t) {
-    t = String(t || '');
-    for (var i = 0; i < RE_SE.length; i++) t = t.replace(RE_SE[i], ' ');
-    return t.replace(RE_EP, ' ').replace(RE_STAG, ' ');
-  }
-  // il titolo da mostrare: senza i pezzi che sono il nome del sito o solo rumore ("Il mio film - NomeDelSito HD")
-  var SEPARATORI = /\s+[|\u2013\u2014\-:\u00b7\u2022\u00bb~]+\s+|\s*[|\u2022\u00bb\u00b7]\s*/;
-  function nomePulito(t, frasi) {
-    var pezzi = String(t || '').replace(/\s+/g, ' ').split(SEPARATORI), tenuti = [];
-    for (var i = 0; i < pezzi.length; i++) {
-      var pz = pezzi[i].replace(/^\s+|\s+$/g, '');
-      if (!pz || !chiaveDi(pz, frasi)) continue;
-      // via le parole di rumore (sempre) e il nome del sito
-      var w = pz.split(' '), resto = [];
-      for (var j = 0; j < w.length; j++) {
-        var n = parole(w[j]);
-        if (n.length === 1 && RUMORE[n[0]] === 1) continue;
-        resto.push(w[j]);
+      /* ---------------------------------------------------------- continua a guardare
+       * Il TV ricorda cosa guardi nei siti (film, puntate delle serie) per riprendere da dove eri: una scheda
+       * per film o per serie (l'ultima puntata) su ogni sito, la home ne mostra al massimo 10. Anche cambiando
+       * sito solo con "Riprendi anche su un altro sito" (Impostazioni della home, spenta all'inizio): allora la
+       * scheda passa al sito nuovo e un altro sito propone il punto. Lo stesso sito lo decide solo stessoSito.
+       * La stessa opera si riconosce dal nome (ripulito da nome del sito, "HD", "4K", accenti,
+       * articoli), da stagione e puntata e dalla durata. Le regole, per non sbagliare mai:
+       *  - si riprende da soli solo lo stesso video (stessa pagina e stessa durata) o una scheda scelta
+       *    nella home; su un'altra pagina (o su un altro sito, con l'opzione) si propone e basta
+       *    ("Eri a 22:15 su ...: OK per riprendere");
+       *  - nel dubbio non si unisce e non si propone niente: meglio una scheda in piu' che una sbagliata;
+       *  - un video si ricorda dopo un minuto che lo guardi, e solo se dura almeno 5 minuti (non trailer).
+       */
+      function testo(s, max) {
+        return String(s === undefined || s === null ? '' : s).replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, max);
       }
-      // via anche le parole rimaste appese ("Dune: Parte Due in", "Il Padrino film in")
-      while (resto.length > 1) {
-        var ult = parole(resto[resto.length - 1]);
-        if (ult.length === 1 && (VUOTE[ult[0]] === 1 || GENERICHE[ult[0]] === 1)) resto.pop(); else break;
+      function urlValido(u) {
+        return typeof u === 'string' && u.length <= 2000 && /^https?:\/\/[^\s\/]+\.[^\s]+$/i.test(u);
       }
-      var testoPezzo = resto.join(' ').replace(/[\s(\[]+$/, '').replace(/^\s+|\s+$/g, '');
-      if (testoPezzo && chiaveDi(testoPezzo, frasi)) tenuti.push(testoPezzo);
-    }
-    return tenuti.join(' - ').replace(/\s*[(\[]\s*(19[2-9]\d|20[0-4]\d)\s*[)\]]\s*/g, ' ').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '').slice(0, 80);
-  }
-  function annoDi(t) {
-    var m = /[(\[]\s*(19[2-9]\d|20[0-4]\d)\s*[)\]]/.exec(String(t || ''));
-    return m ? +m[1] : null;
-  }
-  // quello che una pagina dice di se': solo testi corti e numeri (nessuna pagina puo' rallentare o confondere il TV)
-  function paginaPulita(p) {
-    if (!p || typeof p !== 'object' || typeof p.url !== 'string' || !urlValido(p.url)) return null;
-    var ld = p.ld && typeof p.ld === 'object' ? p.ld : {};
-    function n(x) { x = Number(x); return isFinite(x) && x > 0 && x < 100000 ? Math.floor(x) : 0; }
-    return { url: p.url, titolo: testo(p.titolo, 300), og: testo(p.og, 400), ogSito: testo(p.ogSito, 80), h1: testo(p.h1, 200),
-      lettore: testo(p.lettore, 200), video: testo(p.video, 500), immagine: urlValido(p.immagine) ? p.immagine : '',
-      prossimo: urlValido(p.prossimo) ? p.prossimo : '', altro: altroPulito(p.altro),
-      ld: { nome: testo(ld.nome, 200), serie: testo(ld.serie, 200), episodio: n(ld.episodio), stagione: n(ld.stagione), anno: n(ld.anno) } };
-  }
-  // dove altro la pagina dice la puntata (le scritte del lettore, la puntata segnata nell'elenco, il riquadro del video):
-  // al massimo 6 testi corti
-  function altroPulito(a) {
-    var out = [];
-    if (Array.isArray(a)) for (var i = 0; i < a.length && out.length < 6; i++) if (typeof a[i] === 'string' && a[i]) out.push(testo(a[i], 300));
-    return out;
-  }
-  // stagione e puntata nelle domande dell'indirizzo, solo coi nomi giusti: ?season=1&episode=5, ?stagione=1&episodio=5,
-  // ?s=1&e=5 (tutti e due), ?episode=5 da solo. "e" o "ep" da soli sono spesso il codice della puntata, non il numero
-  function domandeSE(u) {
-    var q = senzaAncoraVera(u), k = q.indexOf('?');
-    if (k === -1) return null;
-    q = q.slice(k);
-    var s = /[?&](?:season|stagione|s)=0*(\d{1,2})(?=&|#|$)/i.exec(q), e = /[?&](?:episode|episodio|ep|e)=0*(\d{1,3})(?=&|#|$)/i.exec(q);
-    if (!e || !(+e[1] > 0) || (!s && !/[?&](?:episode|episodio)=/i.test(q))) return null;
-    return { s: s ? +s[1] || null : null, e: +e[1] };
-  }
-  // l'indirizzo di quello che guardi: senza l'ancora, ma i siti fatti a "#/percorso" la tengono (e' la pagina)
-  function senzaAncoraVera(u) {
-    var s = String(u || ''), k = s.indexOf('#');
-    return k === -1 || /^#!?\//.test(s.slice(k)) ? s : s.slice(0, k);
-  }
-  // il percorso dell'indirizzo (senza sito e domande), dove cercare stagione e puntata
-  function percorsoDi(u) {
-    var via = senzaAncoraVera(u).replace(/^https?:\/\/[^\/]+/i, '').replace(/\?[^#]*/, '');
-    try { via = decodeURIComponent(via); } catch (e) {}
-    return via;
-  }
-  // il nome trovato quando stagione e puntata sono solo nell'indirizzo: le sue parole ci devono essere tutte
-  // (se no e' il titolo della puntata, come "Pilot", e non il nome della serie)
-  function nelUrl(k, daUrl) {
-    if (!k) return false;
-    if (!daUrl) return true;
-    var w = k.split(' ');
-    for (var i = 0; i < w.length; i++) if (daUrl.indexOf(' ' + w[i] + ' ') === -1) return false;
-    return true;
-  }
-  // chi e' questo video: { chiave, nome, stagione, episodio, anno, durata }
-  function identita(p, durata) {
-    var frasi = frasiSito(p), ld = p.ld && typeof p.ld === 'object' ? p.ld : {}, daUrl = '';
-    var fonti = [ld.nome, p.og, p.h1, p.lettore, p.titolo], se = null, nome = '', i, x;
-    for (i = 0; i < fonti.length; i++) fonti[i] = fonti[i] ? testo(fonti[i], 400).replace(/\s+/g, ' ') : '';
-    // un h1 uguale al pezzo in fondo al titolo della pagina ("Oppenheimer | NomeDelSito") e' il logo del sito:
-    // non dice cosa guardi (resta pero' nelle altre fonti, dove puo' essere anche il nome della serie)
-    var pezzi = fonti[4].split(SEPARATORI), h1 = parole(fonti[2]).join(' ');
-    for (i = 1; i < pezzi.length && h1; i++) if (parole(pezzi[i]).join(' ') === h1) fonti[2] = '';
-    if (ld.episodio > 0) {
-      se = { s: ld.stagione > 0 ? +ld.stagione : null, e: +ld.episodio };
-      if (ld.serie) nome = testo(ld.serie, 200);
-    }
-    for (i = 0; i < fonti.length && !se; i++) {
-      x = trovaSE(fonti[i]);
-      // il nome della serie e' quello prima di "S01E05" (dopo c'e' di solito il titolo della puntata)
-      if (x) { se = x; nome = chiaveDi(x.prima, frasi) ? x.prima : ''; }
-    }
-    if (!se) {
-      var via = percorsoDi(p.url);
-      x = trovaSE(via.replace(/[\/\-_+.#!]+/g, ' '));
-      if (x) { se = { s: x.s, e: x.e }; daUrl = ' ' + parole(via).join(' ') + ' '; }
-    }
-    // poi le domande dell'indirizzo e quello che la pagina dice altrove: da li' solo i numeri, il nome resta dei titoli
-    if (!se) se = domandeSE(p.url);
-    for (i = 0; i < (p.altro || []).length && !se; i++) { x = trovaSE(p.altro[i]); if (x) se = { s: x.s, e: x.e }; }
-    var anno = ld.anno > 1900 ? +ld.anno : null;
-    if (se) {
-      if (!nome || !chiaveDi(nome, frasi)) {
-        nome = '';
-        // prima il nome davanti a "S01E05" in un altro titolo; poi i titoli senza stagione e puntata (che pero' sono
-        // spesso il titolo della puntata: se stagione e puntata sono solo nell'indirizzo, il nome deve esserci anche li')
-        for (i = 0; i < fonti.length && !nome; i++) { x = trovaSE(fonti[i]); if (x && nelUrl(chiaveDi(x.prima, frasi), daUrl)) nome = x.prima; }
-        for (i = 0; i < fonti.length && !nome; i++) if (fonti[i] && !trovaSE(fonti[i]) && nelUrl(chiaveDi(fonti[i], frasi), daUrl)) nome = fonti[i];
-        for (i = 0; i < fonti.length && !nome; i++) if (fonti[i] && nelUrl(chiaveDi(togliSE(fonti[i]), frasi), daUrl)) nome = togliSE(fonti[i]);
+      function hostLink(u) {
+        var m = /^https?:\/\/(?:[^\/?#@]*@)?([^\/?#:]+)/i.exec(String(u));
+        return m ? m[1].toLowerCase().replace(/\.$/, '') : '';
       }
-      // anche le serie hanno un anno: "Doctor Who (2005)" non e' "Doctor Who (2023)"
-      anno = anno || annoDi(nome);
-      nome = nomePulito(togliSE(nome), frasi);
-    } else {
-      for (i = 0; i < fonti.length; i++) {
-        var n = nomePulito(fonti[i], frasi);
-        if (n) { nome = n; anno = anno || annoDi(fonti[i]); break; }
+      var MAX_SCHEDE = 10, MAX_VISTI = 30, MIN_DURATA = 300, MIN_VISTO = 60;
+      // lo stesso sito? Per ora lo stesso nome, con o senza "www." davanti. E' l'unico posto che lo decide (proposta
+      // "Eri a ...", schede, pagina riaperta dalla home)
+      function stessoSito(a, b) {
+        a = String(a || '').toLowerCase().replace(/^www\./, '');
+        b = String(b || '').toLowerCase().replace(/^www\./, '');
+        return !!a && a === b;
       }
-      // l'anno puo' essere in un'altra fonte ("Il Gladiatore" nell'h1, "(2000)" nel titolo)
-      for (i = 0; i < fonti.length && !anno; i++) anno = annoDi(fonti[i]);
-    }
-    return { chiave: chiaveDi(nome, frasi), nome: nome, stagione: se ? se.s : null, episodio: se ? se.e : null, anno: anno || null,
-      durata: durata };
-  }
-  function urlNorm(u) { return senzaAncoraVera(u).replace(/^https?:\/\/(www\.)?/i, '').replace(/\/+$/, '').toLowerCase(); }
-  // due video diversi della stessa pagina (la pagina dice quale: la sorgente, o il riquadro del lettore)
-  function stessoVideoDi(e, p) { return !(e.video && p.video && e.video !== p.video); }
-  function stessoPosto(e, p) { return urlNorm(e.url) === urlNorm(p.url) && stessoVideoDi(e, p); }
-  function stessaStagione(a, b) {
-    var x = a.stagione || null, y = b.stagione || null;
-    return x === y || (x === null && y === 1) || (x === 1 && y === null);
-  }
-  function numeriDi(k) { return (String(k || '').match(/\d+/g) || []).join(' '); }
-  // uno e' l'altro con parole intere in piu': "Dragon Ball" e "Dragon Ball Z", "Tokyo Ghoul" e "Tokyo Ghoul re" (gli errori
-  // di battitura cambiano lettere, non aggiungono parole)
-  function paroleInPiu(a, b) {
-    var pa = String(a).split(' '), pb = String(b).split(' ');
-    if (pa.length === pb.length) return false;
-    var corta = pa.length < pb.length ? pa : pb, lunga = corta === pa ? pb : pa;
-    for (var i = 0; i < corta.length; i++) if (lunga.indexOf(corta[i]) === -1) return false;
-    return true;
-  }
-  // stessa opera (stesso film, stessa serie)? Nel dubbio: no
-  function stessaOpera(e, id) {
-    if (!e || !id.chiave) return false;
-    if ((e.episodio != null) !== (id.episodio != null)) return false;
-    var chiavi = (e.chiavi || []).concat([e.chiave]), s = 0, i;
-    if (e.titoloMio) chiavi.push(chiaveDi(e.titoloMio));
-    // i numeri devono essere gli stessi: "Rocky" non e' "Rocky II", "Toy Story" non e' "Toy Story 2"
-    for (i = 0; i < chiavi.length; i++) {
-      if (numeriDi(chiavi[i]) === numeriDi(id.chiave) && !paroleInPiu(chiavi[i], id.chiave)) s = Math.max(s, somiglianza(chiavi[i], id.chiave));
-    }
-    var diff = e.durata && id.durata ? Math.abs(e.durata - id.durata) / Math.max(e.durata, id.durata) : null;
-    if (e.anno && id.anno && e.anno !== id.anno) return false; // remake, rifacimenti, serie nuove con lo stesso nome
-    if (id.episodio != null) return s >= 0.86 && (diff === null || diff <= 0.3); // puntate della stessa serie: durata simile
-    if (s < 0.9 || diff === null) return false;
-    // un film: anche la durata deve tornare, cosi' non si confondono il trailer, il remake, la versione estesa.
-    // Con l'anno da tutte e due le parti al massimo 6%; senza, quasi uguale (1,5%) o la versione europea a 25 fotogrammi
-    // (il 4% piu' corta)
-    if (e.anno && id.anno) return diff <= 0.06;
-    return diff <= 0.015 || (diff >= 0.036 && diff <= 0.046);
-  }
-  // la stessa puntata su due siti dura quasi uguale (cambiano sigla e riassunto): massimo 15% di differenza
-  function stessaPuntata(e, id) {
-    if (!stessaOpera(e, id) || e.episodio !== id.episodio || !stessaStagione(e, id)) return false;
-    return !(e.durata && id.durata) || Math.abs(e.durata - id.durata) / Math.max(e.durata, id.durata) <= 0.15;
-  }
-  function nomeSito(p) {
-    var og = testo(p.ogSito, 40).replace(/^\s+|\s+$/g, '');
-    return og || hostLink(p.url).replace(/^www\./, '');
-  }
-  function trovaVisto(id, p) {
-    var i, e;
-    for (i = 0; i < visti.length; i++) {
-      e = visti[i];
-      if (!stessoPosto(e, p)) continue;
-      if (id.episodio == null ? Math.abs((e.durata || 0) - id.durata) <= 3 : (e.episodio === id.episodio && stessaStagione(e, id))) return e;
-      // lo stesso video di una scheda fatta quando stagione e puntata non si leggevano: e' lei, adesso con la puntata
-      if (e.episodio == null && Math.abs((e.durata || 0) - id.durata) <= 3) return e;
-    }
-    // la stessa opera su un'altra pagina: dello stesso sito (con l'opzione anche di un altro, e la scheda passa a lui)
-    for (i = 0; i < visti.length; i++) if (sitoBuono(visti[i], p) && (stessaOpera(visti[i], id) || serieDiPrima(visti[i], id, p))) return visti[i];
-    return null;
-  }
-  // una scheda fatta quando stagione e puntata di quel sito non si leggevano: un'altra puntata della stessa serie, sullo
-  // stesso sito (stesso nome, durata simile), la aggiorna invece di farne una seconda
-  function serieDiPrima(e, id, p) {
-    if (e.episodio != null || id.episodio == null || !id.chiave || !stessoSito(hostLink(e.url), hostLink(p.url))) return false;
-    if (e.anno && id.anno && e.anno !== id.anno) return false;
-    var chiavi = (e.chiavi || []).concat([e.chiave]), s = 0;
-    for (var i = 0; i < chiavi.length; i++) {
-      if (chiavi[i] && numeriDi(chiavi[i]) === numeriDi(id.chiave) && !paroleInPiu(chiavi[i], id.chiave)) s = Math.max(s, somiglianza(chiavi[i], id.chiave));
-    }
-    return s >= 0.9 && !!(e.durata && id.durata) && Math.abs(e.durata - id.durata) / Math.max(e.durata, id.durata) <= 0.15;
-  }
-  function registraVisto(b) {
-    var p = paginaPulita(b.pagina);
-    if (!p) return;
-    var dur = Number(b.durata), pos = Number(b.posizione);
-    if (!isFinite(dur) || dur < MIN_DURATA || dur > 1e6 || !isFinite(pos) || pos < 0) return;
-    var id = identita(p, dur);
-    if (!id.chiave) return;
-    var finito = pos >= dur - Math.max(90, dur * 0.05);
-    // quanto e' stato guardato davvero (lo dicono le pagine): un sito che riprende da solo dal suo punto non e' "visto"
-    var poco = typeof b.guardato === 'number' && b.guardato < MIN_VISTO && b.scelto !== true;
-    var e = trovaVisto(id, p);
-    if (!e) {
-      if ((pos < MIN_VISTO && !finito) || poco) return; // un video aperto per sbaglio non diventa una scheda
-      e = { id: casuale(6), titoloMio: '', chiavi: [] };
-      visti.unshift(e);
-    } else {
-      // nel primo minuto la scheda non cambia (ne' il punto ne' il sito): il video riparte da 0 prima di
-      // riprendere da dov'eri, e una puntata o un sito aperti per sbaglio non contano. Altrove conta anche quanto lo
-      // guardi: il punto di un sito che riprende da solo non cancella quello, piu' avanti, visto su un altro
-      if (pos < MIN_VISTO && !finito) return;
-      if (poco && !stessoPosto(e, p)) return;
-      visti.splice(visti.indexOf(e), 1);
-      visti.unshift(e);
-    }
-    // lo stesso video di prima: stagione e puntata gia' sapute restano anche se questa volta la pagina non le dice
-    if (id.episodio == null && e.episodio != null && stessoPosto(e, p) && Math.abs((e.durata || 0) - id.durata) <= 3) {
-      id.stagione = e.stagione;
-      id.episodio = e.episodio;
-    }
-    // stessa puntata di prima (anche su un altro sito, con l'opzione): vale la puntata dopo saputa prima
-    var stessaDiPrima =!!e.url && id.episodio != null && e.episodio === id.episodio && stessaStagione(e, id);
-    if (e.chiave && e.chiave !== id.chiave && (e.chiavi || []).indexOf(e.chiave) === -1) e.chiavi = (e.chiavi || []).concat([e.chiave]).slice(-4);
-    e.chiave = id.chiave;
-    e.nome = id.nome;
-    e.stagione = id.stagione;
-    e.episodio = id.episodio;
-    if (id.anno) e.anno = id.anno;
-    e.url = senzaAncoraVera(p.url);
-    e.video = p.video;
-    e.sito = nomeSito(p);
-    e.posizione = Math.round(pos);
-    e.durata = Math.round(dur);
-    e.finito = finito;
-    e.quando = Date.now();
-    if (p.immagine) e.immagine = p.immagine;
-    // il titolo della pagina senza il nome del sito: un riferimento scritto sulla scheda quando stagione e puntata non si
-    // riconoscono (cambiando sito si sa almeno cosa cercare)
-    e.rif = nomePulito(p.og || p.titolo, frasiSito(p)).slice(0, 90);
-    // la puntata dopo (solo per le serie): se questa volta il sito non la mostra, vale quella saputa prima
-    var prossimo = id.episodio != null && p.prossimo && urlNorm(p.prossimo) !== urlNorm(p.url) ? p.prossimo : '';
-    if (prossimo || !stessaDiPrima) { e.prossimo = prossimo; e.prossimoSito = prossimo ? nomeSito(p) : ''; }
-    if (visti.length > MAX_VISTI) visti.length = MAX_VISTI;
-    scriviJson(FILE_VISTI, visti);
-  }
-  // quando parte un video: riprendere? (stesso video: da solo; stessa opera su un'altra pagina dello stesso sito, o di un
-  // altro sito con l'opzione: si propone)
-  function cercaVisto(b) {
-    var out = { ok: true }, p = b && typeof b === 'object' ? paginaPulita(b.pagina) : null;
-    if (!p) return out;
-    var dur = Number(b.durata), u = urlNorm(p.url);
-    if (perIntento(p, dur)) {
-      out.continua = { posizione: intentoContinua.posizione };
-      intentoContinua = null;
-      return out;
-    }
-    if (!isFinite(dur) || dur < MIN_DURATA) return out;
-    var id = identita(p, dur), buoni = [], i, e;
-    if (!id.chiave) return out;
-    for (i = 0; i < visti.length; i++) {
-      e = visti[i];
-      if (e.finito || !(e.posizione >= MIN_VISTO) || e.posizione > dur - 60) continue;
-      // lo stesso video (stessa pagina, stessa durata), anche se una delle due volte stagione e puntata non si leggevano
-      if (urlNorm(e.url) === u && stessoVideoDi(e, p) && Math.abs((e.durata || 0) - dur) <= 2 &&
-        (id.episodio == null || e.episodio == null || (e.episodio === id.episodio && stessaStagione(e, id)))) {
-        out.stesso = { posizione: e.posizione };
+      // "Riprendi anche su un altro sito" (spenta all'inizio): se no proposta e schede restano del loro sito
+      function riprendiAltrove() { var p = o.prefs ? o.prefs() : null; return !!p && p.riprendiAltroSito === true; }
+      function sitoBuono(e, p) { return riprendiAltrove() || stessoSito(hostLink(e.url), hostLink(p.url)); }
+      var visti = Array.isArray(o.dati) ? o.dati : [];
+      var intentoContinua = null;
+
+      var ACCENTI = [[/[\u00e0-\u00e5]/g, 'a'], [/[\u00e8-\u00eb]/g, 'e'], [/[\u00ec-\u00ef]/g, 'i'], [/[\u00f2-\u00f6\u00f8]/g, 'o'],
+        [/[\u00f9-\u00fc]/g, 'u'], [/\u00f1/g, 'n'], [/\u00e7/g, 'c'], [/[\u00fd\u00ff]/g, 'y'], [/\u00df/g, 'ss']];
+      // parole che non dicono quale opera e' (articoli, preposizioni)
+      var VUOTE = { il: 1, lo: 1, la: 1, i: 1, gli: 1, le: 1, l: 1, un: 1, uno: 1, una: 1, di: 1, da: 1, del: 1, della: 1, dello: 1, dei: 1,
+        degli: 1, delle: 1, al: 1, allo: 1, alla: 1, ai: 1, agli: 1, alle: 1, su: 1, sul: 1, in: 1, nel: 1, nella: 1, con: 1, per: 1, e: 1, ed: 1,
+        the: 1, a: 1, an: 1, of: 1, and: 1, on: 1, at: 1, to: 1 };
+      // parole messe dai siti attorno al titolo
+      var RUMORE = { streaming: 1, guarda: 1, guardare: 1, watch: 1, online: 1, gratis: 1, gratuito: 1, free: 1, hd: 1, fullhd: 1, uhd: 1,
+        '4k': 1, '2160p': 1, '1080p': 1, '720p': 1, '480p': 1, ita: 1, italiano: 1, eng: 1, english: 1, sub: 1, subita: 1, subbed: 1,
+        sottotitoli: 1, sottotitolato: 1, doppiato: 1, dubbed: 1, completo: 1, completa: 1, full: 1, download: 1 };
+      // in testa o in coda al nome non dicono quale opera e' (Film Dune, La casa di carta serie tv)
+      var GENERICHE = { film: 1, movie: 1, serie: 1, series: 1, tv: 1, show: 1, anime: 1, documentario: 1 };
+      // numeri romani e scritti in lettere diventano cifre (Rocky II = Rocky 2, Dune parte due = Dune parte 2)
+      var ROMANI = { ii: '2', iii: '3', iv: '4', vi: '6', vii: '7', viii: '8', ix: '9', xi: '11', xii: '12', xiii: '13',
+        due: '2', tre: '3', quattro: '4', cinque: '5', sei: '6', sette: '7', otto: '8', nove: '9', dieci: '10',
+        two: '2', three: '3', four: '4', five: '5', six: '6', seven: '7', eight: '8', nine: '9', ten: '10' };
+      function parole(s) {
+        s = String(s || '').toLowerCase();
+        for (var i = 0; i < ACCENTI.length; i++) s = s.replace(ACCENTI[i][0], ACCENTI[i][1]);
+        return s.replace(/&/g, ' e ').split(/[^a-z0-9]+/).filter(function (x) { return !!x; });
+      }
+      // il nome del sito: nel titolo non conta (si toglie come frase intera, non parola per parola)
+      function frasiSito(p) {
+        var f = [], h = hostLink(p.url).replace(/^www\./, '').split('.');
+        if (h.length > 1) h.pop();
+        var nome = parole(h.join(' '));
+        if (nome.length) f.push(nome);
+        var primo = parole(h[0] || '');
+        if (primo.length && primo.join(' ') !== nome.join(' ')) f.push(primo);
+        var og = parole(p.ogSito);
+        if (og.length && og.length <= 4) f.push(og);
+        return f;
+      }
+      function togliFrasi(lista, frasi) {
+        for (var k = 0; k < frasi.length; k++) {
+          var fr = frasi[k];
+          for (var i = 0; i + fr.length <= lista.length; i++) {
+            var uguale = true;
+            for (var j = 0; j < fr.length; j++) if (lista[i + j] !== fr[j]) { uguale = false; break; }
+            if (uguale) { lista.splice(i, fr.length); i--; }
+          }
+        }
+        return lista;
+      }
+      // chiave per confrontare: niente rumore, articoli, nome del sito, anno; numeri romani in cifre
+      function chiaveDi(nome, frasi) {
+        var p = togliFrasi(parole(nome), frasi || []), out = [];
+        for (var i = 0; i < p.length; i++) {
+          var w = Object.prototype.hasOwnProperty.call(ROMANI, p[i]) ? ROMANI[p[i]] : p[i];
+          if (VUOTE[w] === 1 || RUMORE[w] === 1 || /^(19[2-9]\d|20[0-4]\d)$/.test(w)) continue;
+          out.push(w);
+        }
+        while (out.length > 1 && GENERICHE[out[0]] === 1) out.shift();
+        while (out.length > 1 && GENERICHE[out[out.length - 1]] === 1) out.pop();
+        // una parola generica da sola ("Film HD", "Serie TV") non dice quale opera e'
+        if (out.length === 1 && GENERICHE[out[0]] === 1) return '';
+        return out.join(' ');
+      }
+      // somiglianza tra due nomi (0..1): coppie di lettere in comune; regge errori di battitura e piccole differenze
+      function coppie(s) {
+        var m = {}, n = 0;
+        s = ' ' + s + ' ';
+        for (var i = 0; i < s.length - 1; i++) { var c = s.substr(i, 2); m[c] = (m[c] || 0) + 1; n++; }
+        return { m: m, n: n };
+      }
+      function somiglianza(a, b) {
+        if (!a || !b) return 0;
+        if (a === b) return 1;
+        var A = coppie(a), B = coppie(b), comuni = 0;
+        for (var k in A.m) if (Object.prototype.hasOwnProperty.call(B.m, k)) comuni += Math.min(A.m[k], B.m[k]);
+        return 2 * comuni / (A.n + B.n);
+      }
+      // stagione e puntata: S01E05, S1 \u00b7 E5, 1x05, Stagione 1 Episodio 5, Season 1 Episode 5, Stag. 1 Ep. 5...
+      var RE_SE = [
+        /\bs(\d{1,2})\s{0,3}[ .:\-_\u00b7\u2022]?\s{0,3}e(?:p\.?)?\s{0,3}(\d{1,4})\b/i,
+        /\b(\d{1,2})\s{0,3}[x\u00d7]\s{0,3}(\d{1,4})\b/i,
+        /\b(?:stagione|stag\.?|st\.?|season)\s*(\d{1,2})\b[^0-9]{0,24}?\b(?:episodio|episode|puntata|ep\.?|e)\s*(\d{1,4})\b/i
+      ];
+      var RE_EP = /\b(?:episodio|episode|puntata|ep\.?)\s*(\d{1,4})\b/i;
+      var RE_STAG = /\b(?:stagione|stag\.?|season)\s*(\d{1,2})\b/i;
+      function trovaSE(t) {
+        t = String(t || '');
+        for (var i = 0; i < RE_SE.length; i++) {
+          var m = RE_SE[i].exec(t);
+          if (m && +m[2] > 0) return { s: +m[1] || null, e: +m[2], prima: t.slice(0, m.index), dopo: t.slice(m.index + m[0].length) };
+        }
+        var e = RE_EP.exec(t);
+        if (!e || !(+e[1] > 0)) return null;
+        var s = RE_STAG.exec(t);
+        var inizio = s && s.index < e.index ? s.index : e.index;
+        return { s: s ? +s[1] || null : null, e: +e[1], prima: t.slice(0, inizio), dopo: t.slice(e.index + e[0].length) };
+      }
+      function togliSE(t) {
+        t = String(t || '');
+        for (var i = 0; i < RE_SE.length; i++) t = t.replace(RE_SE[i], ' ');
+        return t.replace(RE_EP, ' ').replace(RE_STAG, ' ');
+      }
+      // il titolo da mostrare: senza i pezzi che sono il nome del sito o solo rumore ("Il mio film - NomeDelSito HD")
+      var SEPARATORI = /\s+[|\u2013\u2014\-:\u00b7\u2022\u00bb~]+\s+|\s*[|\u2022\u00bb\u00b7]\s*/;
+      function nomePulito(t, frasi) {
+        var pezzi = String(t || '').replace(/\s+/g, ' ').split(SEPARATORI), tenuti = [];
+        for (var i = 0; i < pezzi.length; i++) {
+          var pz = pezzi[i].replace(/^\s+|\s+$/g, '');
+          if (!pz || !chiaveDi(pz, frasi)) continue;
+          // via le parole di rumore (sempre) e il nome del sito
+          var w = pz.split(' '), resto = [];
+          for (var j = 0; j < w.length; j++) {
+            var n = parole(w[j]);
+            if (n.length === 1 && RUMORE[n[0]] === 1) continue;
+            resto.push(w[j]);
+          }
+          // via anche le parole rimaste appese ("Dune: Parte Due in", "Il Padrino film in")
+          while (resto.length > 1) {
+            var ult = parole(resto[resto.length - 1]);
+            if (ult.length === 1 && (VUOTE[ult[0]] === 1 || GENERICHE[ult[0]] === 1)) resto.pop(); else break;
+          }
+          var testoPezzo = resto.join(' ').replace(/[\s(\[]+$/, '').replace(/^\s+|\s+$/g, '');
+          if (testoPezzo && chiaveDi(testoPezzo, frasi)) tenuti.push(testoPezzo);
+        }
+        return tenuti.join(' - ').replace(/\s*[(\[]\s*(19[2-9]\d|20[0-4]\d)\s*[)\]]\s*/g, ' ').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '').slice(0, 80);
+      }
+      function annoDi(t) {
+        var m = /[(\[]\s*(19[2-9]\d|20[0-4]\d)\s*[)\]]/.exec(String(t || ''));
+        return m ? +m[1] : null;
+      }
+      // quello che una pagina dice di se': solo testi corti e numeri (nessuna pagina puo' rallentare o confondere il TV)
+      function paginaPulita(p) {
+        if (!p || typeof p !== 'object' || typeof p.url !== 'string' || !urlValido(p.url)) return null;
+        var ld = p.ld && typeof p.ld === 'object' ? p.ld : {};
+        function n(x) { x = Number(x); return isFinite(x) && x > 0 && x < 100000 ? Math.floor(x) : 0; }
+        return { url: p.url, titolo: testo(p.titolo, 300), og: testo(p.og, 400), ogSito: testo(p.ogSito, 80), h1: testo(p.h1, 200),
+          lettore: testo(p.lettore, 200), video: testo(p.video, 500), immagine: urlValido(p.immagine) ? p.immagine : '',
+          prossimo: urlValido(p.prossimo) ? p.prossimo : '', altro: altroPulito(p.altro),
+          ld: { nome: testo(ld.nome, 200), serie: testo(ld.serie, 200), episodio: n(ld.episodio), stagione: n(ld.stagione), anno: n(ld.anno) } };
+      }
+      // dove altro la pagina dice la puntata (le scritte del lettore, la puntata segnata nell'elenco, il riquadro del video):
+      // al massimo 6 testi corti
+      function altroPulito(a) {
+        var out = [];
+        if (Array.isArray(a)) for (var i = 0; i < a.length && out.length < 6; i++) if (typeof a[i] === 'string' && a[i]) out.push(testo(a[i], 300));
         return out;
       }
-      if (sitoBuono(e, p) && (id.episodio != null ? stessaPuntata(e, id) : stessaOpera(e, id))) buoni.push(e);
-    }
-    // una sola possibilita' (o tutte allo stesso punto): si propone; se no, niente
-    if (buoni.length && buoni.every(function (x) { return Math.abs(x.posizione - buoni[0].posizione) < 30; })) {
-      e = buoni[0];
-      out.proposta = { posizione: e.posizione, sito: e.sito || hostLink(e.url), titolo: titoloScheda(e) };
-    }
-    return out;
-  }
-  // e' il video scelto in "Continua a guardare"? Stesso indirizzo; oppure, appena scelto, lo stesso sito con
-  // un indirizzo cambiato strada facendo (un reindirizzamento), ma solo se e' proprio quella cosa
-  function perIntento(p, dur) {
-    var it = intentoContinua, e = null, i;
-    if (!it || Date.now() >= it.scade) return false;
-    if (urlNorm(it.url) === urlNorm(p.url)) {
-      // la stessa pagina puo' far partire prima un altro video lungo (un trailer, un'altra puntata): deve essere quello
-      return it.prossima || (Math.abs((it.durata || 0) - dur) <= 3 && !(it.video && p.video && it.video !== p.video));
-    }
-    if (Date.now() - it.creato > 60000 || !isFinite(dur) || dur < MIN_DURATA) return false;
-    if (!stessoSito(hostLink(it.url), hostLink(p.url))) return false;
-    for (i = 0; i < visti.length; i++) if (visti[i].id === it.id) e = visti[i];
-    var id = identita(p, dur);
-    if (!e || !id.chiave) return false;
-    return it.prossima ? stessaOpera(e, id) : stessaPuntata(e, id);
-  }
-  function titoloScheda(e) {
-    var n = e.titoloMio || e.nome || '';
-    if (e.episodio != null) n += ' \u00b7 ' + (e.stagione ? 'S' + e.stagione + ' E' + e.episodio : 'Puntata ' + e.episodio);
-    return n;
-  }
-  // stagione e puntata della puntata dopo (dopo la 10 puo' venire la 1 della stagione dopo): dal suo indirizzo; se no,
-  // se il suo indirizzo e' quello di questa con un numero solo cresciuto di uno ("/2/5" -> "/2/6"), la puntata dopo nella
-  // stessa stagione; se no non si sa e la scheda dice solo "Prossima puntata"
-  function puntataDopo(e) {
-    var x = trovaSE(percorsoDi(e.prossimo).replace(/[\/\-_+.#!]+/g, ' '));
-    if (x) return { s: x.s, e: x.e };
-    if (e.episodio == null) return null;
-    var a = percorsoDi(e.url).match(/\d+/g) || [], b = percorsoDi(e.prossimo).match(/\d+/g) || [], diversi = 0, cresciuto = false;
-    if (a.length !== b.length) return null;
-    for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) { diversi++; cresciuto = +b[i] === +a[i] + 1; }
-    return diversi === 1 && cresciuto ? { s: e.stagione, e: e.episodio + 1 } : null;
-  }
-  function vistiPerHome() {
-    var out = [];
-    for (var i = 0; i < visti.length && out.length < MAX_SCHEDE; i++) {
-      var e = visti[i];
-      var s = { id: e.id, nome: e.titoloMio || e.nome, stagione: e.stagione, episodio: e.episodio, anno: e.anno || null, sito: e.sito,
-        immagine: e.immagine || '', posizione: e.posizione, durata: e.durata, url: e.url, quando: e.quando, rinominato: !!e.titoloMio,
-        rif: e.rif || '' };
-      if (e.finito) {
-        if (!e.prossimo) continue;
-        // puntata finita: la scheda propone la prossima
-        s.url = e.prossimo;
-        s.posizione = 0;
-        s.prossima = true;
-        s.rif = '';
-        s.sito = e.prossimoSito || hostLink(e.prossimo).replace(/^www\./, '');
-        var dopo = puntataDopo(e);
-        s.stagione = dopo ? dopo.s : null;
-        s.episodio = dopo ? dopo.e : null;
+      // stagione e puntata nelle domande dell'indirizzo, solo coi nomi giusti: ?season=1&episode=5, ?stagione=1&episodio=5,
+      // ?s=1&e=5 (tutti e due), ?episode=5 da solo. "e" o "ep" da soli sono spesso il codice della puntata, non il numero
+      function domandeSE(u) {
+        var q = senzaAncoraVera(u), k = q.indexOf('?');
+        if (k === -1) return null;
+        q = q.slice(k);
+        var s = /[?&](?:season|stagione|s)=0*(\d{1,2})(?=&|#|$)/i.exec(q), e = /[?&](?:episode|episodio|ep|e)=0*(\d{1,3})(?=&|#|$)/i.exec(q);
+        if (!e || !(+e[1] > 0) || (!s && !/[?&](?:episode|episodio)=/i.test(q))) return null;
+        return { s: s ? +s[1] || null : null, e: +e[1] };
       }
-      out.push(s);
+      // l'indirizzo di quello che guardi: senza l'ancora, ma i siti fatti a "#/percorso" la tengono (e' la pagina)
+      function senzaAncoraVera(u) {
+        var s = String(u || ''), k = s.indexOf('#');
+        return k === -1 || /^#!?\//.test(s.slice(k)) ? s : s.slice(0, k);
+      }
+      // il percorso dell'indirizzo (senza sito e domande), dove cercare stagione e puntata
+      function percorsoDi(u) {
+        var via = senzaAncoraVera(u).replace(/^https?:\/\/[^\/]+/i, '').replace(/\?[^#]*/, '');
+        try { via = decodeURIComponent(via); } catch (e) {}
+        return via;
+      }
+      // il nome trovato quando stagione e puntata sono solo nell'indirizzo: le sue parole ci devono essere tutte
+      // (se no e' il titolo della puntata, come "Pilot", e non il nome della serie)
+      function nelUrl(k, daUrl) {
+        if (!k) return false;
+        if (!daUrl) return true;
+        var w = k.split(' ');
+        for (var i = 0; i < w.length; i++) if (daUrl.indexOf(' ' + w[i] + ' ') === -1) return false;
+        return true;
+      }
+      // chi e' questo video: { chiave, nome, stagione, episodio, anno, durata }
+      function identita(p, durata) {
+        var frasi = frasiSito(p), ld = p.ld && typeof p.ld === 'object' ? p.ld : {}, daUrl = '';
+        var fonti = [ld.nome, p.og, p.h1, p.lettore, p.titolo], se = null, nome = '', i, x;
+        for (i = 0; i < fonti.length; i++) fonti[i] = fonti[i] ? testo(fonti[i], 400).replace(/\s+/g, ' ') : '';
+        // un h1 uguale al pezzo in fondo al titolo della pagina ("Oppenheimer | NomeDelSito") e' il logo del sito:
+        // non dice cosa guardi (resta pero' nelle altre fonti, dove puo' essere anche il nome della serie)
+        var pezzi = fonti[4].split(SEPARATORI), h1 = parole(fonti[2]).join(' ');
+        for (i = 1; i < pezzi.length && h1; i++) if (parole(pezzi[i]).join(' ') === h1) fonti[2] = '';
+        if (ld.episodio > 0) {
+          se = { s: ld.stagione > 0 ? +ld.stagione : null, e: +ld.episodio };
+          if (ld.serie) nome = testo(ld.serie, 200);
+        }
+        for (i = 0; i < fonti.length && !se; i++) {
+          x = trovaSE(fonti[i]);
+          // il nome della serie e' quello prima di "S01E05" (dopo c'e' di solito il titolo della puntata)
+          if (x) { se = x; nome = chiaveDi(x.prima, frasi) ? x.prima : ''; }
+        }
+        if (!se) {
+          var via = percorsoDi(p.url);
+          x = trovaSE(via.replace(/[\/\-_+.#!]+/g, ' '));
+          if (x) { se = { s: x.s, e: x.e }; daUrl = ' ' + parole(via).join(' ') + ' '; }
+        }
+        // poi le domande dell'indirizzo e quello che la pagina dice altrove: da li' solo i numeri, il nome resta dei titoli
+        if (!se) se = domandeSE(p.url);
+        for (i = 0; i < (p.altro || []).length && !se; i++) { x = trovaSE(p.altro[i]); if (x) se = { s: x.s, e: x.e }; }
+        var anno = ld.anno > 1900 ? +ld.anno : null;
+        if (se) {
+          if (!nome || !chiaveDi(nome, frasi)) {
+            nome = '';
+            // prima il nome davanti a "S01E05" in un altro titolo; poi i titoli senza stagione e puntata (che pero' sono
+            // spesso il titolo della puntata: se stagione e puntata sono solo nell'indirizzo, il nome deve esserci anche li')
+            for (i = 0; i < fonti.length && !nome; i++) { x = trovaSE(fonti[i]); if (x && nelUrl(chiaveDi(x.prima, frasi), daUrl)) nome = x.prima; }
+            for (i = 0; i < fonti.length && !nome; i++) if (fonti[i] && !trovaSE(fonti[i]) && nelUrl(chiaveDi(fonti[i], frasi), daUrl)) nome = fonti[i];
+            for (i = 0; i < fonti.length && !nome; i++) if (fonti[i] && nelUrl(chiaveDi(togliSE(fonti[i]), frasi), daUrl)) nome = togliSE(fonti[i]);
+          }
+          // anche le serie hanno un anno: "Doctor Who (2005)" non e' "Doctor Who (2023)"
+          anno = anno || annoDi(nome);
+          nome = nomePulito(togliSE(nome), frasi);
+        } else {
+          for (i = 0; i < fonti.length; i++) {
+            var n = nomePulito(fonti[i], frasi);
+            if (n) { nome = n; anno = anno || annoDi(fonti[i]); break; }
+          }
+          // l'anno puo' essere in un'altra fonte ("Il Gladiatore" nell'h1, "(2000)" nel titolo)
+          for (i = 0; i < fonti.length && !anno; i++) anno = annoDi(fonti[i]);
+        }
+        return { chiave: chiaveDi(nome, frasi), nome: nome, stagione: se ? se.s : null, episodio: se ? se.e : null, anno: anno || null,
+          durata: durata };
+      }
+      function urlNorm(u) { return senzaAncoraVera(u).replace(/^https?:\/\/(www\.)?/i, '').replace(/\/+$/, '').toLowerCase(); }
+      // due video diversi della stessa pagina (la pagina dice quale: la sorgente, o il riquadro del lettore)
+      function stessoVideoDi(e, p) { return !(e.video && p.video && e.video !== p.video); }
+      function stessoPosto(e, p) { return urlNorm(e.url) === urlNorm(p.url) && stessoVideoDi(e, p); }
+      function stessaStagione(a, b) {
+        var x = a.stagione || null, y = b.stagione || null;
+        return x === y || (x === null && y === 1) || (x === 1 && y === null);
+      }
+      function numeriDi(k) { return (String(k || '').match(/\d+/g) || []).join(' '); }
+      // uno e' l'altro con parole intere in piu': "Dragon Ball" e "Dragon Ball Z", "Tokyo Ghoul" e "Tokyo Ghoul re" (gli errori
+      // di battitura cambiano lettere, non aggiungono parole)
+      function paroleInPiu(a, b) {
+        var pa = String(a).split(' '), pb = String(b).split(' ');
+        if (pa.length === pb.length) return false;
+        var corta = pa.length < pb.length ? pa : pb, lunga = corta === pa ? pb : pa;
+        for (var i = 0; i < corta.length; i++) if (lunga.indexOf(corta[i]) === -1) return false;
+        return true;
+      }
+      // stessa opera (stesso film, stessa serie)? Nel dubbio: no
+      function stessaOpera(e, id) {
+        if (!e || !id.chiave) return false;
+        if ((e.episodio != null) !== (id.episodio != null)) return false;
+        var chiavi = (e.chiavi || []).concat([e.chiave]), s = 0, i;
+        if (e.titoloMio) chiavi.push(chiaveDi(e.titoloMio));
+        // i numeri devono essere gli stessi: "Rocky" non e' "Rocky II", "Toy Story" non e' "Toy Story 2"
+        for (i = 0; i < chiavi.length; i++) {
+          if (numeriDi(chiavi[i]) === numeriDi(id.chiave) && !paroleInPiu(chiavi[i], id.chiave)) s = Math.max(s, somiglianza(chiavi[i], id.chiave));
+        }
+        var diff = e.durata && id.durata ? Math.abs(e.durata - id.durata) / Math.max(e.durata, id.durata) : null;
+        if (e.anno && id.anno && e.anno !== id.anno) return false; // remake, rifacimenti, serie nuove con lo stesso nome
+        if (id.episodio != null) return s >= 0.86 && (diff === null || diff <= 0.3); // puntate della stessa serie: durata simile
+        if (s < 0.9 || diff === null) return false;
+        // un film: anche la durata deve tornare, cosi' non si confondono il trailer, il remake, la versione estesa.
+        // Con l'anno da tutte e due le parti al massimo 6%; senza, quasi uguale (1,5%) o la versione europea a 25 fotogrammi
+        // (il 4% piu' corta)
+        if (e.anno && id.anno) return diff <= 0.06;
+        return diff <= 0.015 || (diff >= 0.036 && diff <= 0.046);
+      }
+      // la stessa puntata su due siti dura quasi uguale (cambiano sigla e riassunto): massimo 15% di differenza
+      function stessaPuntata(e, id) {
+        if (!stessaOpera(e, id) || e.episodio !== id.episodio || !stessaStagione(e, id)) return false;
+        return !(e.durata && id.durata) || Math.abs(e.durata - id.durata) / Math.max(e.durata, id.durata) <= 0.15;
+      }
+      function nomeSito(p) {
+        var og = testo(p.ogSito, 40).replace(/^\s+|\s+$/g, '');
+        return og || hostLink(p.url).replace(/^www\./, '');
+      }
+      function trovaVisto(id, p) {
+        var i, e;
+        for (i = 0; i < visti.length; i++) {
+          e = visti[i];
+          if (!stessoPosto(e, p)) continue;
+          if (id.episodio == null ? Math.abs((e.durata || 0) - id.durata) <= 3 : (e.episodio === id.episodio && stessaStagione(e, id))) return e;
+          // lo stesso video di una scheda fatta quando stagione e puntata non si leggevano: e' lei, adesso con la puntata
+          if (e.episodio == null && Math.abs((e.durata || 0) - id.durata) <= 3) return e;
+        }
+        // la stessa opera su un'altra pagina: dello stesso sito (con l'opzione anche di un altro, e la scheda passa a lui)
+        for (i = 0; i < visti.length; i++) if (sitoBuono(visti[i], p) && (stessaOpera(visti[i], id) || serieDiPrima(visti[i], id, p))) return visti[i];
+        return null;
+      }
+      // una scheda fatta quando stagione e puntata di quel sito non si leggevano: un'altra puntata della stessa serie, sullo
+      // stesso sito (stesso nome, durata simile), la aggiorna invece di farne una seconda
+      function serieDiPrima(e, id, p) {
+        if (e.episodio != null || id.episodio == null || !id.chiave || !stessoSito(hostLink(e.url), hostLink(p.url))) return false;
+        if (e.anno && id.anno && e.anno !== id.anno) return false;
+        var chiavi = (e.chiavi || []).concat([e.chiave]), s = 0;
+        for (var i = 0; i < chiavi.length; i++) {
+          if (chiavi[i] && numeriDi(chiavi[i]) === numeriDi(id.chiave) && !paroleInPiu(chiavi[i], id.chiave)) s = Math.max(s, somiglianza(chiavi[i], id.chiave));
+        }
+        return s >= 0.9 && !!(e.durata && id.durata) && Math.abs(e.durata - id.durata) / Math.max(e.durata, id.durata) <= 0.15;
+      }
+      function registraVisto(b) {
+        var p = paginaPulita(b.pagina);
+        if (!p) return;
+        var dur = Number(b.durata), pos = Number(b.posizione);
+        if (!isFinite(dur) || dur < MIN_DURATA || dur > 1e6 || !isFinite(pos) || pos < 0) return;
+        var id = identita(p, dur);
+        if (!id.chiave) return;
+        var finito = pos >= dur - Math.max(90, dur * 0.05);
+        // quanto e' stato guardato davvero (lo dicono le pagine): un sito che riprende da solo dal suo punto non e' "visto"
+        var poco = typeof b.guardato === 'number' && b.guardato < MIN_VISTO && b.scelto !== true;
+        var e = trovaVisto(id, p);
+        if (!e) {
+          if ((pos < MIN_VISTO && !finito) || poco) return; // un video aperto per sbaglio non diventa una scheda
+          e = { id: casuale(6), titoloMio: '', chiavi: [] };
+          visti.unshift(e);
+        } else {
+          // nel primo minuto la scheda non cambia (ne' il punto ne' il sito): il video riparte da 0 prima di
+          // riprendere da dov'eri, e una puntata o un sito aperti per sbaglio non contano. Altrove conta anche quanto lo
+          // guardi: il punto di un sito che riprende da solo non cancella quello, piu' avanti, visto su un altro
+          if (pos < MIN_VISTO && !finito) return;
+          if (poco && !stessoPosto(e, p)) return;
+          visti.splice(visti.indexOf(e), 1);
+          visti.unshift(e);
+        }
+        // lo stesso video di prima: stagione e puntata gia' sapute restano anche se questa volta la pagina non le dice
+        if (id.episodio == null && e.episodio != null && stessoPosto(e, p) && Math.abs((e.durata || 0) - id.durata) <= 3) {
+          id.stagione = e.stagione;
+          id.episodio = e.episodio;
+        }
+        // stessa puntata di prima (anche su un altro sito, con l'opzione): vale la puntata dopo saputa prima
+        var stessaDiPrima =!!e.url && id.episodio != null && e.episodio === id.episodio && stessaStagione(e, id);
+        if (e.chiave && e.chiave !== id.chiave && (e.chiavi || []).indexOf(e.chiave) === -1) e.chiavi = (e.chiavi || []).concat([e.chiave]).slice(-4);
+        e.chiave = id.chiave;
+        e.nome = id.nome;
+        e.stagione = id.stagione;
+        e.episodio = id.episodio;
+        if (id.anno) e.anno = id.anno;
+        e.url = senzaAncoraVera(p.url);
+        e.video = p.video;
+        e.sito = nomeSito(p);
+        e.posizione = Math.round(pos);
+        e.durata = Math.round(dur);
+        e.finito = finito;
+        e.quando = Date.now();
+        if (p.immagine) e.immagine = p.immagine;
+        // il titolo della pagina senza il nome del sito: un riferimento scritto sulla scheda quando stagione e puntata non si
+        // riconoscono (cambiando sito si sa almeno cosa cercare)
+        e.rif = nomePulito(p.og || p.titolo, frasiSito(p)).slice(0, 90);
+        // la puntata dopo (solo per le serie): se questa volta il sito non la mostra, vale quella saputa prima
+        var prossimo = id.episodio != null && p.prossimo && urlNorm(p.prossimo) !== urlNorm(p.url) ? p.prossimo : '';
+        if (prossimo || !stessaDiPrima) { e.prossimo = prossimo; e.prossimoSito = prossimo ? nomeSito(p) : ''; }
+        if (visti.length > MAX_VISTI) visti.length = MAX_VISTI;
+        salva(false);
+      }
+      // quando parte un video: riprendere? (stesso video: da solo; stessa opera su un'altra pagina dello stesso sito, o di un
+      // altro sito con l'opzione: si propone)
+      function cercaVisto(b) {
+        var out = { ok: true }, p = b && typeof b === 'object' ? paginaPulita(b.pagina) : null;
+        if (!p) return out;
+        var dur = Number(b.durata), u = urlNorm(p.url);
+        if (perIntento(p, dur)) {
+          out.continua = { posizione: intentoContinua.posizione };
+          intentoContinua = null;
+          return out;
+        }
+        if (!isFinite(dur) || dur < MIN_DURATA) return out;
+        var id = identita(p, dur), buoni = [], i, e;
+        if (!id.chiave) return out;
+        for (i = 0; i < visti.length; i++) {
+          e = visti[i];
+          if (e.finito || !(e.posizione >= MIN_VISTO) || e.posizione > dur - 60) continue;
+          // lo stesso video (stessa pagina, stessa durata), anche se una delle due volte stagione e puntata non si leggevano
+          if (urlNorm(e.url) === u && stessoVideoDi(e, p) && Math.abs((e.durata || 0) - dur) <= 2 &&
+            (id.episodio == null || e.episodio == null || (e.episodio === id.episodio && stessaStagione(e, id)))) {
+            out.stesso = { posizione: e.posizione };
+            return out;
+          }
+          if (sitoBuono(e, p) && (id.episodio != null ? stessaPuntata(e, id) : stessaOpera(e, id))) buoni.push(e);
+        }
+        // una sola possibilita' (o tutte allo stesso punto): si propone; se no, niente
+        if (buoni.length && buoni.every(function (x) { return Math.abs(x.posizione - buoni[0].posizione) < 30; })) {
+          e = buoni[0];
+          out.proposta = { posizione: e.posizione, sito: e.sito || hostLink(e.url), titolo: titoloScheda(e) };
+        }
+        return out;
+      }
+      // e' il video scelto in "Continua a guardare"? Stesso indirizzo; oppure, appena scelto, lo stesso sito con
+      // un indirizzo cambiato strada facendo (un reindirizzamento), ma solo se e' proprio quella cosa
+      function perIntento(p, dur) {
+        var it = intentoContinua, e = null, i;
+        if (!it || Date.now() >= it.scade) return false;
+        if (urlNorm(it.url) === urlNorm(p.url)) {
+          // la stessa pagina puo' far partire prima un altro video lungo (un trailer, un'altra puntata): deve essere quello
+          return it.prossima || (Math.abs((it.durata || 0) - dur) <= 3 && !(it.video && p.video && it.video !== p.video));
+        }
+        if (Date.now() - it.creato > 60000 || !isFinite(dur) || dur < MIN_DURATA) return false;
+        if (!stessoSito(hostLink(it.url), hostLink(p.url))) return false;
+        for (i = 0; i < visti.length; i++) if (visti[i].id === it.id) e = visti[i];
+        var id = identita(p, dur);
+        if (!e || !id.chiave) return false;
+        return it.prossima ? stessaOpera(e, id) : stessaPuntata(e, id);
+      }
+      function titoloScheda(e) {
+        var n = e.titoloMio || e.nome || '';
+        if (e.episodio != null) n += ' \u00b7 ' + (e.stagione ? 'S' + e.stagione + ' E' + e.episodio : 'Puntata ' + e.episodio);
+        return n;
+      }
+      // stagione e puntata della puntata dopo (dopo la 10 puo' venire la 1 della stagione dopo): dal suo indirizzo; se no,
+      // se il suo indirizzo e' quello di questa con un numero solo cresciuto di uno ("/2/5" -> "/2/6"), la puntata dopo nella
+      // stessa stagione; se no non si sa e la scheda dice solo "Prossima puntata"
+      function puntataDopo(e) {
+        var x = trovaSE(percorsoDi(e.prossimo).replace(/[\/\-_+.#!]+/g, ' '));
+        if (x) return { s: x.s, e: x.e };
+        if (e.episodio == null) return null;
+        var a = percorsoDi(e.url).match(/\d+/g) || [], b = percorsoDi(e.prossimo).match(/\d+/g) || [], diversi = 0, cresciuto = false;
+        if (a.length !== b.length) return null;
+        for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) { diversi++; cresciuto = +b[i] === +a[i] + 1; }
+        return diversi === 1 && cresciuto ? { s: e.stagione, e: e.episodio + 1 } : null;
+      }
+      function vistiPerHome() {
+        var out = [];
+        for (var i = 0; i < visti.length && out.length < MAX_SCHEDE; i++) {
+          var e = visti[i];
+          var s = { id: e.id, nome: e.titoloMio || e.nome, stagione: e.stagione, episodio: e.episodio, anno: e.anno || null, sito: e.sito,
+            immagine: e.immagine || '', posizione: e.posizione, durata: e.durata, url: e.url, quando: e.quando, rinominato: !!e.titoloMio,
+            rif: e.rif || '' };
+          if (e.finito) {
+            if (!e.prossimo) continue;
+            // puntata finita: la scheda propone la prossima
+            s.url = e.prossimo;
+            s.posizione = 0;
+            s.prossima = true;
+            s.rif = '';
+            s.sito = e.prossimoSito || hostLink(e.prossimo).replace(/^www\./, '');
+            var dopo = puntataDopo(e);
+            s.stagione = dopo ? dopo.s : null;
+            s.episodio = dopo ? dopo.e : null;
+          }
+          out.push(s);
+        }
+        return out;
+      }
+      function cambiaVisti(azione, b) {
+        if (azione === 'svuota') { visti = []; intentoContinua = null; salva(true); return { ok: true }; }
+        var e = null, i;
+        for (i = 0; i < visti.length; i++) if (visti[i].id === b.id) { e = visti[i]; break; }
+        if (!e) return { ok: false, error: 'non trovato' };
+        if (azione === 'riprendi') {
+          var url = e.finito && e.prossimo ? e.prossimo : e.url;
+          intentoContinua = { url: url, posizione: b.daCapo || (e.finito && e.prossimo) ? 0 : e.posizione, id: e.id, durata: e.durata,
+            video: e.video || '', prossima: !!(e.finito && e.prossimo), creato: Date.now(), scade: Date.now() + 120000 };
+          return { ok: true, url: url };
+        }
+        if (azione === 'togli') visti.splice(i, 1);
+        else if (azione === 'rinomina') e.titoloMio = testo(b.titolo, 80).replace(/^\s+|\s+$/g, '');
+        else if (azione === 'visto') e.finito = true;
+        salva(true);
+        return { ok: true };
+      }
+
+      return {
+        registra: function (b) { registraVisto(b); },
+        cerca: cercaVisto,
+        perHome: function () { return { visti: vistiPerHome(), totale: visti.length }; },
+        cambia: cambiaVisti,
+        riproduci: function (url) {
+          intentoContinua = { url: url, posizione: 0, id: '', durata: 0, video: '', prossima: false, riproduci: true,
+            creato: Date.now(), scade: Date.now() + 120000 };
+        },
+        intento: function () {
+          var it = intentoContinua;
+          if (!it || Date.now() >= it.scade) return null;
+          return { url: it.url, posizione: it.posizione, fresco: Date.now() - it.creato < 30000, riproduci: !!it.riproduci };
+        }
+      };
     }
-    return out;
+
+    return { crea: crea };
+  })();
+  /* </visti:generato> */
+  var FILE_VISTI = pathLib.join(CACHE_DIR, 'hometv-visti.json');
+  var visti = VistiTV.crea({ dati: leggiJson(FILE_VISTI, []), salva: function (l, subito) { scriviJson(FILE_VISTI, l, subito); },
+    prefs: function () { return prefs; }, casuale: casuale });
+
+  /* ---------------------------------------------------------- l'app Video: i film delle chiavette
+   * La logica e' in tv-sito/videoteca.js (qui la sua copia). Le domande /api/video/g/<gettone>/... le fa solo l'app
+   * ufficiale dello Store col permesso "video": il gettone lo chiede la home (con la sua chiave) quando la apre e lo
+   * toglie quando la chiude. Sola lettura, mai fuori dai punti di montaggio delle chiavette. */
+  /* <videoteca:generato> copia di tv-sito/videoteca.js (prove/incorpora_videoteca.py): non modificare qui */
+  /*
+   * Home TV - VIDEOTECA: i video delle chiavette e dei dischi USB attaccati al TV, per l'app Video dello Store.
+   * Si modifica SOLO questo file; service.js (Samsung e LG) ne ha una copia tra i segnaposto <videoteca:generato>, messa da
+   * prove/incorpora_videoteca.py (le prove controllano che sia uguale).
+   *
+   * Legge cartelle e file (solo lettura, mai fuori dai punti di montaggio), capisce com'e' fatto un video (MKV, WebM, MP4:
+   * durata, tracce, capitoli, HDR) e lo serve al <video> del TV con le richieste Range. Le tracce che il TV non legge
+   * (DTS, TrueHD) o che non servono (gli altri audio; i sottotitoli, che disegna l'app) spariscono senza copiare niente:
+   * nel MKV un blocco diventa un elemento Void cambiando un solo byte (0xA3, 0xA0, 0xAE -> 0xEC: la dimensione resta e i
+   * dati restano, il lettore li salta), nell'MP4 una traccia diventa un riquadro "free" (4 byte). Il file servito ha la
+   * stessa lunghezza e gli stessi indirizzi del vero: Range, indici (Cues) e salti funzionano come col file vero.
+   * I sottotitoli (testo e PGS) si raccolgono dai blocchi che passano e, se le Cues li indicano, si leggono tutti subito.
+   *
+   *   var vt = Videoteca.crea({ fs, path, zlib, radici: ['/opt/media'], letti: function () { return ProfiloTV.videoLetti(f); } });
+   *   vt.dischi(cb)  vt.cartella(d, p, cb)  vt.info(d, p, scelte, cb)  vt.servi(req, res, d, p, scelte)
+   *   vt.sotto(d, p, traccia, da, cb)  vt.sottoEsterni(d, p, cb)  vt.prova(cb) (per "Questo TV")
+   *   var g = Videoteca.gettoni(crypto)     g.nuovo() -> { gettone, scade }; g.valido(x); g.togli(x)
+   *   Videoteca.gestisci(vt, g, req, res, url, { punto: fn })   le domande /api/video/g/<gettone>/... (true = risposto)
+   *
+   * Gli errori hanno err.codice: 'disco' (chiavetta non trovata), 'percorso', 'permesso', 'formato', 'assente'.
+   * Solo ES5 e solo ASCII; va da Node 4.4.3 (TV 2017-2019) in su.
+   */
+  var Videoteca = (function () {
+    'use strict';
+
+    /* ============================================================ byte e numeri */
+
+    function nuovo(n) { return typeof Buffer.allocUnsafe === 'function' ? Buffer.allocUnsafe(n) : new Buffer(n); }
+    function unisci(a, b) {
+      if (!a || !a.length) return b;
+      if (!b || !b.length) return a;
+      return Buffer.concat([a, b], a.length + b.length);
+    }
+    function copia(b) { var c = nuovo(b.length); b.copy(c); return c; }
+    function uint(b, i, n) { var v = 0; for (var k = 0; k < n; k++) v = v * 256 + b[i + k]; return v; }
+    function float(b, i, n) { return n === 4 ? b.readFloatBE(i) : n === 8 ? b.readDoubleBE(i) : 0; }
+    function stringa(b, i, n) {
+      var s = b.toString('utf8', i, i + n), z = s.indexOf('\u0000');
+      return z === -1 ? s : s.slice(0, z);
+    }
+    function errore(codice, testo) { var e = new Error(testo || codice); e.codice = codice; return e; }
+    // tetti per i file fatti male (o apposta): nessun file deve fermare il servizio del TV o riempirgli la memoria.
+    // Cues al massimo 8 MB e 100000 punti (un film vero: meno di 2 MB e 10000); sottotitoli compressi gonfiati al massimo
+    // 256 KB (testo) o 4 MB (un'immagine PGS); sottotitoli tenuti al massimo 16 MB per tutti i file, 2 MB di testo a traccia
+    var MAX_CUES = 8 << 20, MAX_PUNTI = 100000, MAX_CONFINI = 200000, MAX_GONFIO_TESTO = 256 << 10, MAX_GONFIO_PGS = 4 << 20;
+    var MAX_SOTTO_TOT = 16 << 20, MAX_TESTO_TRACCIA = 2 << 20, MAX_CODA_GONFIO = 2000, FINESTRA_PGS = 120000, FINESTRA_TESTO = 600000;
+    // al massimo 20000 eventi per traccia (un film vero ne ha meno di 5000): tanti sottotitoli minuscoli non fermano il servizio
+    var MAX_EVENTI = 20000;
+
+    /* ============================================================ EBML (Matroska, WebM) */
+
+    // un ID (1-4 byte, col marcatore): { id, n }; null se mancano byte; id -1 se non e' un ID
+    function leggiId(b, i) {
+      if (i >= b.length) return null;
+      var c = b[i], n = c & 0x80 ? 1 : c & 0x40 ? 2 : c & 0x20 ? 3 : c & 0x10 ? 4 : 0;
+      if (!n) return { id: -1, n: 1 };
+      if (i + n > b.length) return null;
+      return { id: uint(b, i, n), n: n };
+    }
+    // un numero a lunghezza variabile (dimensioni, numero di traccia): { v, n, ignota }; null se mancano byte
+    function leggiVint(b, i) {
+      if (i >= b.length) return null;
+      var c = b[i], n = 1, m = 0x80;
+      while (n <= 8 && !(c & m)) { n++; m >>= 1; }
+      if (n > 8) return { v: -1, n: 1, rotto: true };
+      if (i + n > b.length) return null;
+      var v = c & (m - 1), tutti = v === m - 1;
+      for (var k = 1; k < n; k++) { v = v * 256 + b[i + k]; if (b[i + k] !== 0xff) tutti = false; }
+      return { v: v, n: n, ignota: tutti };
+    }
+    // i figli di un elemento letto tutto in b[da..a): fn(id, inizioDati, fineDati, inizioElemento); false = basta
+    function figli(b, da, a, fn) {
+      var i = da;
+      while (i < a) {
+        var id = leggiId(b, i);
+        if (!id || id.id < 0) return;
+        var d = leggiVint(b, i + id.n);
+        if (!d || d.rotto) return;
+        var s = i + id.n + d.n, e = d.ignota ? a : s + d.v;
+        if (e > a) e = a;
+        if (fn(id.id, s, e, i) === false) return;
+        i = e;
+      }
+    }
+
+    var ID = {
+      EBML: 0x1A45DFA3, DOCTYPE: 0x4282, SEGMENT: 0x18538067, SEEKHEAD: 0x114D9B74, SEEK: 0x4DBB, SEEKID: 0x53AB,
+      SEEKPOS: 0x53AC, INFO: 0x1549A966, SCALA: 0x2AD7B1, DURATA: 0x4489, TITOLO: 0x7BA9, TRACKS: 0x1654AE6B, ENTRY: 0xAE,
+      NUM: 0xD7, TIPO: 0x83, ABILITATA: 0xB9, PREDEF: 0x88, FORZATA: 0x55AA, UDITO: 0x55AB, COMMENTO: 0x55AF,
+      LINGUA: 0x22B59C, BCP47: 0x22B59D, NOME: 0x536E, CODEC: 0x86, PRIVATO: 0x63A2, VIDEO: 0xE0, AUDIO: 0xE1,
+      LARGH: 0xB0, ALT: 0xBA, COLORE: 0x55B0, TRASF: 0x55BA, PRIMARI: 0x55BB, MAXCLL: 0x55BC, BIT: 0x55B2, FREQ: 0xB5,
+      CANALI: 0x9F, MAPPA: 0x41E4, MAPPA_TIPO: 0x41E7, MAPPA_DATI: 0x41ED, CODIFICHE: 0x6D80, CODIFICA: 0x6240,
+      COD_TIPO: 0x5033, COMPRESSIONE: 0x5034, COMP_ALGO: 0x4254, COMP_DATI: 0x4255, CLUSTER: 0x1F43B675, TEMPO: 0xE7,
+      SIMPLE: 0xA3, GRUPPO: 0xA0, BLOCCO: 0xA1, DURATA_BLOCCO: 0x9B, CUES: 0x1C53BB6B, CUEPOINT: 0xBB, CUETIME: 0xB3,
+      CUEPOS: 0xB7, CUETRACK: 0xF7, CUECLUSTER: 0xF1, CUEREL: 0xF0, CUEDUR: 0xB2, CHAPTERS: 0x1043A770, EDITION: 0x45B9,
+      ATOM: 0xB6, CH_INIZIO: 0x91, CH_NASCOSTO: 0x98, CH_ABILITATO: 0x4598, CH_DISPLAY: 0x80, CH_TESTO: 0x85,
+      TAGS: 0x1254C367, ALLEGATI: 0x1941A469, VOID: 0xEC, CRC: 0xBF
+    };
+    // gli elementi di primo livello: in un Cluster di lunghezza ignota il prossimo di questi lo chiude
+    var PRIMO_LIVELLO = {};
+    [ID.CLUSTER, ID.CUES, ID.TAGS, ID.CHAPTERS, ID.SEEKHEAD, ID.INFO, ID.TRACKS, ID.ALLEGATI].forEach(function (x) { PRIMO_LIVELLO[x] = true; });
+    var DOVI = { 0x64766343: true, 0x64767643: true, 0x64767743: true }; // dvcC dvvC dvwC: Dolby Vision
+
+    /* ============================================================ lettura del file */
+
+    function leggi(fs, fd, pos, n, cb) {
+      var b = nuovo(n), fatto = 0;
+      (function giro() {
+        fs.read(fd, b, fatto, n - fatto, pos + fatto, function (err, letti) {
+          if (err) { cb(err); return; }
+          fatto += letti;
+          if (letti === 0 || fatto >= n) { cb(null, fatto === n ? b : b.slice(0, fatto)); return; }
+          giro();
+        });
+      })();
+    }
+
+    /* ============================================================ le tracce di un MKV */
+
+    function traccia(b, s, f, inizio) {
+      var t = { num: 0, tipo: 0, codec: '', lingua: 'eng', bcp47: '', nome: '', predefinita: true, forzata: false,
+        abilitata: true, udito: false, commento: false, inizio: inizio, video: null, audio: null, privato: null, comp: null,
+        cifrata: false };
+      figli(b, s, f, function (id, a, z) {
+        var n = z - a;
+        if (id === ID.NUM) t.num = uint(b, a, n);
+        else if (id === ID.TIPO) t.tipo = uint(b, a, n);
+        else if (id === ID.CODEC) t.codec = stringa(b, a, n);
+        else if (id === ID.LINGUA) t.lingua = stringa(b, a, n);
+        else if (id === ID.BCP47) t.bcp47 = stringa(b, a, n);
+        else if (id === ID.NOME) t.nome = stringa(b, a, n);
+        else if (id === ID.PREDEF) t.predefinita = uint(b, a, n) !== 0;
+        else if (id === ID.FORZATA) t.forzata = uint(b, a, n) !== 0;
+        else if (id === ID.ABILITATA) t.abilitata = uint(b, a, n) !== 0;
+        else if (id === ID.UDITO) t.udito = uint(b, a, n) !== 0;
+        else if (id === ID.COMMENTO) t.commento = uint(b, a, n) !== 0;
+        else if (id === ID.PRIVATO) { if (n <= 262144) t.privato = copia(b.slice(a, z)); }
+        else if (id === ID.VIDEO) t.video = videoDi(b, a, z);
+        else if (id === ID.AUDIO) t.audio = audioDi(b, a, z);
+        else if (id === ID.MAPPA) mappaDi(b, a, z, t);
+        else if (id === ID.CODIFICHE) codificheDi(b, a, z, t);
+      });
+      return t;
+    }
+    function videoDi(b, s, f) {
+      var v = { largh: 0, alt: 0, trasf: 0, primari: 0, bit: 0, maxcll: 0 };
+      figli(b, s, f, function (id, a, z) {
+        if (id === ID.LARGH) v.largh = uint(b, a, z - a);
+        else if (id === ID.ALT) v.alt = uint(b, a, z - a);
+        else if (id === ID.COLORE) {
+          figli(b, a, z, function (id2, a2, z2) {
+            if (id2 === ID.TRASF) v.trasf = uint(b, a2, z2 - a2);
+            else if (id2 === ID.PRIMARI) v.primari = uint(b, a2, z2 - a2);
+            else if (id2 === ID.BIT) v.bit = uint(b, a2, z2 - a2);
+            else if (id2 === ID.MAXCLL) v.maxcll = uint(b, a2, z2 - a2);
+          });
+        }
+      });
+      return v;
+    }
+    function audioDi(b, s, f) {
+      var a = { canali: 0, freq: 0 };
+      figli(b, s, f, function (id, x, z) {
+        if (id === ID.CANALI) a.canali = uint(b, x, z - x);
+        else if (id === ID.FREQ) a.freq = Math.round(float(b, x, z - x));
+      });
+      return a;
+    }
+    // BlockAdditionMapping: la configurazione del Dolby Vision (profilo, strato di miglioramento)
+    function mappaDi(b, s, f, t) {
+      var tipo = 0, da = -1, a = -1;
+      figli(b, s, f, function (id, x, z) {
+        if (id === ID.MAPPA_TIPO) tipo = uint(b, x, z - x);
+        else if (id === ID.MAPPA_DATI) { da = x; a = z; }
+      });
+      if (DOVI[tipo] && da >= 0 && a - da >= 5) {
+        t.dv = { profilo: b[da + 2] >> 1, strato: !!((b[da + 3] >> 1) & 1), compatibile: b[da + 4] >> 4 };
+      }
+    }
+    // compressione dei blocchi (zlib o "header stripping"): serve per leggere i sottotitoli
+    function codificheDi(b, s, f, t) {
+      figli(b, s, f, function (id, a, z) {
+        if (id !== ID.CODIFICA) return;
+        var tipo = 0;
+        figli(b, a, z, function (id2, a2, z2) {
+          if (id2 === ID.COD_TIPO) tipo = uint(b, a2, z2 - a2);
+          else if (id2 === ID.COMPRESSIONE) {
+            var c = { algo: 0, dati: null };
+            figli(b, a2, z2, function (id3, a3, z3) {
+              if (id3 === ID.COMP_ALGO) c.algo = uint(b, a3, z3 - a3);
+              else if (id3 === ID.COMP_DATI) c.dati = copia(b.slice(a3, z3));
+            });
+            t.comp = c;
+          }
+        });
+        if (tipo === 1) t.cifrata = true;
+      });
+    }
+
+    // un CuePoint: i suoi punti nelle tracce (perTraccia[traccia] = [{ t, cl, rel, dur }]); quanti ne ha aggiunti
+    function cuePoint(b, a, z, segDati, perTraccia) {
+      var t = -1, n = 0;
+      figli(b, a, z, function (id2, a2, z2) {
+        if (id2 === ID.CUETIME) t = uint(b, a2, z2 - a2);
+        else if (id2 === ID.CUEPOS && t >= 0) {
+          var p = { tr: 0, cl: -1, rel: -1, dur: -1 };
+          figli(b, a2, z2, function (id3, a3, z3) {
+            if (id3 === ID.CUETRACK) p.tr = uint(b, a3, z3 - a3);
+            else if (id3 === ID.CUECLUSTER) p.cl = segDati + uint(b, a3, z3 - a3);
+            else if (id3 === ID.CUEREL) p.rel = uint(b, a3, z3 - a3);
+            else if (id3 === ID.CUEDUR) p.dur = uint(b, a3, z3 - a3);
+          });
+          if (p.cl < 0) return;
+          (perTraccia[p.tr] = perTraccia[p.tr] || []).push({ t: t, cl: p.cl, rel: p.rel, dur: p.dur });
+          n++;
+        }
+      });
+      return n;
+    }
+    // le Cues a fette: dopo 15 ms si cede il turno (il servizio risponde anche mentre le legge), al massimo MAX_PUNTI
+    // punti e 2 s di lavoro per file (oltre: quelle lette fin li')
+    function cuesDiAFette(b, segDati, cb) {
+      var perTraccia = {}, punti = 0, i = 0, a = b.length, spesi = 0;
+      (function fetta() {
+        var t0 = Date.now(), giri = 0;
+        while (i < a && punti < MAX_PUNTI) {
+          if (++giri % 256 === 0 && Date.now() - t0 > 15) break;
+          var id = leggiId(b, i), d = id && id.id > 0 ? leggiVint(b, i + id.n) : null;
+          if (!d || d.rotto) { i = a; break; }
+          var s0 = i + id.n + d.n, e = d.ignota ? a : Math.min(a, s0 + d.v);
+          if (id.id === ID.CUEPOINT) punti += cuePoint(b, s0, e, segDati, perTraccia);
+          i = e;
+        }
+        spesi += Date.now() - t0;
+        if (i < a && punti < MAX_PUNTI && spesi < 2000) { setImmediate(fetta); return; }
+        cb(perTraccia);
+      })();
+    }
+    function tagDi(b) {
+      var out = { 50: {}, 60: {}, 70: {} }, quanti = 0;
+      figli(b, 0, b.length, function (id, a, z) {
+        if (id !== 0x7373) return; // Tag
+        var tipo = 50, globale = true;
+        figli(b, a, z, function (id2, a2, z2) {
+          if (id2 !== 0x63C0) return; // Targets
+          figli(b, a2, z2, function (id3, a3, z3) {
+            if (id3 === 0x68CA) tipo = uint(b, a3, z3 - a3);
+            else if ((id3 === 0x63C5 || id3 === 0x63C9 || id3 === 0x63C4 || id3 === 0x63C6) && uint(b, a3, z3 - a3)) globale = false;
+          });
+        });
+        if (!globale) return;
+        var liv = tipo >= 70 ? 70 : tipo >= 60 ? 60 : 50;
+        figli(b, a, z, function (id2, a2, z2) {
+          if (id2 !== 0x67C8 || quanti >= 80) return; // SimpleTag
+          var nome = '', val = '';
+          figli(b, a2, z2, function (id3, a3, z3) {
+            if (id3 === 0x45A3) nome = stringa(b, a3, Math.min(z3 - a3, 60)).toUpperCase();
+            else if (id3 === 0x4487) val = stringa(b, a3, Math.min(z3 - a3, 8000));
+          });
+          if (nome && val && out[liv][nome] === undefined) { out[liv][nome] = val; quanti++; }
+        });
+      });
+      return out;
+    }
+    function capitoliDi(b, s, f, scala) {
+      var out = [];
+      figli(b, s, f, function (id, a, z) {
+        if (id !== ID.EDITION || out.length) return; // la prima edizione
+        figli(b, a, z, function (id2, a2, z2) {
+          if (id2 !== ID.ATOM) return;
+          var c = { t: 0, nome: '', nascosto: false, abilitato: true };
+          figli(b, a2, z2, function (id3, a3, z3) {
+            if (id3 === ID.CH_INIZIO) c.t = uint(b, a3, z3 - a3);
+            else if (id3 === ID.CH_NASCOSTO) c.nascosto = uint(b, a3, z3 - a3) !== 0;
+            else if (id3 === ID.CH_ABILITATO) c.abilitato = uint(b, a3, z3 - a3) !== 0;
+            else if (id3 === ID.CH_DISPLAY && !c.nome) {
+              figli(b, a3, z3, function (id4, a4, z4) { if (id4 === ID.CH_TESTO && !c.nome) c.nome = stringa(b, a4, z4 - a4); });
+            }
+          });
+          if (!c.nascosto && c.abilitato && out.length < 300) out.push({ t: c.t / 1e9, nome: c.nome.slice(0, 120) });
+        });
+      });
+      return out;
+    }
+
+    // la struttura di un MKV: si leggono gli elementi di primo livello fino al primo Cluster (piu' Cues e capitoli
+    // indicati dal SeekHead, anche se stanno in fondo). Mai il file intero.
+    function apriMkv(fs, fd, dim, cb0) {
+      var finito = false;
+      function cb(e, m) { if (!finito) { finito = true; cb0(e, m); } }
+      // un file fatto male (o apposta) non deve mai fermare il servizio: un errore nella lettura diventa 'formato'
+      function sicuro(fn) { return function (x, y) { try { fn(x, y); } catch (e) { cb(errore('formato', 'Matroska rovinato')); } }; }
+      leggi(fs, fd, 0, Math.min(dim, 65536), sicuro(function (err, testa) {
+        if (err) { cb(err); return; }
+        var e = leggiId(testa, 0), d = e && e.id === ID.EBML ? leggiVint(testa, e.n) : null;
+        if (!d || d.rotto) { cb(errore('formato', 'non e\' un file Matroska')); return; }
+        var tipoDoc = 'matroska', fineEbml = e.n + d.n + d.v;
+        figli(testa, e.n + d.n, Math.min(fineEbml, testa.length), function (id, s, f) { if (id === ID.DOCTYPE) tipoDoc = stringa(testa, s, f - s); });
+        var se = leggiId(testa, fineEbml), sd = se && se.id === ID.SEGMENT ? leggiVint(testa, fineEbml + se.n) : null;
+        if (!sd || sd.rotto) { cb(errore('formato', 'Matroska senza Segment')); return; }
+        var m = { formato: tipoDoc === 'webm' ? 'webm' : 'mkv', dim: dim, segDati: fineEbml + se.n + sd.n, scala: 1000000,
+          durata: 0, titolo: '', tracce: [], capitoli: [], cues: null, cluster1: -1, confini: [], tracksDati: -1,
+          tracksFine: -1, crcTracks: -1, seek: {}, altri: [] };
+        m.segFine = sd.ignota ? dim : Math.min(dim, m.segDati + sd.v);
+        var pos = m.segDati, giri = 0;
+
+        function elemento(id, inizio, datiDa, datiA, poi) {
+          // si legge tutto solo cio' che serve, e con un limite (gli allegati, i font, si saltano)
+          // (nei file veri SeekHead e Info sono di pochi byte, Tracks e capitoli di pochi KB, i Tags di decine di KB)
+          var LIMITI = {}; LIMITI[ID.SEEKHEAD] = 64 << 10; LIMITI[ID.INFO] = 64 << 10; LIMITI[ID.TRACKS] = 1 << 20;
+          LIMITI[ID.CHAPTERS] = 256 << 10; LIMITI[ID.CUES] = MAX_CUES; LIMITI[ID.TAGS] = 256 << 10;
+          // gli allegati (font, copertine) non si leggono: si ricorda solo dove sono (le copertine le legge la scheda)
+          if (id === ID.ALLEGATI) { if (!m.allegati) m.allegati = { da: datiDa, a: datiA }; poi(); return; }
+          if (!LIMITI[id] || datiA - datiDa > LIMITI[id]) { poi(); return; }
+          leggi(fs, fd, datiDa, datiA - datiDa, sicuro(function (err2, b) {
+            if (err2) { poi(err2); return; }
+            if (id === ID.SEEKHEAD) {
+              figli(b, 0, b.length, function (id2, a2, z2) {
+                if (id2 !== ID.SEEK) return;
+                var sid = 0, sp = -1;
+                figli(b, a2, z2, function (id3, a3, z3) {
+                  if (id3 === ID.SEEKID) sid = uint(b, a3, z3 - a3);
+                  else if (id3 === ID.SEEKPOS) sp = uint(b, a3, z3 - a3);
+                });
+                if (sid && sp >= 0 && m.seek[sid] === undefined) m.seek[sid] = m.segDati + sp;
+                else if (sid === ID.SEEKHEAD && sp >= 0) m.seek2 = m.segDati + sp; // un secondo SeekHead (di solito in fondo)
+              });
+            } else if (id === ID.INFO) {
+              figli(b, 0, b.length, function (id2, a2, z2) {
+                if (id2 === ID.SCALA) m.scala = uint(b, a2, z2 - a2) || 1000000;
+                else if (id2 === ID.DURATA) m.durataGrezza = float(b, a2, z2 - a2);
+                else if (id2 === ID.TITOLO) m.titolo = stringa(b, a2, z2 - a2).slice(0, 200);
+              });
+            } else if (id === ID.TRACKS) {
+              m.tracksDati = datiDa;
+              m.tracksFine = datiA;
+              figli(b, 0, b.length, function (id2, a2, z2, i2) {
+                if (id2 === ID.ENTRY) { if (m.tracce.length >= 128) return false; m.tracce.push(traccia(b, a2, z2, datiDa + i2)); }
+                else if (id2 === ID.CRC) m.crcTracks = datiDa + i2;
+              });
+            } else if (id === ID.CHAPTERS) {
+              m.capitoliGrezzi = { b: b };
+            } else if (id === ID.CUES) {
+              cuesDiAFette(b, m.segDati, function (cues) { m.cues = cues; poi(); });
+              return;
+            } else if (id === ID.TAGS) {
+              m.tag = tagDi(b);
+            }
+            poi();
+          }));
+        }
+
+        function prossimo() {
+          if (pos >= m.segFine || ++giri > 4000) { fine(); return; }
+          leggi(fs, fd, pos, 16, sicuro(function (err2, h) {
+            if (err2) { cb(err2); return; }
+            var hi = leggiId(h, 0), hd = hi && hi.id > 0 ? leggiVint(h, hi.n) : null;
+            if (!hd || hd.rotto) { fine(); return; }
+            var datiDa = pos + hi.n + hd.n, datiA = hd.ignota ? m.segFine : datiDa + hd.v, inizio = pos;
+            if (hi.id === ID.CLUSTER) { m.cluster1 = inizio; fine(); return; }
+            if (hi.id !== ID.VOID && hi.id !== ID.CRC) m.altri.push(inizio);
+            if (hd.ignota) { fine(); return; }
+            pos = datiA;
+            elemento(hi.id, inizio, datiDa, datiA, function (err3) { if (err3) { cb(err3); return; } prossimo(); });
+          }));
+        }
+
+        // dopo il primo Cluster: un secondo SeekHead, poi Cues e capitoli se stanno in fondo
+        function fine() {
+          var da = [];
+          if (m.seek2 && m.seek2 > pos) da.push(m.seek2);
+          dopo(da, function () {
+            var resto = [];
+            if (!m.cues && m.seek[ID.CUES] > 0) resto.push(m.seek[ID.CUES]);
+            if (!m.capitoliGrezzi && m.seek[ID.CHAPTERS] > 0) resto.push(m.seek[ID.CHAPTERS]);
+            if (!m.tag && m.seek[ID.TAGS] > 0) resto.push(m.seek[ID.TAGS]);
+            if (!m.allegati && m.seek[ID.ALLEGATI] > 0) resto.push(m.seek[ID.ALLEGATI]);
+            dopo(resto, chiudi);
+          });
+        }
+        function dopo(posizioni, poi) {
+          if (!posizioni.length) { poi(); return; }
+          var p = posizioni.shift();
+          leggi(fs, fd, p, 16, sicuro(function (err2, h) {
+            if (err2) { poi(); return; }
+            var hi = leggiId(h, 0), hd = hi && hi.id > 0 ? leggiVint(h, hi.n) : null;
+            if (!hd || hd.rotto || hd.ignota) { dopo(posizioni, poi); return; }
+            if (m.altri.indexOf(p) === -1) m.altri.push(p);
+            elemento(hi.id, p, p + hi.n + hd.n, p + hi.n + hd.n + hd.v, function () { dopo(posizioni, poi); });
+          }));
+        }
+        function chiudi() {
+          if (m.durataGrezza) m.durata = m.durataGrezza * m.scala / 1e9;
+          if (m.capitoliGrezzi) {
+            var cb2 = m.capitoliGrezzi.b;
+            m.capitoli = capitoliDi(cb2, 0, cb2.length, m.scala);
+            delete m.capitoliGrezzi;
+          }
+          // i confini da cui si puo' ripartire a leggere: i Cluster (dalle Cues) e gli altri elementi di primo livello
+          var c = m.altri.slice(0, 1000), sott = {}, i, j;
+          if (m.cluster1 > 0) c.push(m.cluster1);
+          for (i = 0; i < m.tracce.length; i++) if (m.tracce[i].tipo === 17) sott[m.tracce[i].num] = true;
+          if (m.cues) {
+            for (var tr in m.cues) {
+              if (!Object.prototype.hasOwnProperty.call(m.cues, tr)) continue;
+              var l = m.cues[tr];
+              for (i = 0; i < l.length; i++) c.push(l[i].cl);
+              // nelle Cues restano solo le tracce di sottotitoli (le legge daCues): i Cluster sono gia' nei confini
+              if (!sott[tr]) delete m.cues[tr];
+            }
+          }
+          c.sort(function (x, y) { return x - y; });
+          m.confini = [];
+          for (j = 0; j < c.length && m.confini.length < MAX_CONFINI; j++) if (!j || c[j] !== c[j - 1]) m.confini.push(c[j]);
+          cb(null, m);
+        }
+
+        prossimo();
+      }));
+    }
+
+    /* ============================================================ MP4 e MOV */
+
+    function apriMp4(fs, fd, dim, cb0) {
+      var pos = 0, giri = 0, moov = null, moovPos = -1, finito = false;
+      function cb(e, m) { if (!finito) { finito = true; cb0(e, m); } }
+      (function giro() {
+        if (pos + 8 > dim || ++giri > 1000) { fatto(); return; }
+        leggi(fs, fd, pos, 16, function (err, h) {
+          if (err) { cb(err); return; }
+          if (h.length < 8) { fatto(); return; }
+          var size = h.readUInt32BE(0), tipo = h.toString('binary', 4, 8), testa = 8;
+          if (size === 1) { if (h.length < 16) { fatto(); return; } size = uint(h, 8, 8); testa = 16; } else if (size === 0) size = dim - pos;
+          if (!(size >= testa)) { fatto(); return; }
+          if (tipo === 'moov') {
+            if (size > (64 << 20)) { cb(errore('formato', 'indice MP4 troppo grande')); return; }
+            leggi(fs, fd, pos, size, function (err2, b) {
+              if (err2) { cb(err2); return; }
+              moov = b; moovPos = pos;
+              fatto();
+            });
+            return;
+          }
+          pos += size;
+          giro();
+        });
+      })();
+      function fatto() {
+        if (!moov) { cb(errore('formato', 'MP4 senza indice (moov)')); return; }
+        var m = { formato: 'mp4', dim: dim, durata: 0, titolo: '', tracce: [], capitoli: [], fisse: [], ilst: {}, covr: [] };
+        try {
+          riquadri(moov, 8, moov.length, function (tipo, a, z, i) {
+            if (tipo === 'mvhd' && z - a >= (moov[a] === 1 ? 32 : 20)) {
+              var v = moov[a];
+              var scala = v === 1 ? moov.readUInt32BE(a + 20) : moov.readUInt32BE(a + 12);
+              var dur = v === 1 ? uint(moov, a + 24, 8) : moov.readUInt32BE(a + 16);
+              if (scala) m.durata = dur / scala;
+            } else if (tipo === 'trak' && m.tracce.length < 64) {
+              var t = trakDi(moov, a, z);
+              t.inizio = moovPos + i; // il riquadro "trak": 4 byte dopo c'e' il suo nome, che diventa "free"
+              m.tracce.push(t);
+            } else if (tipo === 'udta') {
+              ilstDi(moov, a, z, moovPos, m);
+            }
+          });
+        } catch (e) { cb(errore('formato', 'MP4 rovinato')); return; } // un file fatto male non ferma il servizio
+        cb(null, m);
+      }
+    }
+    // i tag di iTunes: udta > meta > ilst > voce > data (testo, numero o immagine)
+    var ILST = { '\u00a9nam': 'titolo', '\u00a9day': 'data', desc: 'desc', ldes: 'ldes', '\u00a9gen': 'genere', tvsh: 'serie', tvsn: 'stagione',
+      tves: 'episodio', stik: 'tipo', '\u00a9ART': 'artista' };
+    function ilstDi(b, s, f, base, m) {
+      riquadri(b, s, f, function (t2, a2, z2) {
+        if (t2 !== 'meta' || z2 - a2 < 12) return;
+        // "meta" ha versione e flag (ISO) oppure no (QuickTime, dove subito dopo c'e' "hdlr")
+        var da = b.toString('binary', a2 + 4, a2 + 8) === 'hdlr' ? a2 : a2 + 4;
+        riquadri(b, da, z2, function (t3, a3, z3) {
+          if (t3 !== 'ilst') return;
+          riquadri(b, a3, z3, function (nome, a4, z4) {
+            riquadri(b, a4, z4, function (t5, a5, z5) {
+              if (t5 !== 'data' || z5 - a5 < 8) return;
+              var tipo = b.readUInt32BE(a5) & 0xffffff, v0 = a5 + 8;
+              if (nome === 'covr') {
+                if ((tipo === 13 || tipo === 14) && z5 > v0 && m.covr.length < 4) m.covr.push({ pos: base + v0, n: z5 - v0 });
+              } else if (ILST[nome]) {
+                if (tipo === 1) m.ilst[ILST[nome]] = b.toString('utf8', v0, Math.min(z5, v0 + 8000));
+                else if ((tipo === 21 || tipo === 0) && z5 > v0) m.ilst[ILST[nome]] = uint(b, v0, Math.min(4, z5 - v0));
+              }
+            });
+          });
+        });
+      });
+    }
+    function riquadri(b, da, a, fn) {
+      var i = da;
+      while (i + 8 <= a) {
+        var size = b.readUInt32BE(i), tipo = b.toString('binary', i + 4, i + 8), testa = 8;
+        if (size === 1) { if (i + 16 > a) return; size = uint(b, i + 8, 8); testa = 16; } else if (size === 0) size = a - i;
+        if (size < testa || i + size > a) return;
+        if (fn(tipo, i + testa, i + size, i) === false) return;
+        i += size;
+      }
+    }
+    var MP4_TIPO = { vide: 1, soun: 2, sbtl: 17, subt: 17, text: 17, clcp: 17 };
+    function trakDi(b, s, f) {
+      var t = { num: 0, tipo: 0, codec: '', lingua: 'und', nome: '', predefinita: true, forzata: false, abilitata: true,
+        video: null, audio: null };
+      riquadri(b, s, f, function (tipo, a, z) {
+        if (tipo === 'tkhd' && z - a >= (b[a] === 1 ? 24 : 16)) {
+          var v = b[a];
+          t.abilitata = !!(b[a + 3] & 1);
+          t.num = b.readUInt32BE(a + (v === 1 ? 20 : 12));
+        } else if (tipo === 'mdia') {
+          riquadri(b, a, z, function (t2, a2, z2) {
+            if (t2 === 'mdhd' && z2 - a2 >= (b[a2] === 1 ? 34 : 22)) {
+              var v2 = b[a2], l = b.readUInt16BE(a2 + (v2 === 1 ? 32 : 20));
+              t.lingua = String.fromCharCode(((l >> 10) & 31) + 96, ((l >> 5) & 31) + 96, (l & 31) + 96);
+            } else if (t2 === 'hdlr' && z2 - a2 >= 12) {
+              t.tipo = MP4_TIPO[b.toString('binary', a2 + 8, a2 + 12)] || 0;
+            } else if (t2 === 'minf') {
+              trovaStsd(b, a2, z2, t);
+            }
+          });
+        }
+      });
+      return t;
+    }
+    function trovaStsd(b, s, f, t) {
+      riquadri(b, s, f, function (tipo, a, z) {
+        if (tipo === 'stbl') { trovaStsd(b, a, z, t); return; }
+        if (tipo !== 'stsd' || z - a < 16) return;
+        var e = a + 8; // versione, flag, numero di voci
+        if (e + 8 > z) return;
+        t.codec = b.toString('binary', e + 4, e + 8);
+        if (t.tipo === 1 && e + 36 <= z) t.video = { largh: b.readUInt16BE(e + 32), alt: b.readUInt16BE(e + 34), trasf: 0, bit: 0 };
+        if (t.tipo === 2 && e + 34 <= z) t.audio = { canali: b.readUInt16BE(e + 24), freq: b.readUInt16BE(e + 32) };
+      });
+    }
+
+    /* ============================================================ cosa legge il TV */
+
+    // I codec che il <video> del TV legge. Il servizio li riceve dal profilo del TV (profilo.js); questi sono quelli dei
+    // Samsung 2018-2022 (niente DTS, niente TrueHD; FLAC nel video parte in ritardo).
+    var LETTI = {
+      audio: { AC3: true, EAC3: true, AAC: true, MP3: true, MP2: true, PCM: true, OPUS: true, VORBIS: true, FLAC: 'ultimo' },
+      video: { HEVC: true, AVC: true, AV1: true, VP9: true, VP8: true, MPEG2: true, MPEG4: true, VC1: true }
+    };
+    // il nome del codec per l'app e per decidere: da CodecID (MKV) o dal nome del riquadro (MP4)
+    function famiglia(codec) {
+      var c = String(codec || '');
+      if (/^A_EAC3|^ec-3$/.test(c)) return 'EAC3';
+      if (/^A_AC3|^ac-3$/.test(c)) return 'AC3';
+      if (/^A_TRUEHD|^A_MLP|^mlpa$/.test(c)) return 'TRUEHD';
+      if (/^A_DTS|^dts[chlex]$/.test(c)) return 'DTS';
+      if (/^A_AAC|^mp4a$/.test(c)) return 'AAC';
+      if (/^A_MPEG\/L3$/.test(c)) return 'MP3';
+      if (/^A_MPEG\/L[12]$/.test(c)) return 'MP2';
+      if (/^A_PCM|^(ipcm|lpcm|twos|sowt)$/.test(c)) return 'PCM';
+      if (/^A_FLAC|^fLaC$/.test(c)) return 'FLAC';
+      if (/^A_OPUS|^Opus$/.test(c)) return 'OPUS';
+      if (/^A_VORBIS/.test(c)) return 'VORBIS';
+      if (/^A_ALAC|^alac$/.test(c)) return 'ALAC';
+      if (/^V_MPEGH\/ISO\/HEVC|^(hvc1|hev1|dvh1|dvhe)$/.test(c)) return 'HEVC';
+      if (/^V_MPEG4\/ISO\/AVC|^(avc1|avc3|dva1|dvav)$/.test(c)) return 'AVC';
+      if (/^V_AV1|^av01$/.test(c)) return 'AV1';
+      if (/^V_VP9|^vp09$/.test(c)) return 'VP9';
+      if (/^V_VP8|^vp08$/.test(c)) return 'VP8';
+      if (/^V_MPEG2|^mp2v$/.test(c)) return 'MPEG2';
+      if (/^V_MPEG4\/ISO\/(ASP|SP|AP)|^mp4v$/.test(c)) return 'MPEG4';
+      if (/^V_MS\/VFW/.test(c)) return 'VFW';
+      if (/^S_TEXT\/UTF8|^S_TEXT\/ASCII/.test(c)) return 'SRT';
+      if (/^S_TEXT\/(ASS|SSA)|^S_(ASS|SSA)$/.test(c)) return 'ASS';
+      if (/^S_TEXT\/WEBVTT|^wvtt$/.test(c)) return 'VTT';
+      if (/^S_HDMV\/PGS/.test(c)) return 'PGS';
+      if (/^S_VOBSUB/.test(c)) return 'VOBSUB';
+      if (/^tx3g$/.test(c)) return 'TX3G';
+      return c || '?';
+    }
+    var NOMI = { EAC3: 'Dolby Digital Plus', AC3: 'Dolby Digital', TRUEHD: 'Dolby TrueHD', DTS: 'DTS', AAC: 'AAC',
+      MP3: 'MP3', MP2: 'MPEG audio', PCM: 'PCM', FLAC: 'FLAC', OPUS: 'Opus', VORBIS: 'Vorbis', ALAC: 'ALAC', HEVC: 'HEVC',
+      AVC: 'H.264', AV1: 'AV1', VP9: 'VP9', VP8: 'VP8', MPEG2: 'MPEG-2', MPEG4: 'MPEG-4', VFW: 'Video per Windows',
+      SRT: 'Testo', ASS: 'Testo (ASS)', VTT: 'Testo (WebVTT)', PGS: 'Immagini (PGS)', VOBSUB: 'Immagini (DVD)', TX3G: 'Testo' };
+
+    // le lingue: codici ISO 639-2 (ita, eng, ger/deu...) o BCP 47 (it, en-US) -> tre lettere
+    var LINGUE2 = { it: 'ita', en: 'eng', de: 'ger', fr: 'fre', es: 'spa', pt: 'por', ja: 'jpn', zh: 'chi', ru: 'rus',
+      nl: 'dut', sv: 'swe', pl: 'pol', ko: 'kor', ar: 'ara', tr: 'tur', el: 'gre', da: 'dan', fi: 'fin', no: 'nor',
+      nb: 'nor', cs: 'cze', hu: 'hun', ro: 'rum', he: 'heb', hi: 'hin', th: 'tha', uk: 'ukr' };
+    var SINONIMI = { deu: 'ger', fra: 'fre', zho: 'chi', nld: 'dut', ces: 'cze', ron: 'rum', ell: 'gre', nob: 'nor' };
+    function lingua(t) {
+      var l = String(t.bcp47 || '').toLowerCase().split('-')[0];
+      if (l && LINGUE2[l]) return LINGUE2[l];
+      l = String(t.lingua || '').toLowerCase();
+      if (LINGUE2[l]) return LINGUE2[l];
+      return SINONIMI[l] || l || 'und';
+    }
+
+    // quale traccia audio far sentire: tra quelle che il TV legge, la lingua preferita, poi quella predefinita, poi
+    // non commento, poi piu' canali, poi l'ordine del file
+    function sceltaAudio(audio, lingue, letti) {
+      var buoni = [];
+      for (var i = 0; i < audio.length; i++) {
+        var a = audio[i];
+        var l = letti.audio[famiglia(a.codec)];
+        if (a.abilitata !== false && l && !a.cifrata) buoni.push({ t: a, i: i, ultimo: l === 'ultimo' ? 1 : 0 });
+      }
+      if (!buoni.length) return null;
+      function posto(x) { var k = lingue.indexOf(lingua(x.t)); return k === -1 ? 99 : k; }
+      buoni.sort(function (x, y) {
+        return (x.ultimo - y.ultimo) || (posto(x) - posto(y)) || ((y.t.predefinita ? 1 : 0) - (x.t.predefinita ? 1 : 0)) ||
+          ((x.t.commento ? 1 : 0) - (y.t.commento ? 1 : 0)) || (((y.t.audio || {}).canali || 0) - ((x.t.audio || {}).canali || 0)) ||
+          (x.i - y.i);
+      });
+      return buoni[0].t;
+    }
+
+    // le scelte per servire il file: il primo video, l'audio scelto (o il migliore), niente sottotitoli (li disegna
+    // l'app). nascoste = numeri delle tracce da far sparire
+    function piano(m, scelte, letti) {
+      scelte = scelte || {};
+      var lingue = Array.isArray(scelte.lingue) && scelte.lingue.length ? scelte.lingue : ['ita', 'eng'];
+      var video = null, audio = [], i;
+      for (i = 0; i < m.tracce.length; i++) {
+        var t = m.tracce[i];
+        if (t.tipo === 1 && !video && t.abilitata !== false) video = t;
+        else if (t.tipo === 2) audio.push(t);
+      }
+      var scelta = null;
+      if (scelte.audio) {
+        for (i = 0; i < audio.length; i++) if (audio[i].num === +scelte.audio && letti.audio[famiglia(audio[i].codec)]) scelta = audio[i];
+      }
+      if (!scelta) scelta = sceltaAudio(audio, lingue, letti);
+      var nascoste = {}, quante = 0;
+      for (i = 0; i < m.tracce.length; i++) {
+        var x = m.tracce[i];
+        if (x !== video && x !== scelta) { nascoste[x.num] = true; quante++; }
+      }
+      return { video: video ? video.num : 0, audio: scelta ? scelta.num : 0, nascoste: nascoste, quante: quante,
+        senzaAudio: !scelta && audio.length > 0 };
+    }
+
+    // le modifiche fisse (sempre agli stessi indirizzi): le TrackEntry nascoste (e il CRC dei Tracks) nel MKV, i "trak"
+    // nascosti nell'MP4. [{ pos, byte }] in ordine
+    function modificheFisse(m, p) {
+      var out = [], i;
+      if (m.formato === 'mp4') {
+        for (i = 0; i < m.tracce.length; i++) {
+          if (!p.nascoste[m.tracce[i].num] || m.tracce[i].inizio === undefined) continue;
+          var q = m.tracce[i].inizio + 4; // "trak" -> "free"
+          out.push({ pos: q, byte: 0x66 }, { pos: q + 1, byte: 0x72 }, { pos: q + 2, byte: 0x65 }, { pos: q + 3, byte: 0x65 });
+        }
+      } else {
+        for (i = 0; i < m.tracce.length; i++) if (p.nascoste[m.tracce[i].num]) out.push({ pos: m.tracce[i].inizio, byte: ID.VOID });
+        if (p.quante && m.crcTracks >= 0) out.push({ pos: m.crcTracks, byte: ID.VOID });
+      }
+      out.sort(function (x, y) { return x.pos - y.pos; });
+      return out;
+    }
+
+    /* ============================================================ la lettura dei Cluster mentre il file passa
+     * Una macchina a stati che riceve i byte in ordine dal primo Cluster in poi (o da un confine noto), riconosce i
+     * blocchi, dice quali byte cambiare (l'ID dei blocchi delle tracce nascoste -> Void) e raccoglie i sottotitoli.
+     * mangia(b, pos) -> { usati, modifiche: [pos] }: i byte dopo "usati" non sono ancora decisi (un'intestazione a meta')
+     * e vanno ridati insieme ai prossimi. */
+    function Scansione(m, nascoste, sottoTracce, suSotto, suConfine) {
+      this.m = m;
+      this.nascoste = nascoste || {};
+      this.cambia = false;
+      for (var k in this.nascoste) if (Object.prototype.hasOwnProperty.call(this.nascoste, k)) { this.cambia = true; break; }
+      this.sotto = sottoTracce || {};
+      this.suSotto = suSotto || null;
+      this.suConfine = suConfine || null;
+      this.stato = 'su'; // su = primo livello, cl = dentro un Cluster
+      this.clFine = 0;
+      this.clTempo = 0;
+      this.salta = 0;
+      this.presa = null;
+      this.ferma = false;
+    }
+    Scansione.prototype.mangia = function (b, pos) {
+      var mod = [], i = 0, n = b.length, id, d, ds, giri = 0, t0 = Date.now(), fermata = false;
+      while (i < n) {
+        // a fette: dopo 15 ms ci si ferma qui (un confine pulito); i byte da "i" in poi si ridanno al giro dopo
+        if (++giri % 512 === 0 && Date.now() - t0 > 15) { fermata = true; break; }
+        if (this.ferma) { i = n; break; }
+        if (this.salta > 0) { var s = Math.min(this.salta, n - i); i += s; this.salta -= s; continue; }
+        if (this.presa) {
+          var q = Math.min(this.presa.manca, n - i);
+          this.presa.parti.push(copia(b.slice(i, i + q)));
+          this.presa.manca -= q;
+          i += q;
+          if (!this.presa.manca) this.finePresa();
+          continue;
+        }
+        if (this.stato === 'cl' && pos + i >= this.clFine) { this.stato = 'su'; continue; }
+        id = leggiId(b, i);
+        if (!id) break;
+        if (id.id < 0) { this.ferma = true; i = n; break; }
+        d = leggiVint(b, i + id.n);
+        if (!d) break;
+        if (d.rotto) { this.ferma = true; i = n; break; }
+        ds = i + id.n + d.n;
+        if (this.stato === 'su') {
+          if (id.id === ID.CLUSTER) {
+            this.stato = 'cl';
+            this.clFine = d.ignota ? Infinity : pos + ds + d.v;
+            this.clTempo = 0;
+            if (this.suConfine) this.suConfine(pos + i);
+            i = ds;
+            continue;
+          }
+          if (d.ignota) { this.ferma = true; i = n; break; }
+          this.salta = d.v;
+          i = ds;
+          continue;
+        }
+        // dentro un Cluster
+        if (this.clFine === Infinity && PRIMO_LIVELLO[id.id]) { this.stato = 'su'; continue; }
+        if (d.ignota) { this.ferma = true; i = n; break; }
+        if (id.id === ID.TEMPO) {
+          if (ds + d.v > n) break;
+          this.clTempo = uint(b, ds, d.v);
+          i = ds + d.v;
+          continue;
+        }
+        if (id.id === ID.SIMPLE || id.id === ID.GRUPPO) {
+          // il numero della traccia: all'inizio del blocco (nel BlockGroup dentro il primo figlio, il Block)
+          var num = -1, at = ds, attendi = false;
+          if (id.id === ID.GRUPPO) {
+            var gi = leggiId(b, ds), gd = gi && gi.id > 0 ? leggiVint(b, ds + gi.n) : null;
+            if (!gi || !gd) { if (n - i < 64) attendi = true; at = -1; }
+            else if (gi.id !== ID.BLOCCO) at = -1;
+            else at = ds + gi.n + gd.n;
+          }
+          if (at >= 0 && !attendi) {
+            var tv = leggiVint(b, at);
+            if (tv && !tv.rotto && at + tv.n + 3 <= n) num = tv.v;
+            else if (n - i < 64) attendi = true; // mancano pochi byte: si aspettano i prossimi
+          }
+          if (attendi) break;
+          if (num > 0 && this.nascoste[num]) mod.push(pos + i);
+          if (num > 0 && this.sotto[num] && this.suSotto && d.v <= (famiglia(this.sotto[num].codec) === 'PGS' ? MAX_GONFIO_PGS : MAX_GONFIO_TESTO)) {
+            this.presa = { num: num, gruppo: id.id === ID.GRUPPO, manca: d.v, parti: [], tempo: this.clTempo };
+            i = ds;
+            continue;
+          }
+          this.salta = d.v;
+          i = ds;
+          continue;
+        }
+        if (id.id === ID.CRC && this.cambia) mod.push(pos + i);
+        this.salta = d.v;
+        i = ds;
+      }
+      return { usati: i, modifiche: mod, fermata: fermata };
+    };
+    // un blocco di sottotitoli intero: tempo, durata, dati (decompressi)
+    Scansione.prototype.finePresa = function () {
+      var p = this.presa;
+      this.presa = null;
+      var b = p.parti.length === 1 ? p.parti[0] : Buffer.concat(p.parti), blocco = b, durata = -1;
+      if (p.gruppo) {
+        blocco = null;
+        figli(b, 0, b.length, function (id, a, z) {
+          if (id === ID.BLOCCO) blocco = b.slice(a, z);
+          else if (id === ID.DURATA_BLOCCO) durata = uint(b, a, z - a);
+        });
+        if (!blocco) return;
+      }
+      var tv = leggiVint(blocco, 0);
+      if (!tv || tv.n + 3 > blocco.length) return;
+      var rel = blocco.readInt16BE(tv.n), dati = blocco.slice(tv.n + 3);
+      var scala = this.m.scala / 1e6;
+      this.suSotto(p.num, { t: Math.round((p.tempo + rel) * scala), d: durata >= 0 ? Math.round(durata * scala) : -1, dati: dati });
+    };
+
+    /* ============================================================ sottotitoli: testo, ASS, SRT, WebVTT */
+
+    // Windows-1252 (molti .srt italiani): i byte 0x80-0x9f hanno caratteri propri
+    var CP1252 = [0x20ac, 0, 0x201a, 0x192, 0x201e, 0x2026, 0x2020, 0x2021, 0x2c6, 0x2030, 0x160, 0x2039, 0x152, 0, 0x17d, 0,
+      0, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x2dc, 0x2122, 0x161, 0x203a, 0x153, 0, 0x17e, 0x178];
+    function utf8Buono(b) {
+      for (var i = 0; i < b.length; i++) {
+        var c = b[i];
+        if (c < 0x80) continue;
+        var n = c >= 0xc2 && c < 0xe0 ? 1 : c >= 0xe0 && c < 0xf0 ? 2 : c >= 0xf0 && c < 0xf5 ? 3 : -1;
+        if (n < 0 || i + n >= b.length) return false;
+        for (var k = 1; k <= n; k++) if ((b[i + k] & 0xc0) !== 0x80) return false;
+        i += n;
+      }
+      return true;
+    }
+    function testoDi(b) {
+      if (b.length >= 3 && b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf) b = b.slice(3);
+      if (utf8Buono(b)) return b.toString('utf8');
+      var out = [], parte = [];
+      for (var i = 0; i < b.length; i++) {
+        var c = b[i];
+        parte.push(c >= 0x80 && c < 0xa0 && CP1252[c - 0x80] ? CP1252[c - 0x80] : c);
+        if (parte.length === 8192) { out.push(String.fromCharCode.apply(null, parte)); parte = []; }
+      }
+      if (parte.length) out.push(String.fromCharCode.apply(null, parte));
+      return out.join('');
+    }
+    // un evento di testo per la pagina: righe senza i comandi di stile; in alto se l'ASS lo chiede (\an7-9); corsivo.
+    // Un solo giro in avanti sui blocchi {...} con indexOf: un file fatto apposta, con tanti "{" senza "}", non ferma il
+    // servizio (un "{" senza "}" chiude la ricerca)
+    function testoAss(t) {
+      t = String(t).slice(0, 4000);
+      var out = '', i = 0, su = false, corsivo = false;
+      while (i < t.length) {
+        var a = t.indexOf('{', i);
+        if (a === -1) { out += t.slice(i); break; }
+        out += t.slice(i, a);
+        var z = t.indexOf('}', a + 1);
+        if (z === -1) break;
+        var cmd = t.slice(a + 1, z);
+        if (/\\an[789]/.test(cmd)) su = true;
+        if (cmd.indexOf('\\i1') !== -1) corsivo = true;
+        i = z + 1;
+      }
+      out = out.replace(/\\[Nn]/g, '\n').replace(/\\h/g, ' ');
+      return { x: pulisci(out), su: su, i: corsivo };
+    }
+    // SRT: i tag (<i>, <font ...>) via con lo stesso giro in avanti (un "<" senza ">" chiude la ricerca)
+    function testoSrt(t) {
+      t = String(t).slice(0, 4000);
+      var corsivo = /^\s*<i>/i.test(t), su = /\{\\an[789]\}/.test(t), out = '', i = 0;
+      while (i < t.length) {
+        var a = t.indexOf('<', i);
+        if (a === -1) { out += t.slice(i); break; }
+        out += t.slice(i, a);
+        var z = t.indexOf('>', a + 1);
+        if (z === -1) break;
+        i = z + 1;
+      }
+      return { x: pulisci(out.replace(/\{\\an\d\}/g, '')), su: su, i: corsivo };
+    }
+    function pulisci(t) {
+      var righe = String(t).slice(0, 4000).replace(/\r/g, '').replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, '').split('\n');
+      for (var i = 0; i < righe.length; i++) {
+        var k = righe[i].length;
+        while (k > 0 && (righe[i].charCodeAt(k - 1) === 32 || righe[i].charCodeAt(k - 1) === 9)) k--;
+        righe[i] = righe[i].slice(0, k);
+      }
+      return righe.join('\n').trim().slice(0, 600);
+    }
+    function tempoTesto(s) {
+      var m = /(?:(\d{1,4}):)?(\d{1,2}):(\d{1,2})[,.](\d{1,3})/.exec(String(s).slice(0, 120));
+      if (!m) return -1;
+      var ms = m[4];
+      while (ms.length < 3) ms += '0';
+      return ((+(m[1] || 0) * 60 + +m[2]) * 60 + +m[3]) * 1000 + +ms;
+    }
+    function tempoAss(s) {
+      var m = /(\d{1,4}):(\d{1,2}):(\d{1,2})[.,](\d{1,2})/.exec(String(s).slice(0, 120));
+      return m ? ((+m[1] * 60 + +m[2]) * 60 + +m[3]) * 1000 + +m[4] * 10 : -1;
+    }
+    // un file di sottotitoli accanto al video (SRT, WebVTT, ASS): [{ t, d, x, su, i }]. Con cb a fette: dopo 15 ms si cede
+    // il turno, al massimo 2 s di lavoro (oltre: cb(eventi, true) con quelli letti fin li')
+    function leggiSottotitoli(testo, formato, cb) {
+      var out = [], righe, i, pezzi, fai;
+      testo = String(testo).replace(/\r\n?/g, '\n');
+      if (formato === 'ass' || formato === 'ssa') {
+        var campi = null;
+        righe = pezzi = testo.split('\n');
+        fai = function (r) {
+          r = r.slice(0, 6000);
+          if (/^\s*Format\s*:/i.test(r) && campi === null && /Text/i.test(r)) {
+            campi = r.replace(/^\s*Format\s*:/i, '').split(',').map(function (x) { return x.trim().toLowerCase(); });
+            return;
+          }
+          if (!/^\s*Dialogue\s*:/i.test(r)) return;
+          var f = r.replace(/^\s*Dialogue\s*:\s*/i, '').split(','), c = campi || ['layer', 'start', 'end', 'style', 'name', 'marginl', 'marginr', 'marginv', 'effect', 'text'];
+          var kt = c.indexOf('text'), ks = c.indexOf('start'), ke = c.indexOf('end');
+          if (kt < 0 || f.length < c.length) return;
+          var a = tempoAss(f[ks]), z = tempoAss(f[ke]);
+          if (a < 0 || z < a) return;
+          var ev = testoAss(f.slice(kt).join(','));
+          if (!ev.x) return;
+          ev.t = a; ev.d = z - a;
+          out.push(ev);
+        };
+      } else {
+        pezzi = testo.split(/\n\s*\n/);
+        fai = function (blocco) {
+          var l = blocco.split('\n'), k = 0;
+          while (k < l.length && l[k].indexOf('-->') === -1) k++;
+          if (k >= l.length) return;
+          var tt = l[k].split('-->'), ta = tempoTesto(tt[0]), tz = tempoTesto(tt[1] || '');
+          if (ta < 0 || tz < ta) return;
+          var e2 = testoSrt(l.slice(k + 1).join('\n'));
+          if (!e2.x) return;
+          e2.t = ta; e2.d = tz - ta;
+          out.push(e2);
+        };
+      }
+      function finisci() { out.sort(function (x, y) { return x.t - y.t; }); return out; }
+      if (!cb) { for (i = 0; i < pezzi.length && out.length < MAX_EVENTI; i++) fai(pezzi[i]); return finisci(); }
+      var k0 = 0, spesi = 0;
+      (function fetta() {
+        var t0 = Date.now();
+        while (k0 < pezzi.length && out.length < MAX_EVENTI && Date.now() - t0 < 15) for (var g = 0; g < 32 && k0 < pezzi.length; g++) fai(pezzi[k0++]);
+        spesi += Date.now() - t0;
+        if (k0 < pezzi.length && out.length < MAX_EVENTI && spesi < 2000) { setImmediate(fetta); return; }
+        cb(finisci(), k0 < pezzi.length); // non letti tutti (troppi eventi o troppo lavoro): "complessi"
+      })();
+    }
+
+    /* ============================================================ le schede: NFO di Kodi e Jellyfin, immagini accanto
+     * I .nfo (XML) che scrivono Kodi, Jellyfin e tinyMediaManager e le immagini con i loro nomi (poster.jpg, fanart.jpg,
+     * <film>-poster.jpg, clearlogo.png, season01-poster.jpg, .actors/Nome_Cognome.jpg). Niente internet. */
+
+    var EST_IMG = /\.(jpe?g|png|tbn|webp)$/i;
+    var MAX_NFO = 128 << 10, MAX_IMG = 8 << 20, MAX_PIXEL = 12000000, MAX_LATO = 4096;
+    function entita(s) {
+      return s.replace(/&(#x[0-9a-f]{1,6}|#\d{1,7}|amp|lt|gt|quot|apos|nbsp);/gi, function (m, e) {
+        var l = e.toLowerCase();
+        if (l === 'amp') return '&';
+        if (l === 'lt') return '<';
+        if (l === 'gt') return '>';
+        if (l === 'quot') return '"';
+        if (l === 'apos') return '\'';
+        if (l === 'nbsp') return ' ';
+        var n = l.charAt(1) === 'x' ? parseInt(l.slice(2), 16) : parseInt(l.slice(1), 10);
+        if (!(n > 0) || n >= 0x110000 || (n >= 0xd800 && n < 0xe000)) return '';
+        return n > 0xffff ? String.fromCharCode(0xd800 + ((n - 0x10000) >> 10), 0xdc00 + ((n - 0x10000) & 1023)) : String.fromCharCode(n);
+      });
+    }
+    // il testo di un pezzo di XML: i CDATA cosi' come sono, il resto senza tag e con le entita'. Si legge in avanti con
+    // indexOf (tempo lineare): un .nfo fatto apposta, con tanti "<" o "<![CDATA[" senza chiusura, non ferma il servizio
+    function testoXml(x) {
+      var out = '', i = 0, n = x.length;
+      while (i < n) {
+        var lt = x.indexOf('<', i);
+        if (lt === -1) { out += entita(x.slice(i)); break; }
+        out += entita(x.slice(i, lt));
+        if (x.substr(lt, 9) === '<![CDATA[') {
+          var fine = x.indexOf(']]>', lt + 9);
+          if (fine === -1) { out += x.slice(lt + 9); break; }
+          out += x.slice(lt + 9, fine);
+          i = fine + 3;
+        } else {
+          var gt = x.indexOf('>', lt + 1);
+          if (gt === -1) break; // un tag senza chiusura: il resto non e' testo
+          i = gt + 1;
+        }
+      }
+      return out.trim();
+    }
+    // i <tag ...>...</tag> dentro x (anche <tag/>): [{ a: attributi, x: contenuto }]. In avanti con indexOf: un tag senza
+    // chiusura ferma la ricerca (non si riprova da ogni "<")
+    function tagXml(x, tag, max) {
+      var out = [], apre = '<' + tag, chiude = '</' + tag, i = 0;
+      max = max || 200;
+      while (out.length < max) {
+        var a = x.indexOf(apre, i);
+        if (a === -1) break;
+        var c = x.charAt(a + apre.length);
+        if (c !== '>' && c !== '/' && c !== ' ' && c !== '\t' && c !== '\n' && c !== '\r') { i = a + apre.length; continue; }
+        var gt = x.indexOf('>', a + apre.length);
+        if (gt === -1) break;
+        var attr = x.slice(a + apre.length, Math.min(gt, a + apre.length + 2000));
+        if (x.charAt(gt - 1) === '/') { out.push({ a: attr.slice(0, -1), x: '' }); i = gt + 1; continue; }
+        var z = x.indexOf(chiude, gt + 1);
+        if (z === -1) break;
+        out.push({ a: attr, x: x.slice(gt + 1, z) });
+        var gz = x.indexOf('>', z + chiude.length);
+        i = gz === -1 ? x.length : gz + 1;
+      }
+      return out;
+    }
+    function primoXml(x, tag, max) { var l = tagXml(x, tag, 1); return l.length ? testoXml(l[0].x).slice(0, max || 300) : ''; }
+    function attrXml(a, nome) {
+      var m = new RegExp('\\b' + nome + '\\s*=\\s*(?:"([^"]*)"|\'([^\']*)\')', 'i').exec(a);
+      return m ? entita(m[1] !== undefined ? m[1] : m[2]) : '';
+    }
+    function elencoXml(x, tag, max, lung) {
+      var out = [];
+      tagXml(x, tag, max * 2).forEach(function (y) {
+        testoXml(y.x).split(/[\/|]/).forEach(function (z) { z = z.trim(); if (z && out.length < max && out.indexOf(z) === -1) out.push(z.slice(0, lung)); });
+      });
+      return out;
+    }
+    // un .nfo: film (<movie>), serie (<tvshow>), puntata (<episodedetails>, la prima se sono piu' d'una). null = non e' un .nfo
+    // vero (per esempio solo l'indirizzo di IMDb)
+    function leggiNfo(t) {
+      t = String(t || '');
+      var r = /<(movie|tvshow|episodedetails|musicvideo)[\s>\/]/.exec(t);
+      if (!r) return null;
+      var dentro = tagXml(t, r[1], 1)[0], x = dentro ? dentro.x : t, tipo = r[1].toLowerCase();
+      var n = { tipo: tipo === 'tvshow' ? 'serie' : tipo === 'episodedetails' ? 'puntata' : 'film',
+        titolo: primoXml(x, 'title', 200), originale: primoXml(x, 'originaltitle', 200), serie: primoXml(x, 'showtitle', 200),
+        anno: +primoXml(x, 'year', 8) || 0, trama: primoXml(x, 'plot', 4000) || primoXml(x, 'outline', 4000), slogan: primoXml(x, 'tagline', 300),
+        durata: +primoXml(x, 'runtime', 8) || 0, classificazione: primoXml(x, 'mpaa', 40) || primoXml(x, 'certification', 40),
+        generi: elencoXml(x, 'genre', 8, 50), studi: elencoXml(x, 'studio', 4, 80), registi: elencoXml(x, 'director', 4, 80),
+        scrittori: elencoXml(x, 'credits', 4, 80), paesi: elencoXml(x, 'country', 3, 60),
+        uscita: primoXml(x, 'premiered', 20) || primoXml(x, 'aired', 20) || primoXml(x, 'releasedate', 20),
+        stagione: -1, episodio: -1, voto: 0, collezione: '', cast: [] };
+      if (!n.anno && /^\d{4}/.test(n.uscita)) n.anno = +n.uscita.slice(0, 4);
+      if (n.tipo === 'puntata') {
+        var st = primoXml(x, 'season', 6), ep = primoXml(x, 'episode', 6);
+        if (/^\d+$/.test(st)) n.stagione = +st;
+        if (/^\d+$/.test(ep)) n.episodio = +ep;
+      }
+      // il voto: <ratings><rating default="true"><value>, oppure <rating> (i .nfo vecchi); sempre su 10
+      var voti = tagXml(x, 'rating', 10), vv = 0;
+      for (var i = 0; i < voti.length; i++) {
+        var val = parseFloat(primoXml(voti[i].x, 'value', 10) || testoXml(voti[i].x)), mx = parseFloat(attrXml(voti[i].a, 'max')) || 10;
+        if (val > 0 && mx > 0 && (!vv || /true/i.test(attrXml(voti[i].a, 'default')))) vv = Math.min(10, val * 10 / mx);
+      }
+      n.voto = Math.round(vv * 10) / 10;
+      var set = tagXml(x, 'set', 1)[0];
+      if (set) n.collezione = (primoXml(set.x, 'name', 120) || testoXml(set.x)).slice(0, 120);
+      var attori = tagXml(x, 'actor', 60);
+      for (var k = 0; k < attori.length && n.cast.length < 30; k++) {
+        var nome = primoXml(attori[k].x, 'name', 80);
+        if (nome) n.cast.push({ nome: nome, ruolo: primoXml(attori[k].x, 'role', 80), ordine: +primoXml(attori[k].x, 'order', 6) || k });
+      }
+      n.cast.sort(function (a, b) { return a.ordine - b.ordine; });
+      n.cast.forEach(function (c) { delete c.ordine; });
+      return n;
+    }
+    // le immagini accanto, coi nomi di Kodi, Jellyfin e tinyMediaManager. base: il nome del video senza estensione ('' per
+    // quelle della cartella); cartella: la cartella e' tutta di questo video (o e' una serie); puntata: "Video.jpg" e'
+    // la miniatura della puntata (16:9), non il poster
+    var NOMI_IMG = { poster: ['poster', 'folder', 'cover', 'default', 'movie', 'show'], fanart: ['fanart', 'backdrop', 'background', 'art'],
+      logo: ['clearlogo', 'logo'], landscape: ['landscape', 'thumb'], banner: ['banner'], disco: ['discart', 'disc'] };
+    function immaginiDi(nomi, base, cartella, puntata) {
+      var idx = {}, out = {}, b = String(base || '').toLowerCase(), i;
+      for (i = 0; i < nomi.length; i++) if (EST_IMG.test(nomi[i])) idx[nomi[i].toLowerCase().replace(/\.[a-z0-9]+$/, '')] = nomi[i];
+      for (var tipo in NOMI_IMG) {
+        if (!Object.prototype.hasOwnProperty.call(NOMI_IMG, tipo)) continue;
+        var l = NOMI_IMG[tipo];
+        for (var k = 0; k < l.length && !out[tipo]; k++) {
+          if (b && idx[b + '-' + l[k]]) out[tipo] = idx[b + '-' + l[k]];
+          else if (b && idx[b + '.' + l[k]]) out[tipo] = idx[b + '.' + l[k]];
+          else if (cartella && idx[l[k]]) out[tipo] = idx[l[k]];
+        }
+      }
+      if (b && idx[b]) { if (puntata) out.landscape = out.landscape || idx[b]; else out.poster = out.poster || idx[b]; }
+      return out;
+    }
+    // le misure di un'immagine dai primi byte, senza decodificarla: { w, h, tipo } o null
+    function misureImg(b) {
+      if (b.length >= 24 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return { w: b.readUInt32BE(16), h: b.readUInt32BE(20), tipo: 'image/png' };
+      if (b.length >= 30 && b.toString('binary', 0, 4) === 'RIFF' && b.toString('binary', 8, 12) === 'WEBP') {
+        var c = b.toString('binary', 12, 16);
+        if (c === 'VP8X') return { w: 1 + (b[24] | b[25] << 8 | b[26] << 16), h: 1 + (b[27] | b[28] << 8 | b[29] << 16), tipo: 'image/webp' };
+        if (c === 'VP8 ') return { w: (b[26] | b[27] << 8) & 0x3fff, h: (b[28] | b[29] << 8) & 0x3fff, tipo: 'image/webp' };
+        if (c === 'VP8L') return { w: 1 + (b[21] | (b[22] & 0x3f) << 8), h: 1 + ((b[22] >> 6) | b[23] << 2 | (b[24] & 0x0f) << 10), tipo: 'image/webp' };
+        return null;
+      }
+      if (b.length >= 4 && b[0] === 0xff && b[1] === 0xd8) {
+        var i = 2;
+        while (i + 9 < b.length) {
+          if (b[i] !== 0xff) { i++; continue; }
+          var mk = b[i + 1];
+          if (mk === 0xff) { i++; continue; }
+          if (mk === 0xd8 || mk === 0x01 || (mk >= 0xd0 && mk <= 0xd7)) { i += 2; continue; }
+          if (mk >= 0xc0 && mk <= 0xcf && mk !== 0xc4 && mk !== 0xc8 && mk !== 0xcc) return { h: b.readUInt16BE(i + 5), w: b.readUInt16BE(i + 7), tipo: 'image/jpeg' };
+          i += 2 + b.readUInt16BE(i + 2);
+        }
+      }
+      return null;
+    }
+    function buonaMisura(mi) { return !!mi && mi.w > 0 && mi.h > 0 && mi.w <= MAX_LATO && mi.h <= MAX_LATO && mi.w * mi.h <= MAX_PIXEL; }
+    // dal nome del file: titolo, anno, stagione e puntata (lo stesso ordine dell'app)
+    var TECNICI = /^(2160p|1080p|1080i|720p|576p|480p|4k|uhd|hd|fhd|bluray|blu|ray|bdrip|brrip|bdremux|remux|webrip|webdl|web|dl|hdtv|dvdrip|hdrip|x264|x265|h264|h265|hevc|avc|av1|vp9|hdr|hdr10|hdr10plus|dv|dovi|sdr|truehd|atmos|dts|dtshd|ma|ddp|dd|dd5|ac3|eac3|aac|flac|lpcm|ita|eng|multi|sub|subs|subita|proper|repack|extended|uncut|imax|internal|limited|10bit|8bit)$/i;
+    function dalNome(nome) {
+      var base = String(nome || '').replace(/\.[a-z0-9]{2,4}$/i, ''), s = base.replace(/[._]+/g, ' ').replace(/\s+/g, ' ');
+      var out = { titolo: '', anno: 0, stagione: -1, episodio: -1 };
+      var se = /^(.*?)[\s\-\[(]*\b[Ss](\d{1,2})[\s\-]*[Ee](\d{1,3})\b/.exec(s) || /^(.*?)[\s\-]*\b(\d{1,2})x(\d{2,3})\b/.exec(s);
+      if (se) { out.stagione = +se[2]; out.episodio = +se[3]; s = se[1]; }
+      else {
+        var an = /^(.*?)[\s\-\[(]*\b(19[2-9]\d|20[0-4]\d)\b/.exec(s);
+        if (an && an[1].replace(/\s+/g, '').length >= 2) { out.anno = +an[2]; s = an[1]; }
+      }
+      var parole = s.split(' '), tenute = [];
+      for (var i = 0; i < parole.length; i++) { if (TECNICI.test(parole[i].replace(/[\[\]()\-]/g, ''))) break; tenute.push(parole[i]); }
+      out.titolo = tenute.join(' ').replace(/[\s\-\[(]+$/, '').replace(/^\s+/, '') || base;
+      return out;
+    }
+    var RE_STAGIONE = /^(?:season|stagione|staffel|saison|temporada|series|serie|s)[\s._-]*(\d{1,3})$|^(specials?|speciali|extra)$/i;
+
+    /* ============================================================ la videoteca */
+
+    var EST_VIDEO = /\.(mkv|webm|mk3d|mp4|m4v|mov|avi|ts|m2ts|mts|mpg|mpeg|wmv|asf|3gp|vob|flv|trp|tp)$/i;
+    var EST_SOTTO = /\.(srt|ass|ssa|vtt)$/i;
+    var NASCOSTE = /^(\.|\$recycle\.bin$|system volume information$|lost\.dir$|found\.\d+$|recycler$)/i;
+    var TIPI = { mkv: 'video/x-matroska', mk3d: 'video/x-matroska', webm: 'video/webm', mp4: 'video/mp4', m4v: 'video/mp4',
+      mov: 'video/quicktime', avi: 'video/x-msvideo', ts: 'video/mp2t', m2ts: 'video/mp2t', mts: 'video/mp2t', trp: 'video/mp2t',
+      tp: 'video/mp2t', mpg: 'video/mpeg', mpeg: 'video/mpeg', vob: 'video/mpeg', wmv: 'video/x-ms-wmv', asf: 'video/x-ms-asf',
+      '3gp': 'video/3gpp', flv: 'video/x-flv' };
+    var BLOCCO = 512 * 1024, VUOTO = nuovo(0);
+
+    function crea(o) {
+      o = o || {};
+      var fs = o.fs, path = o.path, zlib = o.zlib || null;
+      // i codec che il TV legge: dal profilo del TV (profilo.js), che il servizio conosce strada facendo
+      function lettiOra() { var x = typeof o.letti === 'function' ? o.letti() : o.letti; return x && x.audio && x.video ? x : LETTI; }
+      var radici = Array.isArray(o.radici) ? o.radici : [];
+      // percorso -> { dim, data, m (struttura), sotto: { num: { eventi, chiavi, byte } }, sottoAttive: { num: traccia }, usato }
+      var aperti = {};
+      var MAX_APERTI = 6, sottoTot = 0; // sottoTot: i byte dei sottotitoli tenuti, per tutti i file
+
+      function radiceDi(d, cb) {
+        dischi(function (err, l) {
+          if (err) { cb(err); return; }
+          for (var i = 0; i < l.length; i++) if (l[i].id === d) { cb(null, l[i].percorso); return; }
+          cb(errore('disco', 'chiavetta non trovata'));
+        });
+      }
+      // i dischi montati: le cartelle dentro le radici (/opt/media/USBDriveA1 sui Samsung)
+      function dischi(cb) {
+        var out = [], k = 0, primoErrore = null;
+        (function giro() {
+          if (k >= radici.length) { cb(out.length || !primoErrore ? null : primoErrore, out); return; }
+          var r = radici[k++];
+          fs.readdir(r, function (err, nomi) {
+            if (err) { if (!primoErrore) primoErrore = errore(err.code === 'EACCES' || err.code === 'EPERM' ? 'permesso' : 'assente', err.code); giro(); return; }
+            nomi = nomi.filter(function (x) { return !NASCOSTE.test(x); }).sort();
+            var j = 0;
+            (function stat() {
+              if (j >= nomi.length) { giro(); return; }
+              var nome = nomi[j++], p = path.join(r, nome);
+              fs.stat(p, function (err2, st) {
+                if (!err2 && st.isDirectory()) out.push({ id: nome, percorso: p });
+                stat();
+              });
+            })();
+          });
+        })();
+      }
+      // un percorso dentro un disco, controllato: niente "..", niente vie di fuga coi collegamenti
+      function risolvi(d, p, cb) {
+        var parti = String(p || '').split('/').filter(function (x) { return x !== ''; });
+        for (var i = 0; i < parti.length; i++) {
+          if (parti[i] === '.' || parti[i] === '..' || parti[i].indexOf('\u0000') !== -1 || parti[i].indexOf('\\') !== -1) {
+            cb(errore('percorso', 'percorso non valido'));
+            return;
+          }
+        }
+        radiceDi(d, function (err, radice) {
+          if (err) { cb(err); return; }
+          var pieno = path.join.apply(path, [radice].concat(parti));
+          fs.realpath(radice, function (e1, vera) {
+            if (e1) { cb(errore('disco', 'chiavetta non leggibile')); return; }
+            fs.realpath(pieno, function (e2, veroP) {
+              if (e2) { cb(errore(e2.code === 'EACCES' ? 'permesso' : 'assente', e2.code)); return; }
+              if (veroP !== vera && veroP.indexOf(vera + path.sep) !== 0) { cb(errore('percorso', 'fuori dalla chiavetta')); return; }
+              cb(null, veroP, parti);
+            });
+          });
+        });
+      }
+      // ordine "naturale": E2 prima di E10
+      function confrontaNomi(a, b) {
+        var x = String(a).toLowerCase().match(/\d+|\D+/g) || [], y = String(b).toLowerCase().match(/\d+|\D+/g) || [];
+        for (var i = 0; i < Math.min(x.length, y.length); i++) {
+          if (x[i] === y[i]) continue;
+          var nx = /^\d/.test(x[i]), ny = /^\d/.test(y[i]);
+          if (nx && ny) return (+x[i] - +y[i]) || (x[i].length - y[i].length);
+          return x[i] < y[i] ? -1 : 1;
+        }
+        return x.length - y.length;
+      }
+      function cartella(d, p, cb) {
+        risolvi(d, p, function (err, dove) {
+          if (err) { cb(err); return; }
+          fs.readdir(dove, function (e2, nomi) {
+            if (e2) { cb(errore(e2.code === 'EACCES' ? 'permesso' : 'assente', e2.code)); return; }
+            nomi = nomi.filter(function (x) { return !NASCOSTE.test(x); }).slice(0, 3000);
+            var out = { cartelle: [], video: [], sotto: [], troppi: nomi.length >= 3000 }, j = 0;
+            (function stat() {
+              if (j >= nomi.length) {
+                out.cartelle.sort(function (a, b) { return confrontaNomi(a.nome, b.nome); });
+                out.video.sort(function (a, b) { return confrontaNomi(a.nome, b.nome); });
+                out.sotto.sort(function (a, b) { return confrontaNomi(a.nome, b.nome); });
+                cb(null, out);
+                return;
+              }
+              var nome = nomi[j++];
+              fs.stat(path.join(dove, nome), function (e3, st) {
+                if (!e3) {
+                  if (st.isDirectory()) out.cartelle.push({ nome: nome });
+                  else if (st.isFile() && EST_VIDEO.test(nome)) out.video.push({ nome: nome, dim: st.size, data: +st.mtime });
+                  else if (st.isFile() && EST_SOTTO.test(nome) && st.size < (4 << 20)) out.sotto.push({ nome: nome, dim: st.size });
+                }
+                stat();
+              });
+            })();
+          });
+        });
+      }
+
+      // un file aperto: la struttura si legge una volta sola (finche' dimensione e data non cambiano)
+      function apri(d, p, cb) {
+        risolvi(d, p, function (err, dove, parti) {
+          if (err) { cb(err); return; }
+          // solo i video: il permesso non apre documenti e foto della chiavetta
+          if (!EST_VIDEO.test(dove)) { cb(errore('assente', 'non e\' un video')); return; }
+          fs.stat(dove, function (e2, st) {
+            if (e2 || !st.isFile()) { cb(errore('assente', 'file non trovato')); return; }
+            var f = aperti[dove];
+            if (f && f.dim === st.size && f.data === +st.mtime) { f.usato = Date.now(); cb(null, f); return; }
+            var est = (/\.([a-z0-9]+)$/i.exec(dove) || ['', ''])[1].toLowerCase();
+            f = { percorso: dove, parti: parti, nome: parti[parti.length - 1] || '', est: est, dim: st.size, data: +st.mtime,
+              m: null, sotto: {}, usato: Date.now(), tipo: TIPI[est] || 'application/octet-stream' };
+            var lettore = /^(mkv|webm|mk3d)$/.test(est) ? apriMkv : /^(mp4|m4v|mov)$/.test(est) ? apriMp4 : null;
+            if (!lettore) { ricorda(f); cb(null, f); return; }
+            fs.open(dove, 'r', function (e3, fd) {
+              if (e3) { cb(errore(e3.code === 'EACCES' ? 'permesso' : 'assente', e3.code)); return; }
+              var finito = false;
+              function letto(e4, m) {
+                if (finito) return;
+                finito = true;
+                fs.close(fd, function () {});
+                if (!e4) f.m = m; else f.guasto = e4.message;
+                ricorda(f);
+                cb(null, f);
+              }
+              try { lettore(fs, fd, st.size, letto); } catch (e5) { letto(errore('formato', 'file rovinato')); }
+            });
+          });
+        });
+      }
+      function ricorda(f) {
+        if (aperti[f.percorso] && aperti[f.percorso] !== f) dimenticaSotto(aperti[f.percorso], -1); // il file e' cambiato
+        aperti[f.percorso] = f;
+        var l = Object.keys(aperti);
+        if (l.length <= MAX_APERTI) return;
+        l.sort(function (a, b) { return aperti[a].usato - aperti[b].usato; });
+        dimenticaSotto(aperti[l[0]], -1);
+        delete aperti[l[0]];
+      }
+
+      // per l'app: tutto quello che serve per scegliere (tracce, cosa legge il TV, capitoli, avvisi)
+      function info(d, p, scelte, cb) {
+        apri(d, p, function (err, f) {
+          if (err) { cb(err); return; }
+          var m = f.m, out = { nome: f.nome, dim: f.dim, data: f.data, formato: m ? m.formato : f.est, durata: m ? m.durata : 0,
+            titolo: m ? m.titolo : '', video: null, audio: [], sotto: [], capitoli: m ? m.capitoli : [], avvisi: [] };
+          if (!m) {
+            out.avvisi.push(f.guasto ? 'struttura' : 'sconosciuto');
+            cb(null, out);
+            return;
+          }
+          var letti = lettiOra(), pi = piano(m, scelte, letti);
+          for (var i = 0; i < m.tracce.length; i++) {
+            var t = m.tracce[i], fam = famiglia(t.codec), base = { num: t.num, codec: fam, nomeCodec: NOMI[fam] || fam,
+              lingua: lingua(t), nome: t.nome || '', predefinita: !!t.predefinita, forzata: !!t.forzata };
+            if (t.tipo === 1 && t.num === pi.video) {
+              var v = t.video || {};
+              out.video = { num: t.num, codec: fam, nomeCodec: NOMI[fam] || fam, largh: v.largh || 0, alt: v.alt || 0,
+                hdr: t.dv ? 'DV' : v.trasf === 16 ? 'HDR10' : v.trasf === 18 ? 'HLG' : '', dv: t.dv || null, bit: v.bit || 0,
+                letto: !!letti.video[fam] };
+            } else if (t.tipo === 2) {
+              base.canali = (t.audio || {}).canali || 0;
+              base.commento = !!t.commento;
+              base.letto = !!letti.audio[fam] && !t.cifrata;
+              out.audio.push(base);
+            } else if (t.tipo === 17) {
+              base.udito = !!t.udito;
+              base.immagini = fam === 'PGS' || fam === 'VOBSUB';
+              base.leggibile = fam === 'SRT' || fam === 'ASS' || fam === 'VTT' || fam === 'PGS';
+              out.sotto.push(base);
+            }
+          }
+          out.scelta = { audio: pi.audio };
+          if (pi.senzaAudio) out.avvisi.push('audio');
+          if (out.video && !out.video.letto) out.avvisi.push('video');
+          if (out.durata > 0) out.mbps = Math.round(f.dim * 8 / out.durata / 1e5) / 10;
+          cb(null, out);
+        });
+      }
+
+      function sottoTracce(f) {
+        var out = {}, m = f.m;
+        if (!m || m.formato === 'mp4') return out;
+        for (var i = 0; i < m.tracce.length; i++) {
+          var t = m.tracce[i], fam = famiglia(t.codec);
+          if (t.tipo === 17 && (fam === 'SRT' || fam === 'ASS' || fam === 'VTT' || fam === 'PGS') && !t.cifrata) out[t.num] = t;
+        }
+        return out;
+      }
+      // zlib con un tetto (inflateSync non ne ha, nel Node dei TV): un blocco alla volta, cosi' mille blocchi non aprono
+      // mille decompressori insieme; oltre il tetto il blocco si butta
+      var coda = [], gonfiando = false, dopoGonfi = [];
+      function gonfia(dati, max, cb) {
+        if (!zlib || coda.length >= MAX_CODA_GONFIO) { cb(null); return; }
+        coda.push({ dati: dati, max: max, cb: cb });
+        if (!gonfiando) prossimoGonfio();
+      }
+      function prossimoGonfio() {
+        var x = coda.shift();
+        if (!x) {
+          gonfiando = false;
+          var l = dopoGonfi; dopoGonfi = [];
+          for (var i = 0; i < l.length; i++) { try { l[i](); } catch (e) {} }
+          return;
+        }
+        gonfiando = true;
+        var z = null, parti = [], tot = 0, finito = false;
+        function fine(r) {
+          if (finito) return;
+          finito = true;
+          try { x.cb(r); } catch (e) {}
+          setImmediate(prossimoGonfio);
+        }
+        try { z = zlib.createInflate(); } catch (e) { fine(null); return; }
+        z.on('error', function () { fine(null); });
+        z.on('data', function (c) {
+          if (finito) return;
+          tot += c.length;
+          if (tot > x.max) { fine(null); try { z.close(); } catch (e) {} return; }
+          parti.push(c);
+        });
+        z.on('end', function () { fine(Buffer.concat(parti, tot)); });
+        z.end(x.dati);
+      }
+      // quando i blocchi in coda sono gonfiati (le Cues rispondono con tutti i sottotitoli letti)
+      function quandoGonfiati(fn) { if (!gonfiando && !coda.length) fn(); else dopoGonfi.push(fn); }
+
+      // un blocco di sottotitoli trovato (mentre il file passa o dalle Cues): solo per la traccia che l'app mostra
+      function nuovoSotto(f, num, ev) {
+        var t = f.sottoAttive ? f.sottoAttive[num] : null, c = t ? t.comp : null;
+        if (!t) return;
+        if (c && c.algo === 0) {
+          gonfia(ev.dati, famiglia(t.codec) === 'PGS' ? MAX_GONFIO_PGS : MAX_GONFIO_TESTO, function (dati) { if (dati) aggiungiSotto(f, num, t, ev, dati); });
+          return;
+        }
+        var dati = !c ? ev.dati : c.algo === 3 && c.dati ? unisci(c.dati, ev.dati) : null;
+        if (dati) aggiungiSotto(f, num, t, ev, dati);
+      }
+      function pesoEv(e) { return e.pgs ? e.pgs.length + 64 : e.x.length * 2 + 64; }
+      // un evento in ordine di tempo, senza doppioni; i PGS restano byte (in base64 solo quando si mandano)
+      function aggiungiSotto(f, num, t, ev, dati) {
+        if (!f.sottoAttive || f.sottoAttive[num] !== t || aperti[f.percorso] !== f) return; // nel frattempo cambiata o dimenticata
+        var fam = famiglia(t.codec), s = f.sotto[num] || (f.sotto[num] = { eventi: [], chiavi: {}, byte: 0, ordinati: true });
+        var chiave = ev.t + ':' + dati.length;
+        if (s.chiavi[chiave]) return;
+        var e;
+        if (fam === 'PGS') e = { t: ev.t, d: ev.d, pgs: dati };
+        else {
+          if (s.byte > MAX_TESTO_TRACCIA || s.eventi.length >= MAX_EVENTI) return; // un file fatto apposta: il resto si lascia stare
+          var testo = dati.toString('utf8', 0, Math.min(dati.length, 2000));
+          if (fam === 'ASS') {
+            var campi = testo.split(',');
+            e = testoAss(campi.length >= 9 ? campi.slice(8).join(',') : testo);
+          } else e = testoSrt(testo);
+          if (!e.x) e.x = '';
+          e.t = ev.t;
+          e.d = ev.d >= 0 ? ev.d : 4000;
+        }
+        s.chiavi[chiave] = true;
+        e.k = chiave;
+        // in fondo: di solito arrivano gia' in ordine; se no si ordinano quando servono (mai uno spostamento per evento)
+        if (s.eventi.length && s.eventi[s.eventi.length - 1].t > e.t) s.ordinati = false;
+        s.eventi.push(e);
+        var w = pesoEv(e);
+        s.byte += w;
+        sottoTot += w;
+        // troppa memoria (i PGS pesano): prima i sottotitoli degli altri file, poi quelli di qui piu' lontani da dove si guarda
+        while (sottoTot > MAX_SOTTO_TOT && togliAltri(f)) { /* uno alla volta */ }
+        if (sottoTot > MAX_SOTTO_TOT || s.eventi.length > MAX_EVENTI) sfoltisci(f, num, s, fam === 'PGS' ? FINESTRA_PGS : FINESTRA_TESTO);
+      }
+      function ordina(s) { if (!s.ordinati) { s.eventi.sort(function (a, b) { return a.t - b.t; }); s.ordinati = true; } }
+      // via un quarto degli eventi, i piu' lontani da dove si guarda, in una volta sola (costa un ordinamento, non uno
+      // spostamento per evento); i tratti tolti si rileggono dalle Cues se servono
+      function sfoltisci(f, num, s, finestra) {
+        ordina(s);
+        var qui = f.dove || 0, a = 0, z = s.eventi.length, quanti = Math.max(1, Math.floor(z / 4));
+        while (quanti-- > 0 && z - a > 1) { if (Math.abs(s.eventi[a].t - qui) > Math.abs(s.eventi[z - 1].t - qui)) a++; else z--; }
+        var via = s.eventi.slice(0, a).concat(s.eventi.slice(z));
+        s.eventi = s.eventi.slice(a, z);
+        for (var i = 0; i < via.length; i++) {
+          delete s.chiavi[via[i].k];
+          var w = pesoEv(via[i]);
+          s.byte -= w;
+          sottoTot -= w;
+          if (f.cuesFatte) { delete f.cuesFatte[num + ':' + Math.floor(via[i].t / finestra)]; delete f.cuesFatte[num + ':' + (Math.floor(via[i].t / finestra) + 1)]; }
+        }
+        if (sottoTot > MAX_SOTTO_TOT && s.eventi.length > 1) sfoltisci(f, num, s, finestra);
+      }
+      // i sottotitoli tenuti per un file (tranne la traccia "tranne"): via, e i tratti letti dalle Cues da rileggere
+      function dimenticaSotto(g, tranne) {
+        var tolto = false;
+        for (var k in g.sotto) {
+          if (!Object.prototype.hasOwnProperty.call(g.sotto, k) || +k === tranne) continue;
+          sottoTot -= g.sotto[k].byte;
+          delete g.sotto[k];
+          tolto = true;
+        }
+        if (tolto && g.cuesFatte) {
+          for (var c in g.cuesFatte) if (Object.prototype.hasOwnProperty.call(g.cuesFatte, c) && +c.split(':')[0] !== tranne) delete g.cuesFatte[c];
+        }
+        return tolto;
+      }
+      // i sottotitoli del file usato meno di recente (non f): true = liberato qualcosa
+      function togliAltri(f) {
+        var l = Object.keys(aperti).map(function (k) { return aperti[k]; }).sort(function (a, b) { return a.usato - b.usato; });
+        for (var i = 0; i < l.length; i++) if (l[i] !== f && dimenticaSotto(l[i], -1)) return true;
+        return false;
+      }
+      // la traccia di sottotitoli che l'app mostra (lo stesso oggetto per tutte le letture in corso del file)
+      function attiveDi(f) { return f.sottoAttive || (f.sottoAttive = {}); }
+
+      // dalle Cues: i blocchi di una traccia di sottotitoli letti uno per uno (pochi KB ciascuno), in un intervallo di tempo
+      function daCues(f, num, da, a, cb) {
+        var m = f.m, l = m && m.cues ? m.cues[num] : null;
+        if (!l || !l.length) { cb(false); return; }
+        var scala = m.scala / 1e6, nella = l.filter(function (c) { var t = c.t * scala; return t >= da && t <= a; });
+        var visti = {}, scelti = nella.filter(function (c) {
+          var k = c.cl + ':' + c.rel;
+          if (c.rel < 0 || visti[k]) return false;
+          visti[k] = true;
+          return true;
+        }).slice(0, 5000);
+        if (!scelti.length) { cb(!nella.length); return; } // nessun blocco qui: letta; blocchi senza posizione: no
+        var t = m.tracce.filter(function (x) { return x.num === num; })[0];
+        fs.open(f.percorso, 'r', function (err, fd) {
+          if (err) { cb(false); return; }
+          var k = 0, inVolo = 0, testate = f.testate || (f.testate = {}), finito = false, letti = 0;
+          function chiudi() { if (finito) return; finito = true; fs.close(fd, function () {}); quandoGonfiati(function () { cb(true); }); }
+          function testa(cl, poi) {
+            if (testate[cl] !== undefined) { poi(testate[cl]); return; }
+            leggi(fs, fd, cl, 16, function (e2, h) {
+              var hi = !e2 && leggiId(h, 0), hd = hi && hi.id === ID.CLUSTER ? leggiVint(h, hi.n) : null;
+              if (!e2 && Object.keys(testate).length < 20000) testate[cl] = hd ? cl + hi.n + hd.n : -1;
+              poi(hd ? cl + hi.n + hd.n : -1);
+            });
+          }
+          function uno() {
+            if (letti > (32 << 20)) k = scelti.length; // basta: 32 MB per finestra
+            if (k >= scelti.length) { if (!inVolo) chiudi(); return; }
+            var c = scelti[k++];
+            inVolo++;
+            testa(c.cl, function (dati) {
+              if (dati < 0) { inVolo--; uno(); return; }
+              // prima 4 KB (il testo ci sta); se il blocco e' piu' grande (un'immagine PGS) si rilegge intero
+              function blocco(quanti, poi) { letti += quanti; leggi(fs, fd, dati + c.rel, quanti, poi); }
+              blocco(4096, function dopoTesta(e3, b) {
+                var hi0 = !e3 && b ? leggiId(b, 0) : null, hd0 = hi0 && hi0.id > 0 ? leggiVint(b, hi0.n) : null;
+                if (hd0 && !hd0.rotto && hi0.n + hd0.n + hd0.v > b.length && hi0.n + hd0.n + hd0.v <= (2 << 20) && !dopoTesta.gia) {
+                  dopoTesta.gia = true;
+                  blocco(hi0.n + hd0.n + hd0.v, dopoTesta);
+                  return;
+                }
+                inVolo--;
+                try {
+                  if (!e3 && b) {
+                    var hi = leggiId(b, 0), hd = hi && hi.id > 0 ? leggiVint(b, hi.n) : null;
+                    if (hd && (hi.id === ID.SIMPLE || hi.id === ID.GRUPPO) && hi.n + hd.n + hd.v <= b.length) {
+                      var s = new Scansione(m, {}, {}, null, null), contenuto = b.slice(hi.n + hd.n, hi.n + hd.n + hd.v);
+                      s.presa = { num: num, gruppo: hi.id === ID.GRUPPO, manca: 0, parti: [contenuto], tempo: 0 };
+                      // il tempo assoluto viene dalla Cue (il blocco ha il tempo relativo al suo Cluster)
+                      s.suSotto = function (n, ev) {
+                        ev.t = Math.round(c.t * scala);
+                        if (ev.d < 0 && c.dur >= 0) ev.d = Math.round(c.dur * scala);
+                        nuovoSotto(f, n, ev);
+                      };
+                      s.finePresa();
+                    }
+                  }
+                } catch (e4) { /* un blocco rotto (o fatto apposta): si salta */ }
+                uno();
+              });
+            });
+            if (inVolo < 6) uno();
+          }
+          if (!t) { chiudi(); return; }
+          uno();
+        });
+      }
+
+      function sotto(d, p, num, da, cb, dopo) {
+        apri(d, p, function (err, f) {
+          if (err) { cb(err); return; }
+          num = +num;
+          da = Math.max(0, +da || 0);
+          dopo = dopo !== undefined && dopo !== null && dopo !== '' && isFinite(+dopo) ? +dopo : -1;
+          f.dove = da;
+          var tr = sottoTracce(f)[num];
+          if (!tr) { cb(errore('assente', 'traccia di sottotitoli non trovata')); return; }
+          // da ora si raccoglie solo questa traccia (anche nelle letture del file gia' in corso); le altre si dimenticano
+          var attive = attiveDi(f);
+          if (attive[num] !== tr) {
+            for (var a0 in attive) if (Object.prototype.hasOwnProperty.call(attive, a0)) delete attive[a0];
+            attive[num] = tr;
+            dimenticaSotto(f, num);
+          }
+          // a finestre: 2 minuti per i PGS (pesano), 10 per il testo. Si risponde con la finestra di "da" e intanto si
+          // legge la prossima
+          var W = famiglia(tr.codec) === 'PGS' ? FINESTRA_PGS : FINESTRA_TESTO, k = Math.floor(da / W);
+          function rispondi(letta) {
+            var s = f.sotto[num] || { eventi: [], ordinati: true }, a = da + W, out = [], primo = 0, i;
+            ordina(s);
+            // l'ultimo iniziato prima di "da" resta sempre: un PGS non ha durata (lo toglie quello dopo). Ricerca a meta'
+            var lo = 0, hi = s.eventi.length - 1;
+            while (lo <= hi) { var mid = (lo + hi) >> 1; if (s.eventi[mid].t <= da) { primo = mid; lo = mid + 1; } else hi = mid - 1; }
+            for (i = primo; i < s.eventi.length && out.length < 400; i++) {
+              var e = s.eventi[i];
+              if (e.t > a) break;
+              if (dopo >= 0 && e.t <= dopo) continue; // l'app li ha gia'
+              if (i === primo || e.t + Math.max(e.d, 0) >= da - 2000) out.push(e.pgs ? { t: e.t, d: e.d, k: e.k, pgs: e.pgs.toString('base64') } : e);
+            }
+            // "completi" solo per i file accanto (letti interi): le tracce del file si chiedono di nuovo andando avanti
+            cb(null, { eventi: out, fino: letta ? (k + 1) * W : 0, completi: false });
+          }
+          leggiFinestra(f, num, k, W, function (letta) {
+            rispondi(letta);
+            leggiFinestra(f, num, k + 1, W, function () {});
+          });
+        });
+      }
+      // una finestra di sottotitoli dalle Cues, una volta sola: chi chiede mentre si legge aspetta la stessa lettura
+      function leggiFinestra(f, num, k, W, cb) {
+        f.cuesFatte = f.cuesFatte || {};
+        var chiave = num + ':' + k, stato = f.cuesFatte[chiave];
+        if (stato === true || stato === 'no') { cb(stato === true); return; }
+        if (stato && stato.attese) { stato.attese.push(cb); return; }
+        var x = f.cuesFatte[chiave] = { attese: [cb] };
+        daCues(f, num, Math.max(0, k * W - 60000), (k + 1) * W, function (fatto) {
+          if (f.cuesFatte && f.cuesFatte[chiave] === x) f.cuesFatte[chiave] = fatto ? true : 'no';
+          for (var i = 0; i < x.attese.length; i++) { try { x.attese[i](fatto); } catch (e) {} }
+        });
+      }
+
+      function sottoEsterni(d, p, cb) {
+        risolvi(d, p, function (err, dove) {
+          if (err) { cb(err); return; }
+          if (!EST_SOTTO.test(dove)) { cb(errore('assente', 'non sono sottotitoli')); return; }
+          fs.stat(dove, function (e2, st) {
+            if (e2 || !st.isFile() || st.size > (4 << 20)) { cb(errore('assente', 'sottotitoli non trovati')); return; }
+            fs.readFile(dove, function (e3, b) {
+              if (e3) { cb(errore('assente', e3.code)); return; }
+              var formato = (/\.([a-z]+)$/i.exec(dove) || ['', 'srt'])[1].toLowerCase();
+              leggiSottotitoli(testoDi(b), formato, function (eventi, troppi) {
+                cb(null, { eventi: eventi, completi: true, complessi: !!troppi });
+              });
+            });
+          });
+        });
+      }
+
+      /* ---------------------------------------------------------- il file per il <video>, con Range */
+
+      function intervallo(h, dim) {
+        var m = /^bytes=(\d*)-(\d*)$/.exec(String(h || '').replace(/\s+/g, ''));
+        if (!m || (m[1] === '' && m[2] === '')) return null;
+        var a, z;
+        if (m[1] === '') { a = Math.max(0, dim - +m[2]); z = dim - 1; } else { a = +m[1]; z = m[2] === '' ? dim - 1 : Math.min(+m[2], dim - 1); }
+        if (a > z || a >= dim) return false;
+        return { a: a, z: z };
+      }
+      // il confine noto piu' vicino prima di pos (ricerca binaria), da cui la scansione puo' partire
+      function confinePrima(l, pos) {
+        var lo = 0, hi = l.length - 1, r = -1;
+        while (lo <= hi) { var mid = (lo + hi) >> 1; if (l[mid] <= pos) { r = l[mid]; lo = mid + 1; } else hi = mid - 1; }
+        return r;
+      }
+      function nuovoConfine(m, pos) {
+        var l = m.confini, k = l.length;
+        if (k && l[k - 1] < pos) { if (k < MAX_CONFINI) l.push(pos); return; }
+        var lo = 0, hi = k;
+        while (lo < hi) { var mid = (lo + hi) >> 1; if (l[mid] < pos) lo = mid + 1; else hi = mid; }
+        if (l[lo] !== pos && k < MAX_CONFINI) l.splice(lo, 0, pos);
+      }
+
+      function servi(req, res, d, p, scelte) {
+        apri(d, p, function (err, f) {
+          if (err) {
+            res.writeHead(err.codice === 'permesso' ? 403 : 404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+            res.end(err.codice || 'errore');
+            return;
+          }
+          var dim = f.dim, r = intervallo(req.headers.range, dim);
+          if (r === false) {
+            res.writeHead(416, { 'Content-Range': 'bytes */' + dim, 'Access-Control-Allow-Origin': '*' });
+            res.end();
+            return;
+          }
+          var a = r ? r.a : 0, z = r ? r.z : dim - 1, m = f.m;
+          var pi = m ? piano(m, scelte, lettiOra()) : null;
+          var fisse = m && pi ? modificheFisse(m, pi) : [];
+          var subT = m && m.formato !== 'mp4' ? sottoTracce(f) : {};
+          var scansiona = !!(m && m.formato !== 'mp4' && m.cluster1 > 0 && !f.scansioneRotta && (pi.quante || Object.keys(subT).length));
+          var testa = { 'Content-Type': f.tipo, 'Accept-Ranges': 'bytes', 'Content-Length': String(z - a + 1),
+            'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' };
+          if (r) testa['Content-Range'] = 'bytes ' + a + '-' + z + '/' + dim;
+          res.writeHead(r ? 206 : 200, testa);
+          if (req.method === 'HEAD') { res.end(); return; }
+          f.usato = Date.now();
+
+          // da dove si legge: per la scansione dal confine noto prima di "a" (il Cluster dove cade), se non e' troppo
+          // lontano; nell'intestazione (prima del primo Cluster) solo le modifiche fisse
+          var inizio = a, scan = null, daScansione = -1;
+          if (scansiona) {
+            if (a < m.cluster1) daScansione = m.cluster1;
+            else {
+              var c = confinePrima(m.confini, a);
+              if (c >= 0 && a - c <= (8 << 20)) { daScansione = c; inizio = c; }
+              else daScansione = -2; // troppo lontano: si cerca il prossimo Cluster
+            }
+            scan = new Scansione(m, pi.nascoste, attiveDi(f), function (num, ev) { nuovoSotto(f, num, ev); },
+              function (pos) { nuovoConfine(m, pos); });
+          }
+          var fine = Math.min(dim, z + 1 + (scan ? 64 : 0)); // qualche byte in piu' per decidere l'ultimo blocco
+          var lettura = inizio, sospeso = null, sospesoPos = 0, chiuso = false, fd = -1, nf = 0, inAttesa = false, fermataScan = false;
+          // il lettore chiude mentre si aspetta "drain": nessuno richiamerebbe giro() e il file resterebbe aperto
+          function staccato() { chiuso = true; if (inAttesa) { inAttesa = false; res.removeListener('drain', riparti); finisci(); } }
+          function riparti() { inAttesa = false; giro(); }
+          req.on('close', staccato);
+          res.on('close', staccato);
+          // una pausa lunga non chiude la connessione (in Node 12 il server la chiude dopo 2 minuti di silenzio)
+          try { if (req.socket && req.socket.setTimeout) req.socket.setTimeout(0); } catch (e0) {}
+          fs.open(f.percorso, 'r', function (e2, x) {
+            if (e2) { chiuso = true; try { res.destroy(); } catch (e) {} return; }
+            fd = x;
+            giro();
+          });
+          function finisci(rotta) {
+            if (fd >= 0) { fs.close(fd, function () {}); fd = -1; }
+            if (chiuso) return;
+            // meno byte di quelli promessi (file sparito, chiavetta staccata): si chiude la connessione, cosi' il lettore lo
+            // sa subito invece di aspettare il resto
+            if (rotta) { chiuso = true; try { res.destroy(); } catch (e) {} } else res.end();
+          }
+          function giro() {
+            if (chiuso) { finisci(); return; }
+            // la scansione e' rimasta indietro (fermata dopo 15 ms, o tanti blocchi minuscoli): prima si finisce cio' che
+            // c'e', al giro dopo, senza leggere altro (la memoria non cresce) e senza mandare byte non controllati
+            if (sospeso && (sospeso.length >= BLOCCO || fermataScan)) {
+              setImmediate(function () {
+                if (chiuso) { finisci(); return; }
+                var avanti;
+                try { avanti = pezzo(VUOTO); } catch (ex) { rotto(); return; }
+                if (!avanti) { inAttesa = true; res.once('drain', riparti); return; }
+                giro();
+              });
+              return;
+            }
+            if (lettura >= fine && !sospeso) { finisci(); return; }
+            var n = Math.min(BLOCCO, fine - lettura);
+            if (n <= 0) { manda(sospeso, sospesoPos, true); sospeso = null; finisci(); return; }
+            leggi(fs, fd, lettura, n, function (e3, b) {
+              if (e3 || !b.length) { if (sospeso) manda(sospeso, sospesoPos, true); finisci(lettura <= z); return; }
+              var avanti;
+              try { avanti = pezzo(b); } catch (ex) { rotto(); return; }
+              if (!avanti) { inAttesa = true; res.once('drain', riparti); return; }
+              giro();
+            });
+          }
+          // un file fatto male (o apposta): questa risposta si chiude e il file si serve senza scansione (le modifiche
+          // fisse restano); il servizio non si ferma
+          function rotto() {
+            f.scansioneRotta = true;
+            chiuso = true;
+            if (fd >= 0) { fs.close(fd, function () {}); fd = -1; }
+            try { res.destroy(); } catch (e) {}
+          }
+          // un pezzo letto: scansione, modifiche, e la parte che cade nella richiesta. false = aspettare "drain"
+          function pezzo(b) {
+            var pos = sospeso ? sospesoPos : lettura, dati = sospeso ? unisci(sospeso, b) : b;
+            lettura += b.length;
+            sospeso = null;
+            var finale = dati.length, mod = [];
+            fermataScan = false;
+            if (scan) {
+              var da = 0;
+              if (daScansione === -2) {
+                // ricerca del prossimo Cluster (1F 43 B6 75) seguito da un Tempo o da un CRC
+                for (var i = 0; i + 13 < dati.length; i++) {
+                  if (dati[i] === 0x1f && dati[i + 1] === 0x43 && dati[i + 2] === 0xb6 && dati[i + 3] === 0x75) {
+                    var vd = leggiVint(dati, i + 4);
+                    if (vd && !vd.rotto && (dati[i + 4 + vd.n] === 0xe7 || dati[i + 4 + vd.n] === 0xbf)) { daScansione = pos + i; break; }
+                  }
+                }
+                if (daScansione === -2) { da = -1; finale = Math.max(0, dati.length - 13); }
+              }
+              if (da >= 0 && daScansione >= 0 && pos + dati.length > daScansione) {
+                da = Math.max(0, daScansione - pos);
+                var r2 = scan.mangia(da ? dati.slice(da) : dati, pos + da);
+                finale = da + r2.usati;
+                mod = r2.modifiche;
+                fermataScan = r2.fermata;
+                // il file e' finito: si manda tutto (ma solo quando la scansione ha davvero guardato tutto quello che poteva)
+                if (lettura >= fine && finale < dati.length && !r2.fermata) finale = dati.length;
+                daScansione = pos; // da qui in poi la scansione segue i dati
+              }
+            }
+            if (finale < dati.length) { sospeso = dati.slice(finale); sospesoPos = pos + finale; dati = dati.slice(0, finale); }
+            // le modifiche fisse e quelle trovate, solo dentro questo pezzo
+            for (var k = nf; k < fisse.length && fisse[k].pos < pos + dati.length; k++) {
+              if (fisse[k].pos >= pos) dati[fisse[k].pos - pos] = fisse[k].byte;
+            }
+            while (nf < fisse.length && fisse[nf].pos < pos + dati.length) nf++;
+            for (var j = 0; j < mod.length; j++) if (mod[j] >= pos && mod[j] < pos + dati.length) dati[mod[j] - pos] = ID.VOID;
+            if (scan && pos + dati.length > (f.fineLetta || 0)) {
+              f.fineLetta = pos + dati.length;
+            }
+            return manda(dati, pos, false);
+          }
+          // manda la parte che cade nella richiesta [a, z]; false = aspetta "drain"
+          function manda(dati, pos, ultimo) {
+            if (!dati || chiuso) return true;
+            var da = Math.max(a, pos), al = Math.min(z + 1, pos + dati.length);
+            if (al <= da) return true;
+            return res.write(dati.slice(da - pos, al - pos));
+          }
+        });
+      }
+
+      /* ---------------------------------------------------------- le schede (NFO, immagini, tag) e le immagini */
+
+      // le cartelle lette di recente (le schede di tanti video della stessa cartella): 10 secondi, al massimo 60
+      var elenchi = {}, schede = {};
+      function elenco(dove, cb) {
+        var e = elenchi[dove];
+        if (e && Date.now() - e.at < 10000) { cb(null, e.nomi); return; }
+        fs.readdir(dove, function (err, nomi) {
+          if (err) { cb(err); return; }
+          nomi = nomi.filter(function (x) { return !NASCOSTE.test(x) || x === '.actors'; }).slice(0, 3000);
+          var l = Object.keys(elenchi);
+          if (l.length >= 60) delete elenchi[l[0]];
+          elenchi[dove] = { at: Date.now(), nomi: nomi };
+          cb(null, nomi);
+        });
+      }
+      function trovaNome(nomi, voluto) {
+        var v = String(voluto).toLowerCase();
+        for (var i = 0; i < nomi.length; i++) if (nomi[i].toLowerCase() === v) return nomi[i];
+        return null;
+      }
+      function unisci2(a, b) { return a ? a + '/' + b : b; }
+      function leggiNfoIn(dove, nome, cb) {
+        if (!nome) { cb(null); return; }
+        var pieno = path.join(dove, nome);
+        // lstat: un .nfo che e' un collegamento (verso un file del TV) non si legge
+        fs.lstat(pieno, function (e, st) {
+          if (e || !st.isFile() || st.size > MAX_NFO) { cb(null); return; }
+          fs.readFile(pieno, function (e2, b) { var n = null; try { n = e2 ? null : leggiNfo(testoDi(b)); } catch (e3) {} cb(n); });
+        });
+      }
+      // le foto degli attori: .actors/Nome_Cognome.jpg (Kodi, tinyMediaManager)
+      function fotoCast(cast, dove, relC, nomi, cb) {
+        if (!cast.length || !trovaNome(nomi, '.actors')) { cb(); return; }
+        var cartellaFoto = path.join(dove, trovaNome(nomi, '.actors'));
+        fs.lstat(cartellaFoto, function (e0, st) {
+          if (e0 || !st.isDirectory()) { cb(); return; } // un collegamento non si segue
+          elenco(cartellaFoto, function (e, foto) {
+          if (!e) {
+            cast.forEach(function (c) {
+              var f = trovaNome(foto, c.nome.replace(/\s+/g, '_') + '.jpg') || trovaNome(foto, c.nome.replace(/\s+/g, '_') + '.png');
+              if (f) c.foto = { p: unisci2(unisci2(relC, '.actors'), f) };
+            });
+          }
+          cb();
+          });
+        });
+      }
+      function refImg(relC, mappa) {
+        var out = {};
+        for (var k in mappa) if (Object.prototype.hasOwnProperty.call(mappa, k)) out[k] = { p: unisci2(relC, mappa[k]) };
+        return out;
+      }
+      function riempi(s, n) {
+        if (!n) return;
+        ['titolo', 'originale', 'anno', 'trama', 'slogan', 'durata', 'classificazione', 'voto', 'collezione', 'uscita'].forEach(function (k) {
+          if (n[k] && !s[k]) s[k] = n[k];
+        });
+        ['generi', 'studi', 'registi', 'scrittori', 'paesi', 'cast'].forEach(function (k) { if (n[k] && n[k].length && !(s[k] && s[k].length)) s[k] = n[k]; });
+        if (n.stagione >= 0 && s.stagione < 0) s.stagione = n.stagione;
+        if (n.episodio >= 0 && s.episodio < 0) s.episodio = n.episodio;
+      }
+      // le copertine dentro il file: gli allegati immagine del MKV (cover.jpg, cover_land.jpg...) o "covr" dell'MP4
+      function allegatiDi(f, cb) {
+        var m = f.m;
+        if (!m || !m.allegati) { cb([]); return; }
+        if (m.listaAllegati) { cb(m.listaAllegati); return; }
+        fs.open(f.percorso, 'r', function (e, fd) {
+          if (e) { cb([]); return; }
+          var pos = m.allegati.da, out = [], giri = 0;
+          function fine() { fs.close(fd, function () {}); m.listaAllegati = out; cb(out); }
+          (function giro() {
+            if (pos >= m.allegati.a || out.length >= 16 || ++giri > 200) { fine(); return; }
+            leggi(fs, fd, pos, 4096, function (e2, b) {
+              if (e2 || !b || !b.length) { fine(); return; }
+              try {
+                var hi = leggiId(b, 0), hd = hi && hi.id > 0 ? leggiVint(b, hi.n) : null;
+                if (!hd || hd.rotto || hd.ignota) { fine(); return; }
+                var s0 = hi.n + hd.n, z = Math.min(b.length, s0 + hd.v), x = { nome: '', tipo: '', pos: -1, n: 0 }, i = s0;
+                if (hi.id !== 0x61A7) i = z; // un CRC-32 o un Void (ffmpeg mette il CRC per primo): si passa oltre
+                // nome e tipo stanno prima dei dati (che non si leggono qui: solo dove sono e quanto sono lunghi)
+                while (i < z) {
+                  var ci = leggiId(b, i), cd = ci && ci.id > 0 ? leggiVint(b, i + ci.n) : null;
+                  if (!cd || cd.rotto) break;
+                  var ds = i + ci.n + cd.n;
+                  if (ci.id === 0x466E) x.nome = stringa(b, ds, Math.max(0, Math.min(cd.v, z - ds))).slice(0, 120);
+                  else if (ci.id === 0x4660) x.tipo = stringa(b, ds, Math.max(0, Math.min(cd.v, z - ds))).slice(0, 60);
+                  else if (ci.id === 0x465C) { x.pos = pos + ds; x.n = cd.v; }
+                  i = ds + cd.v;
+                }
+                if (x.pos >= 0 && x.n > 0 && x.n <= MAX_IMG && x.pos + x.n <= m.dim && (/^image\/(jpe?g|png)$/i.test(x.tipo) || /\.(jpe?g|png)$/i.test(x.nome))) out.push(x);
+                pos += s0 + hd.v;
+              } catch (ex) { fine(); return; }
+              giro();
+            });
+          })();
+        });
+      }
+      function immaginiFile(f, cb) {
+        var m = f.m;
+        if (!m) { cb([]); return; }
+        if (m.formato === 'mp4') { cb((m.covr || []).filter(function (c) { return c.pos + c.n <= m.dim; }).map(function (c) { return { nome: 'cover', pos: c.pos, n: c.n }; })); return; }
+        allegatiDi(f, cb);
+      }
+      // che copertina e' un allegato: i nomi di Matroska (cover, small_cover, cover_land), poi la prima immagine
+      function tipoAllegato(nome) {
+        var n = String(nome).toLowerCase();
+        if (/land|wide|backdrop|fanart/.test(n)) return /fanart|backdrop/.test(n) ? 'fanart' : 'landscape';
+        if (/^small_/.test(n)) return '';
+        if (/logo/.test(n)) return 'logo';
+        return 'poster';
+      }
+
+      // la scheda di un video (film o puntata) o di una cartella (film, serie, stagione, cartella qualsiasi), dai .nfo,
+      // dalle immagini accanto e (pieno) dai tag e dalle copertine dentro il file. Senza niente: dal nome del file
+      function scheda(d, p, pieno, cb) {
+        risolvi(d, p, function (err, dove, parti) {
+          if (err) { cb(err); return; }
+          fs.stat(dove, function (e1, st) {
+            if (e1) { cb(errore('assente', 'non trovato')); return; }
+            var dir = st.isDirectory();
+            if (!dir && !EST_VIDEO.test(dove)) { cb(errore('assente', 'non e\' un video')); return; }
+            var chiave = d + '|' + parti.join('/') + '|' + (pieno ? 1 : 0), c = schede[chiave];
+            if (c && Date.now() - c.at < 60000) { cb(null, c.s); return; }
+            function fatto(e, s) {
+              if (!e) {
+                var l = Object.keys(schede);
+                if (l.length >= 400) delete schede[l[0]];
+                schede[chiave] = { at: Date.now(), s: s };
+              }
+              cb(e, s);
+            }
+            try { (dir ? schedaCartella : schedaVideo)(d, dove, parti, pieno, fatto); } catch (e2) { cb(errore('formato', 'scheda non leggibile')); }
+          });
+        });
+      }
+      function nuovaScheda(tipo, titolo) {
+        return { tipo: tipo, titolo: titolo || '', originale: '', anno: 0, trama: '', slogan: '', durata: 0, secondi: 0, classificazione: '',
+          voto: 0, generi: [], studi: [], registi: [], scrittori: [], paesi: [], collezione: '', uscita: '', cast: [], stagione: -1,
+          episodio: -1, serie: null, img: {}, fonti: [] };
+      }
+      function schedaVideo(d, dove, parti, pieno, cb) {
+        var cartellaVera = path.dirname(dove), relC = parti.slice(0, -1).join('/'), nome = parti[parti.length - 1];
+        var base = nome.replace(/\.[^.]+$/, ''), dn = dalNome(nome);
+        elenco(cartellaVera, function (e, nomi) {
+          if (e) { cb(errore('assente', e.code)); return; }
+          var video = nomi.filter(function (x) { return EST_VIDEO.test(x) && !/(^|[\s._-])(sample|trailer)([\s._-]|$)/i.test(x); });
+          var solo = video.length === 1, s = nuovaScheda('film', '');
+          leggiNfoIn(cartellaVera, trovaNome(nomi, base + '.nfo') || (solo ? trovaNome(nomi, 'movie.nfo') : null), function (n) {
+            if (n) { s.fonti.push('nfo'); riempi(s, n); if (n.tipo === 'puntata') s.tipo = 'puntata'; if (n.serie) s.serieTitolo = n.serie; }
+            if (s.stagione < 0) s.stagione = dn.stagione;
+            if (s.episodio < 0) s.episodio = dn.episodio;
+            if (s.episodio >= 0) s.tipo = 'puntata';
+            var puntata = s.tipo === 'puntata', im = immaginiDi(nomi, base, solo && !puntata, puntata);
+            s.img = refImg(relC, im);
+            if (Object.keys(im).length) s.fonti.push('immagini');
+            // per ultimo il nome del file: titolo e anno se nessuno li ha detti (una puntata senza titolo: "Puntata N")
+            function finito() {
+              if (!s.titolo) s.titolo = s.tipo === 'puntata' && s.episodio >= 0 ? 'Puntata ' + s.episodio : dn.titolo;
+              if (!s.anno && s.tipo !== 'puntata') s.anno = dn.anno;
+              if (s.tipo === 'puntata' && !s.serieTitolo && !(s.serie && s.serie.titolo)) s.serieTitolo = dn.titolo;
+              cb(null, s);
+            }
+            function dopo() {
+              if (!pieno) { finito(); return; }
+              dentroFile(d, parti, s, finito);
+            }
+            if (!puntata) { fotoCast(s.cast, cartellaVera, relC, nomi, dopo); return; }
+            // una puntata: la serie (tvshow.nfo e immagini) nella cartella sopra se questa e' una stagione
+            var inStagione = RE_STAGIONE.test(parti.length > 1 ? parti[parti.length - 2] : '');
+            var serieDove = inStagione ? path.dirname(cartellaVera) : cartellaVera, serieRel = inStagione ? parti.slice(0, -2).join('/') : relC;
+            laSerie(serieDove, serieRel, s.stagione, s, function () {
+              if (inStagione && !s.img.stagione) {
+                var sp = immaginiDi(nomi, '', true, false).poster;
+                if (sp) s.img.stagione = { p: unisci2(relC, sp) };
+              }
+              fotoCast(s.cast.length ? s.cast : (s.serie && s.serie.cast) || [], serieDove, serieRel, s.serieNomi || [], function () { delete s.serieNomi; dopo(); });
+            });
+          });
+        });
+      }
+      // la serie di una puntata o di una stagione: tvshow.nfo e le immagini della cartella della serie
+      function laSerie(dove, relC, stagione, s, cb) {
+        elenco(dove, function (e, nomi) {
+          if (e) { cb(); return; }
+          s.serieNomi = nomi;
+          leggiNfoIn(dove, trovaNome(nomi, 'tvshow.nfo'), function (n) {
+            var im = immaginiDi(nomi, '', true, false), quale = stagione === 0 ? 'season-specials-poster' : 'season' + (stagione < 10 ? '0' : '') + stagione + '-poster';
+            s.serie = { titolo: (n && n.titolo) || s.serieTitolo || '', anno: n ? n.anno : 0, generi: n ? n.generi : [], voto: n ? n.voto : 0,
+              trama: n ? n.trama : '', classificazione: n ? n.classificazione : '', studi: n ? n.studi : [], cast: n ? n.cast : [], img: refImg(relC, im) };
+            if (n) s.fonti.push('nfo serie');
+            if (!s.serie.titolo) s.serie.titolo = dalNome(path.basename(dove)).titolo;
+            var sp = stagione >= 0 ? trovaNome(nomi, quale + '.jpg') || trovaNome(nomi, quale + '.png') : null;
+            if (sp) s.img.stagione = { p: unisci2(relC, sp) };
+            // le immagini che la puntata non ha: quelle della serie
+            ['fanart', 'logo', 'banner'].forEach(function (k) { if (!s.img[k] && s.serie.img[k]) s.img[k] = s.serie.img[k]; });
+            if (!s.generi.length) s.generi = s.serie.generi;
+            if (!s.classificazione) s.classificazione = s.serie.classificazione;
+            cb();
+          });
+        });
+      }
+      // i tag e le copertine dentro il file (MKV, MP4): riempiono quello che manca
+      function dentroFile(d, parti, s, cb) {
+        apri(d, parti.join('/'), function (err, f) {
+          if (err || !f.m) { cb(); return; }
+          var m = f.m, n = null;
+          s.secondi = m.durata || 0;
+          if (m.formato === 'mp4' && m.ilst) {
+            var t = m.ilst;
+            n = { titolo: t.titolo || '', anno: /^\d{4}/.test(t.data || '') ? +String(t.data).slice(0, 4) : 0, trama: t.ldes || t.desc || '',
+              generi: t.genere ? [String(t.genere).slice(0, 50)] : [], stagione: t.stagione > 0 ? t.stagione : -1, episodio: t.episodio > 0 ? t.episodio : -1 };
+            if (t.serie && !s.serieTitolo) s.serieTitolo = String(t.serie).slice(0, 200);
+            if (t.titolo || t.desc || t.ldes) s.fonti.push('mp4');
+          } else if (m.tag) {
+            var g = m.tag[50] || {}, alto = m.tag[70] || {};
+            n = { titolo: g.TITLE || m.titolo || '', anno: /^\d{4}/.test(g.DATE_RELEASED || g.DATE_RECORDED || '') ? +String(g.DATE_RELEASED || g.DATE_RECORDED).slice(0, 4) : 0,
+              trama: g.SYNOPSIS || g.SUMMARY || g.DESCRIPTION || g.COMMENT || '', generi: g.GENRE ? String(g.GENRE).split(/\s*[,;\/|]\s*/).slice(0, 8) : [],
+              registi: g.DIRECTOR ? [String(g.DIRECTOR).slice(0, 80)] : [], studi: g.PRODUCTION_STUDIO ? [String(g.PRODUCTION_STUDIO).slice(0, 80)] : [],
+              classificazione: String(g.LAW_RATING || '').slice(0, 40), stagione: -1, episodio: +g.PART_NUMBER > 0 ? +g.PART_NUMBER : -1 };
+            if (alto.TITLE && !s.serieTitolo && s.tipo === 'puntata') s.serieTitolo = String(alto.TITLE).slice(0, 200);
+            if (alto.TITLE && !s.collezione && s.tipo !== 'puntata') s.collezione = String(alto.TITLE).slice(0, 120);
+            if (g.TITLE || g.SUMMARY || g.SYNOPSIS || g.DESCRIPTION) s.fonti.push('mkv');
+          } else if (m.titolo && !s.fonti.length) n = { titolo: m.titolo };
+          if (n) { ['titolo', 'trama'].forEach(function (k) { if (n[k]) n[k] = String(n[k]).slice(0, k === 'trama' ? 4000 : 200); }); riempi(s, n); }
+          immaginiFile(f, function (l) {
+            for (var i = 0; i < l.length; i++) {
+              var tipo = f.m.formato === 'mp4' ? (i ? '' : 'poster') : tipoAllegato(l[i].nome);
+              if (tipo && !s.img[tipo]) { s.img[tipo] = { p: parti.join('/'), k: i }; if (s.fonti.indexOf('copertina') === -1) s.fonti.push('copertina'); }
+            }
+            cb();
+          });
+        });
+      }
+      function schedaCartella(d, dove, parti, pieno, cb) {
+        var relC = parti.join('/'), nomeC = parti.length ? parti[parti.length - 1] : '';
+        elenco(dove, function (e, nomi) {
+          if (e) { cb(errore(e.code === 'EACCES' ? 'permesso' : 'assente', e.code)); return; }
+          var video = nomi.filter(function (x) { return EST_VIDEO.test(x) && !/(^|[\s._-])(sample|trailer)([\s._-]|$)/i.test(x); });
+          var stg = RE_STAGIONE.exec(nomeC), tvshow = trovaNome(nomi, 'tvshow.nfo');
+          var puntate = video.filter(function (x) { return dalNome(x).episodio >= 0; }).length;
+          // la cartella di un solo film: la sua scheda (il nome del video in "video": l'app apre direttamente il film)
+          if (!stg && !tvshow && (trovaNome(nomi, 'movie.nfo') || video.length === 1) && video.length >= 1 && puntate < video.length) {
+            schedaVideo(d, path.join(dove, video[0]), parti.concat([video[0]]), pieno, function (err, s) {
+              if (s) {
+                s.video = video[0];
+                s.cartellaFilm = true;
+                // senza .nfo ne' tag: il nome della cartella ("Dune (2024)") e' di solito piu' pulito di quello del file
+                if (s.fonti.indexOf('nfo') === -1 && s.fonti.indexOf('mkv') === -1 && s.fonti.indexOf('mp4') === -1) {
+                  var dc = dalNome(nomeC);
+                  if (dc.titolo) { s.titolo = dc.titolo; if (dc.anno) s.anno = dc.anno; }
+                }
+              }
+              cb(err, s);
+            });
+            return;
+          }
+          var s = nuovaScheda(stg ? 'stagione' : tvshow || puntate >= 2 ? 'serie' : 'cartella', '');
+          s.img = refImg(relC, immaginiDi(nomi, '', true, false));
+          s.video = video.length;
+          if (stg) {
+            s.stagione = stg[1] !== undefined ? +stg[1] : 0;
+            s.titolo = s.stagione ? 'Stagione ' + s.stagione : 'Speciali';
+            laSerie(path.dirname(dove), parti.slice(0, -1).join('/'), s.stagione, s, function () {
+              if (!s.img.poster && s.img.stagione) s.img.poster = s.img.stagione;
+              delete s.serieNomi;
+              cb(null, s);
+            });
+            return;
+          }
+          leggiNfoIn(dove, tvshow, function (n) {
+            if (n) { s.fonti.push('nfo'); riempi(s, n); }
+            var dn = dalNome(nomeC);
+            if (!s.titolo) s.titolo = s.tipo === 'serie' && puntate ? dalNome(video.filter(function (x) { return dalNome(x).episodio >= 0; })[0]).titolo || dn.titolo : dn.titolo || nomeC;
+            if (!s.anno && !n) s.anno = dn.anno;
+            fotoCast(s.cast, dove, relC, nomi, function () { cb(null, s); });
+          });
+        });
+      }
+      // un'immagine per l'app: un file .jpg/.png/.webp della chiavetta, o una copertina dentro un video (k); al massimo 8 MB
+      // e 12 milioni di pixel (una JPEG 4000x6000 decodificata nel TV occuperebbe 96 MB)
+      function immagine(req, res, d, p, k) {
+        function no(stato) { res.writeHead(stato, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' }); res.end(String(stato)); }
+        if (k === undefined || k === '') {
+          if (!EST_IMG.test(String(p))) { no(404); return; }
+          risolvi(d, p, function (err, dove) {
+            if (err || !EST_IMG.test(dove)) { no(err && err.codice === 'percorso' ? 400 : 404); return; }
+            fs.stat(dove, function (e2, st) {
+              if (e2 || !st.isFile()) { no(404); return; }
+              mandaImg(req, res, dove, 0, st.size);
+            });
+          });
+          return;
+        }
+        if (!/^\d{1,2}$/.test(String(k))) { no(400); return; }
+        apri(d, p, function (err, f) {
+          if (err) { no(err.codice === 'percorso' ? 400 : 404); return; }
+          immaginiFile(f, function (l) { var x = l[+k]; if (!x) no(404); else mandaImg(req, res, f.percorso, x.pos, x.n); });
+        });
+      }
+      function mandaImg(req, res, percorso, pos, n) {
+        function no(stato) { res.writeHead(stato, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' }); res.end(String(stato)); }
+        if (!(n > 0) || n > MAX_IMG) { no(413); return; }
+        fs.open(percorso, 'r', function (e, fd) {
+          if (e) { no(404); return; }
+          leggi(fs, fd, pos, Math.min(n, 262144), function (e2, testa) {
+            var mi = !e2 && testa ? misureImg(testa) : null;
+            if (!buonaMisura(mi)) { fs.close(fd, function () {}); no(mi ? 413 : 415); return; }
+            res.writeHead(200, { 'Content-Type': mi.tipo, 'Content-Length': String(n), 'Cache-Control': 'private, max-age=3600',
+              'Access-Control-Allow-Origin': '*', 'Access-Control-Expose-Headers': 'X-Misure', 'X-Misure': mi.w + 'x' + mi.h });
+            if (req.method === 'HEAD') { fs.close(fd, function () {}); res.end(); return; }
+            var at = testa.length, chiuso = false, aspetta = false;
+            function chiudi() { if (fd >= 0) { fs.close(fd, function () {}); fd = -1; } }
+            function avanti() {
+              aspetta = false;
+              if (chiuso || at >= n) { chiudi(); if (!chiuso) res.end(); return; }
+              leggi(fs, fd, pos + at, Math.min(262144, n - at), function (e3, b) {
+                if (e3 || !b || !b.length || chiuso) { chiudi(); if (!chiuso) { chiuso = true; try { res.destroy(); } catch (e4) {} } return; }
+                at += b.length;
+                if (res.write(b)) avanti(); else { aspetta = true; res.once('drain', avanti); }
+              });
+            }
+            res.on('close', function () { chiuso = true; if (aspetta) { aspetta = false; res.removeListener('drain', avanti); chiudi(); } });
+            if (res.write(testa.length > n ? testa.slice(0, n) : testa)) avanti(); else { aspetta = true; res.once('drain', avanti); }
+          });
+        });
+      }
+
+      // per "Questo TV": le chiavette si vedono e si leggono? { stato: 'ok' | 'nessuna' | 'permesso' | 'assente' |
+      // 'errore' | 'nonPrevisto', dischi }. Si apre la prima chiavetta, senza leggere i file
+      function prova(cb) {
+        if (!radici.length) { cb({ stato: 'nonPrevisto', dischi: 0 }); return; }
+        dischi(function (err, l) {
+          if (err) { cb({ stato: err.codice === 'permesso' || err.codice === 'assente' ? err.codice : 'errore', dischi: 0 }); return; }
+          if (!l.length) { cb({ stato: 'nessuna', dischi: 0 }); return; }
+          fs.readdir(l[0].percorso, function (e2) {
+            cb({ stato: !e2 ? 'ok' : e2.code === 'EACCES' || e2.code === 'EPERM' ? 'permesso' : 'errore', dischi: l.length });
+          });
+        });
+      }
+
+      return {
+        dischi: dischi, cartella: cartella, info: info, servi: servi, sotto: sotto, sottoEsterni: sottoEsterni, prova: prova,
+        scheda: scheda, immagine: immagine,
+        previsto: radici.length > 0, domain: o.domain || null, log: typeof o.log === 'function' ? o.log : null,
+        // per le prove
+        _apri: apri, _sottoTot: function () { return sottoTot; }
+      };
+    }
+
+    /* ============================================================ le domande dell'app Video
+     * /api/video/g/<gettone>/<cosa>: il gettone sta nel percorso, cosi' anche le richieste del <video> e degli HLS (che
+     * chiedono i pezzi con indirizzi relativi, senza le domande "?...") lo portano con se'. Il gettone lo chiede la home
+     * (POST /api/video/gettone, con la sua chiave) per un'app ufficiale dello Store col permesso "video". */
+
+    var DURATA_GETTONE = 12 * 3600 * 1000, MAX_GETTONI = 8;
+    function gettoni(crypto) {
+      var tutti = {}; // gettone -> scadenza
+      function pulisci() {
+        var ora = Date.now(), l = Object.keys(tutti);
+        for (var i = 0; i < l.length; i++) if (tutti[l[i]] <= ora) delete tutti[l[i]];
+        l = Object.keys(tutti).sort(function (a, b) { return tutti[a] - tutti[b]; });
+        while (l.length > MAX_GETTONI) delete tutti[l.shift()];
+      }
+      return {
+        nuovo: function () {
+          var g = crypto.randomBytes(32).toString('hex');
+          tutti[g] = Date.now() + DURATA_GETTONE;
+          pulisci();
+          return { gettone: g, scade: tutti[g] };
+        },
+        valido: function (g) {
+          if (typeof g !== 'string' || !/^[0-9a-f]{64}$/.test(g) || !Object.prototype.hasOwnProperty.call(tutti, g)) return false;
+          if (tutti[g] <= Date.now()) { delete tutti[g]; return false; }
+          return true;
+        },
+        togli: function (g) { if (typeof g === 'string') delete tutti[g]; },
+        quanti: function () { pulisci(); return Object.keys(tutti).length; }
+      };
+    }
+    function rispondi(res, stato, o) {
+      res.writeHead(stato, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store',
+        'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify(o));
+    }
+    function statoDi(e) { return e.codice === 'permesso' ? 403 : e.codice === 'percorso' ? 400 : 404; }
+    function corpoJson(req, max, cb) {
+      var parti = [], n = 0, rotto = false;
+      req.on('data', function (c) { n += c.length; if (n > max) { rotto = true; req.destroy(); } else parti.push(c); });
+      req.on('end', function () {
+        if (rotto) { cb(null); return; }
+        try { var v = JSON.parse(Buffer.concat(parti).toString('utf8') || '{}'); cb(v && typeof v === 'object' && !Array.isArray(v) ? v : null); }
+        catch (e) { cb(null); }
+      });
+    }
+    var RE_VIDEO = /^\/api\/video\/g\/([^\/]*)\/(.*)$/;
+    // gli errori presi dalla rete (un file fatto in un modo che il codice non si aspettava): per le prove e per il registro
+    var presi = { n: 0, ultimo: '' };
+    // true = era una domanda dell'app Video (la risposta e' data). Ogni domanda gira in un "dominio" di Node: un errore in
+    // uno qualsiasi dei suoi callback (file, stream, zlib, timer) chiude solo quella risposta e si annota; il servizio
+    // del TV (home, telefono, blocco della pubblicita') resta su
+    function gestisci(vt, g, req, res, u, opzioni) {
+      var m = RE_VIDEO.exec(u.pathname || '');
+      if (!m) return false;
+      var dom = vt.domain ? vt.domain.create() : null;
+      if (!dom) { tratta(vt, g, req, res, u, opzioni || {}, m); return true; }
+      dom.add(req);
+      dom.add(res);
+      dom.on('error', function (e) {
+        presi.n++;
+        presi.ultimo = String(e && e.stack || e).slice(0, 400);
+        if (vt.log) { try { vt.log('app Video: errore preso (' + String(e && e.message || e).slice(0, 200) + ')'); } catch (x) {} }
+        try { if (!res.headersSent) rispondi(res, 500, { error: 'file non leggibile', codice: 'formato' }); else res.destroy(); } catch (x) {}
+      });
+      dom.run(function () { tratta(vt, g, req, res, u, opzioni || {}, m); });
+      return true;
+    }
+    function tratta(vt, g, req, res, u, opzioni, m) {
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, HEAD',
+          'Access-Control-Allow-Headers': 'Content-Type, Range', 'Access-Control-Max-Age': '600' });
+        res.end();
+        return true;
+      }
+      if (!g.valido(m[1])) { rispondi(res, 403, { error: 'gettone non valido', codice: 'gettone' }); return true; }
+      var cosa = m[2], q = u.query || {}, d = String(q.d || ''), p = String(q.p || ''), get = req.method === 'GET';
+      function errore(e) { rispondi(res, statoDi(e), { error: e.message, codice: e.codice || 'errore' }); }
+      if (cosa === 'dischi' && get) {
+        vt.dischi(function (e, l) {
+          if (e) errore(e);
+          else rispondi(res, 200, { dischi: l.map(function (x) { return { id: x.id }; }), previsto: vt.previsto !== false });
+        });
+      } else if (cosa === 'cartella' && get) {
+        vt.cartella(d, p, function (e, r) { if (e) errore(e); else rispondi(res, 200, r); });
+      } else if (cosa === 'info' && get) {
+        var lingue = String(q.lingue || '').split(',').filter(function (x) { return /^[a-z]{2,3}$/.test(x); }).slice(0, 6);
+        vt.info(d, p, { lingue: lingue.length ? lingue : null }, function (e, r) { if (e) errore(e); else rispondi(res, 200, r); });
+      } else if (cosa.indexOf('file/') === 0 && (get || req.method === 'HEAD')) {
+        vt.servi(req, res, d, p, { audio: +q.a || 0 });
+      } else if (cosa === 'scheda' && get) {
+        vt.scheda(d, p, q.pieno === '1', function (e, r) { if (e) errore(e); else rispondi(res, 200, r); });
+      } else if (cosa === 'immagine' && (get || req.method === 'HEAD')) {
+        vt.immagine(req, res, d, p, q.k);
+      } else if (cosa === 'sotto' && get) {
+        if (q.e) vt.sottoEsterni(d, String(q.e), function (e, r) { if (e) errore(e); else rispondi(res, 200, r); });
+        else vt.sotto(d, p, +q.t, +q.da || 0, function (e, r) { if (e) errore(e); else rispondi(res, 200, r); }, q.dopo);
+      } else if (cosa === 'punto' && req.method === 'POST') {
+        corpoJson(req, 16384, function (b) {
+          if (!b) { rispondi(res, 400, { error: 'corpo non valido', codice: 'corpo' }); return; }
+          if (opzioni.punto) { try { opzioni.punto(b); } catch (e) {} }
+          rispondi(res, 200, { ok: true });
+        });
+      } else {
+        rispondi(res, 404, { error: 'domanda sconosciuta', codice: 'assente' });
+      }
+    }
+
+    return {
+      crea: crea, LETTI: LETTI, gettoni: gettoni, gestisci: gestisci, presi: function () { return { n: presi.n, ultimo: presi.ultimo }; },
+      // per le prove e per l'app (le stesse regole)
+      _interni: { leggiId: leggiId, leggiVint: leggiVint, famiglia: famiglia, lingua: lingua, piano: piano,
+        leggiSottotitoli: leggiSottotitoli, testoDi: testoDi, apriMkv: apriMkv, apriMp4: apriMp4, Scansione: Scansione,
+        leggiNfo: leggiNfo, immaginiDi: immaginiDi, misureImg: misureImg, dalNome: dalNome, tagDi: tagDi,
+        modificheFisse: modificheFisse, intervallo: null }
+    };
+  })();
+  /* </videoteca:generato> */
+  // dove il TV monta chiavette e dischi: /opt/media/USBDriveA1... sui Samsung (da provare: "Questo TV" lo dice); le altre
+  // TV lo dicono nel loro adattatore; nelle prove una cartella di file finti
+  var RADICI_USB = typeof HOMETV_PROVE_USB === 'string' ? [HOMETV_PROVE_USB] :
+    ALTRA ? (Array.isArray(ALTRA.chiavette) ? ALTRA.chiavette : []) : ['/opt/media'];
+  var lettiVideo = { at: 0, v: null };
+  var videoteca = Videoteca.crea({ fs: fs, path: pathLib, zlib: require('zlib'), radici: RADICI_USB, domain: require('domain'), log: log,
+    // i codec che questo TV legge: dal profilo del TV (profilo.js), ricalcolati al massimo ogni minuto
+    letti: function () {
+      if (!lettiVideo.v || Date.now() - lettiVideo.at > 60000) lettiVideo = { at: Date.now(), v: ProfiloTV.videoLetti(fattiTv()) };
+      return lettiVideo.v;
+    } });
+  var gettoniVideo = Videoteca.gettoni(require('crypto'));
+  // per "Questo TV": le chiavette si vedono e si leggono? Si guarda solo quando si chiede il profilo, al massimo ogni 30
+  // secondi (cosi' un disco attaccato al TV puo' andare a riposo); una chiavetta lenta non ferma la risposta oltre 1,5 s
+  var chiavette = null, chiavetteAt = 0;
+  function conChiavette(poi) {
+    if (Date.now() - chiavetteAt < 30000) { poi(); return; }
+    chiavetteAt = Date.now();
+    var fatto = false;
+    function fine() { if (!fatto) { fatto = true; poi(); } }
+    setTimeout(fine, 1500);
+    try { videoteca.prova(function (r) { chiavette = r; fine(); }); } catch (e) { chiavette = { stato: 'errore', dischi: 0 }; fine(); }
   }
-  function cambiaVisti(azione, b) {
-    if (azione === 'svuota') { visti = []; intentoContinua = null; scriviJson(FILE_VISTI, visti, true); return { ok: true }; }
-    var e = null, i;
-    for (i = 0; i < visti.length; i++) if (visti[i].id === b.id) { e = visti[i]; break; }
-    if (!e) return { ok: false, error: 'non trovato' };
-    if (azione === 'riprendi') {
-      var url = e.finito && e.prossimo ? e.prossimo : e.url;
-      intentoContinua = { url: url, posizione: b.daCapo || (e.finito && e.prossimo) ? 0 : e.posizione, id: e.id, durata: e.durata,
-        video: e.video || '', prossima: !!(e.finito && e.prossimo), creato: Date.now(), scade: Date.now() + 120000 };
-      return { ok: true, url: url };
+  // il punto del video dall'app: Continua a guardare (anche nella home) e il telefono (titolo, barra del tempo, pausa)
+  function puntoVideo(b) {
+    var app = typeof b.app === 'string' ? b.app : '', casa = trovaCasa();
+    // la pagina e' l'app Video dello stesso account della home: la scheda di Continua a guardare la riapre li' (nelle prove
+    // sul computer la home e le app stanno su localhost)
+    var buona = (/^https:\/\/[a-z0-9\-]+\.github\.io\/[A-Za-z0-9._\-]+\/$/.test(app) || PROVE && /^http:\/\/(localhost|127\.0\.0\.1):\d+\/[A-Za-z0-9._\-]+\/$/.test(app)) &&
+      (!casa.origin || app.indexOf(casa.origin + '/') === 0);
+    var titolo = testo(b.titolo, 120), stagione = Number(b.stagione) || 0, episodio = Number(b.episodio) || 0, anno = Number(b.anno) || 0;
+    var corpo = { chi: 'video', titolo: titolo + (episodio ? ' \u00b7 S' + stagione + ' E' + episodio : anno ? ' (' + anno + ')' : ''),
+      durata: Number(b.durata), posizione: Number(b.posizione), inPausa: b.inPausa === true, attivo: b.chiuso !== true,
+      memo: b.chiuso === true, guardato: Number(b.guardato) || 0, scelto: true };
+    if (buona) {
+      corpo.pagina = { url: app + '#/v/' + encodeURIComponent(String(b.p || '')) + '?d=' + encodeURIComponent(String(b.d || '')) +
+        '&dim=' + (Number(b.dim) || 0), titolo: corpo.titolo, video: 'chiavetta:' + String(b.p || '').slice(0, 400),
+        ld: { nome: episodio ? '' : titolo, serie: episodio ? titolo : '', stagione: stagione, episodio: episodio, anno: anno } };
     }
-    if (azione === 'togli') visti.splice(i, 1);
-    else if (azione === 'rinomina') e.titoloMio = testo(b.titolo, 80).replace(/^\s+|\s+$/g, '');
-    else if (azione === 'visto') e.finito = true;
-    scriviJson(FILE_VISTI, visti, true);
-    return { ok: true };
+    cambiaVideo(corpo);
   }
 
   function hostLink(u) {
@@ -1942,11 +4489,12 @@
     }
     return out;
   }
-  // link e "home" si eseguono una volta sola, anche se la pagina che li riceve poi cambia
+  // link, "home" e le azioni dello Store si eseguono una volta sola, anche se la pagina che li riceve poi cambia (lo
+  // Store che apre un'app chiesta dal telefono non deve riceverla di nuovo)
   function consegna(lista) {
     for (var i = 0; i < lista.length; i++) {
       var tp = lista[i].tipo;
-      if (tp === 'link' || tp === 'home' || tp === 'sito' || tp === 'puntatore') lista[i].consegnato = true;
+      if (tp === 'link' || tp === 'home' || tp === 'sito' || tp === 'puntatore' || tp === 'store') lista[i].consegnato = true;
     }
     return lista;
   }
@@ -1954,6 +4502,8 @@
   function rispondiAttese() {
     var attese = tel.attese;
     tel.attese = [];
+    // chi aspettava ha appena ricevuto: tra un attimo richiede (per qualche secondo vale ancora come "in ascolto")
+    if (attese.length) tel.ultimoAscolto = Date.now();
     for (var i = 0; i < attese.length; i++) {
       var a = attese[i];
       clearTimeout(a.timer);
@@ -1982,12 +4532,22 @@
       tel.sotto = null;
       cambiaStato();
     }
+    // la home o lo Store: le azioni dello Store chieste dal telefono mentre sul TV c'era altro (al massimo 30 minuti fa)
+    var casaTv = dove === 'Home' || dove === 'Store';
+    if (casaTv && tel.storeCoda.length) {
+      var coda = tel.storeCoda.filter(function (a) { return Date.now() - a.chiesta < 30 * 60 * 1000; });
+      tel.storeCoda = [];
+      coda.forEach(function (a) { delete a.chiesta; aggiungiEvento(a); });
+    }
     var da = parseInt(query.da, 10);
     if (isNaN(da) || da < 0 || da > tel.seq) {
-      // pagina appena aperta: riceve solo link e "home" ancora freschi. I movimenti del puntatore rimasti indietro non
-      // sono suoi: chiusi, cosi' quelli che arrivano adesso non si sommano a un evento che nessuno ricevera'
+      // pagina appena aperta: riceve solo link e "home" ancora freschi (la home e lo Store anche le azioni dello Store).
+      // I movimenti del puntatore rimasti indietro non sono suoi: chiusi, cosi' quelli che arrivano adesso non si
+      // sommano a un evento che nessuno ricevera'
       for (var pi = 0; pi < tel.eventi.length; pi++) if (tel.eventi[pi].tipo === 'puntatore') tel.eventi[pi].consegnato = true;
-      var freschi = eventiDopo(0).filter(function (e) { return (e.tipo === 'link' || e.tipo === 'home' || e.tipo === 'sito') && !e.consegnato; });
+      var freschi = eventiDopo(0).filter(function (e) {
+        return (e.tipo === 'link' || e.tipo === 'home' || e.tipo === 'sito' || (e.tipo === 'store' && casaTv)) && !e.consegnato;
+      });
       sendJson(req, res, 200, { seq: tel.seq, eventi: consegna(freschi) }, true);
       return;
     }
@@ -2014,6 +4574,7 @@
   }
 
   function apriHome(motivo) {
+    if (ALTRA) { ALTRA.apriHome(motivo)['catch'](function (e) { log('home non aperta (' + motivo + '): ' + e.message); }); return; }
     if (!HAS_TIZEN) return;
     launchApp(tizenBrewAppId())['catch'](function (e) { log('home non aperta (' + motivo + '): ' + e.message); });
   }
@@ -2024,6 +4585,7 @@
   // pagine, mentre l'ingresso del TV si ricollega.
   function comandoDalTelefono(body) {
     var tipo = body.tipo;
+    tel.inCoda = false;
     if (tipo === 'tasto') {
       var k = body.tasto;
       if (!TASTI_TELEFONO[k]) return 'tasto sconosciuto';
@@ -2068,8 +4630,7 @@
       // "Riproduci sul TV": la pagina si apre sul TV e il suo video principale parte da solo, come da Continua a guardare
       // (ma dal punto che decide il sito: un link puo' avere il suo minuto)
       if (!urlValido(body.url)) return 'indirizzo non valido';
-      intentoContinua = { url: body.url, posizione: 0, id: '', durata: 0, video: '', prossima: false, riproduci: true,
-        creato: Date.now(), scade: Date.now() + 120000 };
+      visti.riproduci(body.url);
       tel.ultimoLink = { host: hostLink(body.url), at: Date.now() };
       var ascoltavaVideo = inAscolto();
       aggiungiEvento({ tipo: 'link', url: body.url, riproduci: true });
@@ -2130,6 +4691,33 @@
     } else if (tipo === 'permesso') {
       // dal telecomando del telefono: il TV chiede di nuovo "Consenti" per i tasti veri (si sceglie col telecomando del TV)
       chiediPermessoRemoto();
+    } else if (tipo === 'store') {
+      // lo Store dal telefono: lo fa la home del TV (o lo Store), che ha le liste e i controlli. Con altro aperto sul TV
+      // l'azione aspetta che si torni alla home; aprire un'app ci porta subito (da un sito come un link, da un'altra app
+      // riaprendo la home)
+      var az2 = body.azione, ev2 = { tipo: 'store', azione: az2 };
+      if (az2 === 'installa' || az2 === 'disinstalla') {
+        if (!ID_STORE.test(String(body.id || ''))) return 'app non valida';
+        ev2.id = String(body.id);
+      } else if (az2 === 'togli' || az2 === 'apri') {
+        if (!RIQUADRO_STORE.test(String(body.riquadro || ''))) return 'app non valida';
+        ev2.riquadro = String(body.riquadro);
+      } else if (az2 === 'aggiungi') {
+        ev2.indirizzo = testo(body.indirizzo, 500);
+        if (!ev2.indirizzo) return 'indirizzo vuoto';
+      } else if (az2 !== 'elenco') return 'comando sconosciuto';
+      if (storeInAscolto()) { aggiungiEvento(ev2); return ''; }
+      if (az2 === 'elenco') return ''; // il telefono mostra l'ultimo elenco che conosce
+      var base = trovaCasa().base;
+      if (az2 === 'apri' && inAscolto() && base) {
+        aggiungiEvento({ tipo: 'link', url: base + 'store.html#apri=' + encodeURIComponent(ev2.riquadro) + '&da=home' });
+        return '';
+      }
+      ev2.chiesta = Date.now();
+      tel.storeCoda.push(ev2);
+      if (tel.storeCoda.length > 10) tel.storeCoda.splice(0, tel.storeCoda.length - 10);
+      tel.inCoda = true;
+      if (az2 === 'apri') apriHome('app dal telefono');
     } else return 'comando sconosciuto';
     return '';
   }
@@ -2186,12 +4774,18 @@
       return;
     }
     // il profilo del TV per l'installatore sul Mac (solo cose del TV, niente dati tuoi: come l'API della porta 8001)
-    if (route === 'GET /tv') { rispondiTel(res, 200, profiloTv()); return; }
+    if (route === 'GET /tv') { conChiavette(function () { rispondiTel(res, 200, profiloTv()); }); return; }
     if (route === 'GET /stato') {
       if (!telefonoValido(u.query.t)) { rispondiTel(res, 401, { error: 'non collegato' }); return; }
       // con ?v= il telefono aspetta che cambi qualcosa (pagina, campo dove si scrive): lo sa subito
       if (u.query.v && parseInt(u.query.v, 10) === tel.ver) { attendiStato(req, res); return; }
       rispondiTel(res, 200, statoPerTelefono());
+      return;
+    }
+    // lo Store: l'ultimo elenco mandato dal TV, e dove si trova il TV (le azioni le fa la home)
+    if (route === 'GET /store') {
+      if (!telefonoValido(u.query.t)) { rispondiTel(res, 401, { error: 'non collegato' }); return; }
+      rispondiTel(res, 200, { store: tel.store, dove: tel.dove, casa: storeInAscolto(), ver: tel.storeVer });
       return;
     }
     // le schede del browser, per l'elenco sul telefono (l'ultima usata per prima)
@@ -2232,7 +4826,7 @@
         var ascoltava = inAscolto();
         var errore = comandoDalTelefono(body);
         if (errore) { rispondiTel(res, 400, { error: errore, tasti: rem.stato }); return; }
-        rispondiTel(res, 200, { ok: true, ascolta: ascoltava, dove: tel.dove, tasti: rem.stato });
+        rispondiTel(res, 200, { ok: true, ascolta: ascoltava, dove: tel.dove, tasti: rem.stato, coda: tel.inCoda });
       });
       return;
     }
@@ -2774,6 +5368,80 @@
     })();
   }
 
+  /* ------------------------------------------------------------ store: cataloghi delle fonti private
+   * La home li scarica da sola; questo serve per i siti che non lo permettono alla pagina (CORS) e per i certificati
+   * che il motore del TV non conosce. Solo https (anche dopo un rimando), mai indirizzi locali, solo fino a 300 KB. */
+  var STORE_MAX = 300000, STORE_TEMPO = 8000;
+  // nomi del TV o della rete di casa, anche scritti in modo strano (0x7f000001, 127.1, "localhost.")
+  function storeLocale(h) {
+    h = String(h || '').toLowerCase().replace(/\.$/, '');
+    return !h || h === 'localhost' || /\.(localhost|local|lan|home|internal|arpa)$/.test(h) || /^[0-9x.]+$/.test(h) ||
+      h.indexOf(':') !== -1 || h.charAt(0) === '[' || h.indexOf('.') === -1;
+  }
+  // il nome puo' puntare a un indirizzo di casa anche se non lo sembra (127.0.0.1.nip.io): si controlla l'indirizzo vero
+  function storeIpPrivato(ip) {
+    ip = String(ip || '').toLowerCase();
+    if (ip.indexOf(':') !== -1) return ip === '::1' || ip === '::' || /^f[cd]/.test(ip) || /^fe[89ab]/.test(ip) || /^::ffff:/.test(ip);
+    return /^(0|10|127)\./.test(ip) || /^169\.254\./.test(ip) || /^192\.168\./.test(ip) || /^172\.(1[6-9]|2\d|3[01])\./.test(ip) ||
+      /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip) || !/^\d+\.\d+\.\d+\.\d+$/.test(ip);
+  }
+  // scade: l'ora entro cui deve finire tutto, rimandi e secondo tentativo compresi
+  function storeScarica(indirizzo, conCa, fatto, salti, scade) {
+    var finito = false, req = null, orologio = null;
+    function fine(err, t) { if (finito) return; finito = true; clearTimeout(orologio); fatto(err, t); }
+    var o = urlLib.parse(indirizzo);
+    if (o.protocol !== 'https:' || storeLocale(o.hostname)) { fine(new Error('indirizzo non valido')); return; }
+    var resto = scade - Date.now();
+    if (resto <= 0) { fine(new Error('tempo scaduto')); return; }
+    orologio = setTimeout(function () { fine(new Error('tempo scaduto')); try { if (req) req.abort(); } catch (e) {} }, resto);
+    require('dns').lookup(o.hostname, function (err, ip) {
+      if (finito) return;
+      if (err || storeIpPrivato(ip)) { fine(err || new Error('indirizzo non valido')); return; }
+      // ci si collega proprio a quell'indirizzo (non si richiede il nome di nuovo), col nome giusto per il certificato
+      var opz = { host: ip, servername: o.hostname, port: o.port || 443, path: o.path, agent: false,
+        headers: { Host: o.host, 'Accept-Encoding': 'gzip', 'Accept': 'application/json, text/plain, */*',
+          'User-Agent': 'Mozilla/5.0 (SMART-TV; Linux; Tizen) HomeTV/' + VERSION } };
+      if (conCa) opz.ca = [ADB_RADICE_LE];
+      storeRichiesta(opz, indirizzo, conCa, fine, salti, scade, function (r) { req = r; });
+    });
+  }
+  function storeRichiesta(opz, indirizzo, conCa, fine, salti, scade, tieni) {
+    var req = null;
+    try {
+      req = require('https').get(opz, function (res) {
+        var st = res.statusCode;
+        if (st >= 300 && st < 400 && res.headers.location && (salti || 0) < 3) {
+          res.resume();
+          storeScarica(urlLib.resolve(indirizzo, res.headers.location), conCa, fine, (salti || 0) + 1, scade);
+          return;
+        }
+        if (st !== 200) { res.resume(); var e = new Error('HTTP ' + st); e.stato = st; fine(e); return; }
+        var flusso = res;
+        if (/gzip/i.test(String(res.headers['content-encoding'] || ''))) { flusso = zlib.createGunzip(); res.pipe(flusso); }
+        var pezzi = [], tot = 0;
+        flusso.on('data', function (d) {
+          tot += d.length;
+          if (tot > STORE_MAX) { fine(new Error('troppo grande')); try { req.abort(); } catch (er) {} return; }
+          pezzi.push(d);
+        });
+        flusso.on('end', function () { fine(null, Buffer.concat(pezzi).toString('utf8')); });
+        flusso.on('error', fine);
+        res.on('error', fine);
+      });
+    } catch (e) { fine(e); return; }
+    tieni(req);
+    req.on('error', fine);
+  }
+  // un certificato che il TV non conosce: si riprova con quello di Let's Encrypt (come per le liste di filtri), sempre
+  // dentro gli stessi 8 secondi
+  function storeScaricaFonte(indirizzo, fatto) {
+    var scade = Date.now() + STORE_TEMPO;
+    storeScarica(indirizzo, false, function (err, t) {
+      if (err && /CERT|ISSUER|SELF_SIGNED|UNABLE_TO/i.test(String(err.code || err.message))) { storeScarica(indirizzo, true, fatto, 0, scade); return; }
+      fatto(err, t);
+    }, 0, scade);
+  }
+
   function adbPianifica(ms) {
     clearTimeout(adb.timer);
     adb.timer = setTimeout(function () { adbAggiorna(false); }, ms);
@@ -2991,18 +5659,28 @@
   }
   function fattiTv() {
     var d = tvDalTv.device || {}, D = adb.dati;
-    return {
+    var f = {
       servizio: true, versioneServizio: VERSION, tizen: HAS_TIZEN,
-      appTv: { n: cache.apps ? cache.apps.length : 0, errore: cache.errore || '' },
+      appTv: { n: cache.apps ? cache.apps.length : 0, errore: cache.errore || (ALTRA && ALTRA.appErrore) || '' },
       nome: String(d.name || ''), modello: String(d.modelName || ''), modelloPiattaforma: String(d.model || ''),
       tizenVer: versioneTizen(), tizenbrew: versioneTizenBrew(), risoluzione: String(d.resolution || ''),
       api8001: !!tvDalTv.device, statoAccensione: !!d.PowerState, apriAllAccensione: settings.apriAllAccensione !== false,
       remoto: rem.stato, telefono: { attivo: tel.attivo, errore: tel.errore },
       liste: { stato: D ? 'ok' : adb.stato === 'errore' ? 'errore' : 'mai', regole: D && D.conta ? D.conta.usate : 0 },
       // nelle prove e nella TV sul Mac i file restano (/tmp delle prove, cartella dei dati): valgono come quelli del TV
-      salvataggio: (CACHE_DIR === SHARE || PROVE) && tvDalTv.scrittura ? 'tv' : 'temporaneo', casa: !!trovaCasa().origin,
-      coloriVisti: tvDalTv.coloriVisti, pagina: tvDalTv.pagina
+      salvataggio: (CACHE_DIR === SHARE || PROVE || (ALTRA && ALTRA.datiFissi)) && tvDalTv.scrittura ? 'tv' : 'temporaneo', casa: !!trovaCasa().origin,
+      coloriVisti: tvDalTv.coloriVisti, pagina: tvDalTv.pagina,
+      // l'app Video: le chiavette si vedono e si leggono? (videoteca.prova)
+      chiavette: chiavette
     };
+    // le altre TV: chi sono (sistema, modello) e cosa non sanno fare (la riapertura all'accensione)
+    if (ALTRA) {
+      f.piattaforma = ALTRA.nome;
+      f.sistema = String(ALTRA.sistema || '');
+      f.modello = String(ALTRA.modello || '');
+      f.riaccensione = ALTRA.riaccensione !== false;
+    }
+    return f;
   }
   function profiloTv() { return ProfiloTV.componi(fattiTv()); }
   // i fatti della pagina della home (solo testi e numeri corti)
@@ -3033,7 +5711,7 @@
       refreshApps()['catch'](function (e) { log('elenco app: ' + e.message); });
       powerState(function () {}); // subito chi e' il TV (modello, risoluzione) per il profilo
       setTimeout(watchPower, 4000);
-    }
+    } else if (ALTRA) refreshApps()['catch'](function (e) { log('elenco app: ' + e.message); });
   });
 
   /* <telefono:generato> pagina e icona del telecomando (create a parte: non modificare a mano) */
@@ -3114,6 +5792,81 @@
     '  .riga-scheda b, .riga-scheda span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
     '  .riga-scheda b { font-size: 15px; }',
     '  .riga-scheda span { font-size: 12px; color: var(--text-2); margin-top: 2px; }',
+    '  .vista-store, .vista-app { padding-bottom: 28px; }',
+    '  .store-testa { display: flex; align-items: center; gap: 12px; margin: 6px 2px 14px; }',
+    '  .store-testa .icona svg { fill: none; stroke: var(--text); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }',
+    '  .store-titoli { flex: 1; min-width: 0; }',
+    '  .store-titoli strong { display: block; font-size: 26px; font-weight: 800; letter-spacing: -.02em; line-height: 1.1; }',
+    '  .store-titoli span { display: block; font-size: 12px; color: var(--text-2); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+    '  .cerca-box { position: relative; margin-bottom: 12px; }',
+    '  .cerca-box svg { position: absolute; left: 14px; top: 13px; width: 18px; height: 18px; fill: var(--text-2); }',
+    '  .cerca-store { display: block; width: 100%; height: 44px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface);',
+    '    color: var(--text); padding: 0 14px 0 42px; font: inherit; font-size: 16px; outline: 0; -webkit-appearance: none; }',
+    '  .store-nota { margin: 0 2px 10px; }',
+    '  .store-nota.via { display: none; }',
+    '  .vuoto-store { padding: 24px 4px; font-size: 14px; color: var(--text-2); text-align: center; }',
+    '  .sezione-store { margin: 16px 0 6px; }',
+    '  .sezione-store h3 { margin: 0 2px 10px; font-size: 18px; font-weight: 800; letter-spacing: -.01em; }',
+    '  .scorri { display: flex; gap: 12px; overflow-x: auto; -webkit-overflow-scrolling: touch; scroll-snap-type: x mandatory;',
+    '    padding: 2px 2px 8px; margin: 0 -2px; scrollbar-width: none; }',
+    '  .scorri::-webkit-scrollbar { display: none; }',
+    '  .carta-grande { position: relative; flex: none; width: 84%; max-width: 360px; aspect-ratio: 5 / 3; border-radius: 18px; overflow: hidden;',
+    '    scroll-snap-align: start; color: #fff; text-align: left; box-shadow: 0 10px 26px rgba(0, 0, 0, .35); }',
+    '  .carta-grande img.cop { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; }',
+    '  .carta-grande .ico-grande, .carta-grande .dentro { display: none; }',
+    '  .carta-grande.senza .ico-grande { display: flex; position: absolute; left: 16px; top: 16px; width: 56px; height: 56px; border-radius: 15px;',
+    '    overflow: hidden; align-items: center; justify-content: center; font-size: 26px; font-weight: 800; background: rgba(255, 255, 255, .16) !important; }',
+    '  .carta-grande.senza .ico-grande img { width: 100%; height: 100%; object-fit: cover; }',
+    '  .carta-grande.senza .dentro { display: block; position: absolute; left: 16px; right: 16px; bottom: 14px; }',
+    '  .carta-grande .dentro b { display: block; font-size: 21px; font-weight: 800; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+    '  .carta-grande .dentro span { display: block; font-size: 13px; opacity: .82; margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+    '  .carta-app { position: relative; flex: none; width: 92px; scroll-snap-align: start; text-align: left; color: var(--text); }',
+    '  .carta-app .ico { position: relative; width: 92px; height: 92px; border-radius: 22px; overflow: hidden; display: flex; align-items: center;',
+    '    justify-content: center; font-size: 36px; font-weight: 800; color: #fff; }',
+    '  .carta-app .ico img { width: 100%; height: 100%; object-fit: cover; }',
+    '  .carta-app b { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 8px; font-size: 13px;',
+    '    font-weight: 700; line-height: 1.25; }',
+    '  .carta-app span { display: block; margin-top: 2px; font-size: 11px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+    '  .carta-app span.privata, .riga-app span.privata { color: var(--warn); }',
+    '  .spunta-app { position: absolute; right: 7px; top: 7px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0, 0, 0, .4); }',
+    '  .spunta-app:after { content: ""; position: absolute; left: 7px; top: 4px; width: 5px; height: 9px; border: solid #0b0c10; border-width: 0 2px 2px 0; transform: rotate(45deg); }',
+    '  .pallino-app { position: absolute; right: 8px; top: 8px; width: 15px; height: 15px; border-radius: 50%; background: #3b82f6; box-shadow: 0 0 0 3px #fff; }',
+    '  .riga-app { display: flex; align-items: center; gap: 12px; width: 100%; padding: 9px; margin-bottom: 8px; border-radius: 14px;',
+    '    background: rgba(255, 255, 255, .06); color: var(--text); text-align: left; }',
+    '  .riga-app .ico { width: 52px; height: 52px; flex: none; border-radius: 13px; overflow: hidden; display: flex; align-items: center; justify-content: center;',
+    '    font-weight: 800; font-size: 22px; color: #fff; }',
+    '  .riga-app .ico img { width: 100%; height: 100%; object-fit: cover; }',
+    '  .riga-app .testi { flex: 1; min-width: 0; }',
+    '  .riga-app b, .riga-app span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }',
+    '  .riga-app b { font-size: 15px; }',
+    '  .riga-app span { font-size: 12px; color: var(--text-2); margin-top: 2px; }',
+    '  .riga-app svg { width: 20px; height: 20px; flex: none; fill: none; stroke: var(--text-3); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }',
+    '  .aggiungi-app { margin-top: 18px; padding: 14px; border-radius: 18px; background: var(--surface); border: 1px solid var(--line); }',
+    '  .aggiungi-app > b { display: block; font-size: 15px; margin: 0 2px 4px; }',
+    '  .aggiungi-app > p { margin: 0 2px 10px; font-size: 12px; color: var(--text-2); line-height: 1.4; }',
+    '  .avviso-app { margin-top: 10px; padding: 12px; border-radius: 14px; background: rgba(255, 180, 92, .12); font-size: 13px; line-height: 1.45; color: var(--text); }',
+    '  .avviso-app b { color: var(--warn); }',
+    '  .avviso-app .schede-azioni { margin-top: 10px; }',
+    '  .app-copertina { aspect-ratio: 5 / 3; border-radius: 18px; overflow: hidden; margin-bottom: 16px; background: var(--surface); box-shadow: 0 10px 26px rgba(0, 0, 0, .35); }',
+    '  .app-copertina img { display: block; width: 100%; height: 100%; object-fit: cover; }',
+    '  .app-testa { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; }',
+    '  .app-icona { width: 84px; height: 84px; border-radius: 21px; overflow: hidden; flex: none; display: flex; align-items: center; justify-content: center;',
+    '    font-size: 38px; font-weight: 800; color: #fff; }',
+    '  .app-icona img { width: 100%; height: 100%; object-fit: cover; }',
+    '  .app-nomi { min-width: 0; }',
+    '  .app-nomi small { display: block; font-size: 12px; color: var(--text-2); }',
+    '  .app-nomi small.privata { display: inline-block; padding: 3px 10px; border-radius: 99px; background: rgba(255, 180, 92, .16); color: var(--warn); font-weight: 700; }',
+    '  .app-nomi b { display: block; font-size: 25px; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; margin-top: 3px; }',
+    '  .app-nomi span { display: block; font-size: 13px; color: var(--text-2); margin-top: 4px; }',
+    '  .app-azioni { display: flex; gap: 10px; margin-bottom: 18px; }',
+    '  .app-azioni button { flex: 1; height: 52px; border-radius: 15px; font-size: 16px; font-weight: 800; background: var(--surface-3); color: var(--text); }',
+    '  .app-azioni button.primo { flex: 1.6; background: var(--text); color: #0b0c10; }',
+    '  .app-azioni button.conferma { background: var(--danger); color: #fff; }',
+    '  .app-azioni .spento { flex: 1; height: 52px; display: flex; align-items: center; justify-content: center; border-radius: 15px;',
+    '    border: 1px solid var(--line); color: var(--text-2); font-size: 14px; font-weight: 700; }',
+    '  .app-descr { margin: 0 2px 14px; font-size: 15px; line-height: 1.55; color: var(--text); }',
+    '  .app-novita { padding: 12px 14px; border-radius: 14px; background: var(--surface); font-size: 13px; line-height: 1.45; color: var(--text-2); }',
+    '  .app-novita b { color: var(--text); }',
     '  .schede-azioni { display: flex; gap: 10px; }',
     '  .schede-azioni .secondario { flex: 1; }',
     '  .video-tv { padding: 10px 14px 14px; }',
@@ -3332,6 +6085,7 @@
     '        <span class="dove-nota"><i id="dot" class="dot"></i><span id="stato-nota">Sul TV</span></span>',
     '        <strong id="stato">Collegamento&hellip;</strong>',
     '      </div>',
+    '      <button id="apri-store" class="icona" aria-label="Store di Home TV"><svg viewBox="0 0 24 24"><path fill-rule="evenodd" d="M8.5 8V6.5a3.5 3.5 0 0 1 7 0V8h3.7l.9 13H3.9l.9-13zm1.8 0h3.4V6.5a1.7 1.7 0 0 0-3.4 0z"/></svg></button>',
     '      <button id="apri-schede" class="icona" aria-label="Schede del browser"><svg viewBox="0 0 24 24"><path d="M8 3h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-1v-2h1V5H8v1H6V5a2 2 0 0 1 2-2zM4 8h11a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2zm0 2v9h11v-9z"/></svg></button>',
     '      <button id="apri-video" class="icona" aria-label="Riproduci un video sul TV"><svg viewBox="0 0 24 24"><path d="M3 4h18a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-6v2h3v2H6v-2h3v-2H3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm0 2v10h18V6zm7 1.8 5.5 3.2-5.5 3.2z"/></svg></button>',
     '      <button id="apri-scrivi" class="icona" aria-label="Scrivi sul TV o manda un link"><svg viewBox="0 0 24 24"><path d="M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zm1.5 3v2h2V8zm3.5 0v2h2V8zm3.5 0v2h2V8zm3.5 0v2h2V8zM5.5 11.5v2h2v-2zm3.5 0v2h2v-2zm3.5 0v2h2v-2zm3.5 0v2h2v-2zM8 15v1.6h8V15z"/></svg></button>',
@@ -3408,6 +6162,43 @@
     '      <p>Per averlo sempre a portata di mano: tocca <b>Condividi</b> in Safari e poi <b>Aggiungi alla schermata Home</b>.</p>',
     '      <button id="chiudi-consiglio">Ok</button>',
     '    </div>',
+    '  </section>',
+    '',
+    '  <section id="vista-store" class="vista-store" hidden>',
+    '    <header class="store-testa">',
+    '      <button id="store-indietro" class="icona" aria-label="Torna al telecomando"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>',
+    '      <div class="store-titoli"><strong>Store</strong><span id="store-sotto">Le app per il tuo TV</span></div>',
+    '    </header>',
+    '    <div class="cerca-box">',
+    '      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 3a7.5 7.5 0 0 1 5.96 12.06l4.24 4.24-1.41 1.41-4.24-4.24A7.5 7.5 0 1 1 10.5 3zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11z"/></svg>',
+    '      <input id="cerca-store" class="cerca-store" type="search" placeholder="Cerca app, giochi, strumenti" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">',
+    '    </div>',
+    '    <p id="store-nota" class="nota store-nota via"></p>',
+    '    <div id="store-corpo" class="store-corpo"></div>',
+    '    <div class="aggiungi-app">',
+    '      <b>Aggiungi un&rsquo;app privata</b>',
+    '      <p>Un indirizzo qualsiasi o <b>utente/repository</b> di GitHub: resta solo su questo TV.</p>',
+    '      <div class="campo">',
+    '        <input id="indirizzo-app" type="url" enterkeyhint="go" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="utente/repository o un indirizzo">',
+    '        <button id="aggiungi-app" class="invia">Aggiungi</button>',
+    '      </div>',
+    '      <div id="avviso-app" class="avviso-app" hidden>',
+    '        <p><b>Codice non verificato.</b> Questa fonte non &egrave; controllata da Home TV. Le sue app girano chiuse nel loro riquadro e non vedono la home n&eacute; i tuoi dati, ma possono mostrarti qualsiasi cosa e usare internet. Aggiungila solo se ti fidi di chi l&rsquo;ha fatta.</p>',
+    '        <div class="schede-azioni"><button id="conferma-app" class="secondario">Aggiungi lo stesso</button><button id="annulla-app" class="secondario">Annulla</button></div>',
+    '      </div>',
+    '    </div>',
+    '  </section>',
+    '',
+    '  <section id="vista-app" class="vista-app" hidden>',
+    '    <header class="store-testa">',
+    '      <button id="app-indietro" class="icona" aria-label="Torna allo Store"><svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg></button>',
+    '      <div class="store-titoli"><strong>Store</strong><span>Si installa sul TV</span></div>',
+    '    </header>',
+    '    <div id="app-copertina" class="app-copertina" hidden></div>',
+    '    <div class="app-testa"><div id="app-icona" class="app-icona"></div><div class="app-nomi"><small id="app-sopra"></small><b id="app-nome"></b><span id="app-info"></span></div></div>',
+    '    <div id="app-azioni" class="app-azioni"></div>',
+    '    <p id="app-descr" class="app-descr"></p>',
+    '    <div id="app-novita" class="app-novita" hidden></div>',
     '  </section>',
     '',
     '</div>',
@@ -3548,6 +6339,8 @@
     '  function mostra(vista) {',
     '    $(\'vista-abbina\').hidden = vista !== \'abbina\';',
     '    $(\'vista-comandi\').hidden = vista !== \'comandi\';',
+    '    $(\'vista-store\').hidden = vista !== \'store\';',
+    '    $(\'vista-app\').hidden = vista !== \'app\';',
     '  }',
     '',
     '  function abbina(pin) {',
@@ -4359,6 +7152,285 @@
     '    }, function () { $(\'lista-schede\').textContent = \'Non trovo il TV: riprova.\'; });',
     '  });',
     '  $(\'schede-tv\').addEventListener(\'click\', function () { chiudiFogli(); invia({ tipo: \'schede\' }); });',
+    '  /* ---------------------------------------------------- lo Store: come sul TV. L\'elenco (con gli stati e i colori) lo manda il',
+    '     TV, che fa anche le azioni: installa, apri, disinstalla, togli, aggiungi */',
+    '',
+    '  var storeVer = -1, storeEsito = 0, storeDati = null, storeDove = \'\', storeInCasa = true, confermaTimer = null, appAperta = \'\';',
+    '  var TITOLI_STORE = { film: \'Film e serie\', video: \'Video e musica\', sport: \'Sport\', giochi: \'Giochi\', strumenti: \'Strumenti\', altre: \'Altre app\' };',
+    '  var ORDINE_STORE = [\'film\', \'video\', \'sport\', \'giochi\', \'strumenti\', \'altre\'];',
+    '  var NOMI_AZIONI = { installa: \'Installa sul TV\', apri: \'Apri sul TV\', disinstalla: \'Disinstalla\', togli: \'Togli\' };',
+    '  var FRECCIA_DX = \'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>\';',
+    '  function piano(t) {',
+    '    t = String(t || \'\').toLowerCase();',
+    '    try { t = t.normalize(\'NFD\').replace(/[\\u0300-\\u036f]/g, \'\'); } catch (e) {}',
+    '    return t;',
+    '  }',
+    '  function storeAperto() { return !$(\'vista-store\').hidden || !$(\'vista-app\').hidden; }',
+    '  function privata(a) { return a.chiave.indexOf(\'mia:\') === 0; }',
+    '  function installataApp(a) { return a.stato === \'installata\' || a.stato === \'nuova\' || a.stato === \'orfana\'; }',
+    '  function sfondoApp(a) {',
+    '    var c = a.colore || [\'59,76,202\', \'26,35,102\'];',
+    '    return \'linear-gradient(140deg, rgb(\' + c[0] + \') 0%, rgb(\' + c[1] + \') 100%)\';',
+    '  }',
+    '  function iniziale(a) { return (a.nome || \'?\').charAt(0).toUpperCase(); }',
+    '  // l\'icona: l\'immagine (solo le app dello Store) sopra l\'iniziale coi colori dell\'app, come sul TV',
+    '  function iconaApp(a, cls) {',
+    '    var d = document.createElement(\'div\');',
+    '    d.className = cls;',
+    '    d.style.background = sfondoApp(a);',
+    '    if (a.icona) {',
+    '      var im = document.createElement(\'img\');',
+    '      im.alt = \'\';',
+    '      im.onerror = function () { if (im.parentNode) im.parentNode.removeChild(im); d.textContent = iniziale(a); };',
+    '      im.src = a.icona;',
+    '      d.appendChild(im);',
+    '    } else d.textContent = iniziale(a);',
+    '    return d;',
+    '  }',
+    '  function sottoApp(a) {',
+    '    if (a.stato === \'nonAdatta\') return \'Non va su questo TV\';',
+    '    if (a.stato === \'ritirata\') return \'Non pi\\u00f9 disponibile\';',
+    '    if (a.stato === \'orfana\') return \'Non pi\\u00f9 nello Store\';',
+    '    if (a.stato === \'nuova\') return \'Versione nuova\';',
+    '    if (privata(a)) return \'Non verificata\';',
+    '    if (a.stato === \'installata\') return \'Installata\';',
+    '    return TITOLI_STORE[a.categoria] || \'App\';',
+    '  }',
+    '  function azioniApp(a) {',
+    '    if (privata(a)) return a.stato === \'nonAdatta\' || a.stato === \'ritirata\' ? [\'togli\'] : [\'apri\', \'togli\'];',
+    '    if (a.stato === \'installa\') return [\'installa\'];',
+    '    if (a.stato === \'installata\' || a.stato === \'nuova\') return [\'apri\', \'disinstalla\'];',
+    '    if (a.stato === \'orfana\' || a.stato === \'ritirata\') return [\'disinstalla\'];',
+    '    return [];',
+    '  }',
+    '  function cartaApp(a) {',
+    '    var c = document.createElement(\'button\'), ic = iconaApp(a, \'ico\'), b = document.createElement(\'b\'), sp = document.createElement(\'span\');',
+    '    c.className = \'carta-app\';',
+    '    c.setAttribute(\'data-id\', a.chiave);',
+    '    c.setAttribute(\'data-stato\', a.stato);',
+    '    if (a.stato === \'nuova\') { var p = document.createElement(\'i\'); p.className = \'pallino-app\'; ic.appendChild(p); }',
+    '    else if (installataApp(a)) { var s = document.createElement(\'i\'); s.className = \'spunta-app\'; ic.appendChild(s); }',
+    '    c.appendChild(ic);',
+    '    b.textContent = a.nome;',
+    '    sp.textContent = sottoApp(a);',
+    '    if (privata(a)) sp.className = \'privata\';',
+    '    c.appendChild(b);',
+    '    c.appendChild(sp);',
+    '    c.addEventListener(\'click\', function () { paginaApp(a.chiave); });',
+    '    return c;',
+    '  }',
+    '  // In evidenza: la copertina disegnata per il riquadro, se no l\'icona, il nome e la prima frase sui colori dell\'app',
+    '  function cartaGrande(a) {',
+    '    var c = document.createElement(\'button\'), d = document.createElement(\'div\'), b = document.createElement(\'b\'), sp = document.createElement(\'span\');',
+    '    c.className = a.copertina ? \'carta-grande\' : \'carta-grande senza\';',
+    '    c.setAttribute(\'data-id\', a.chiave);',
+    '    c.style.background = sfondoApp(a);',
+    '    if (a.copertina) {',
+    '      var im = document.createElement(\'img\');',
+    '      im.className = \'cop\';',
+    '      im.alt = a.nome;',
+    '      im.onerror = function () { if (im.parentNode) im.parentNode.removeChild(im); c.className = \'carta-grande senza\'; };',
+    '      im.src = a.copertina;',
+    '      c.appendChild(im);',
+    '    }',
+    '    c.appendChild(iconaApp(a, \'ico-grande\'));',
+    '    d.className = \'dentro\';',
+    '    b.textContent = a.nome;',
+    '    sp.textContent = a.descrizione ? a.descrizione.split(\'. \')[0] : (TITOLI_STORE[a.categoria] || \'App\');',
+    '    d.appendChild(b);',
+    '    d.appendChild(sp);',
+    '    c.appendChild(d);',
+    '    c.addEventListener(\'click\', function () { paginaApp(a.chiave); });',
+    '    return c;',
+    '  }',
+    '  function rigaApp(a) {',
+    '    var r = document.createElement(\'button\'), t = document.createElement(\'div\'), b = document.createElement(\'b\'), sp = document.createElement(\'span\');',
+    '    r.className = \'riga-app\';',
+    '    r.setAttribute(\'data-id\', a.chiave);',
+    '    r.setAttribute(\'data-stato\', a.stato);',
+    '    r.appendChild(iconaApp(a, \'ico\'));',
+    '    t.className = \'testi\';',
+    '    b.textContent = a.nome;',
+    '    sp.textContent = sottoApp(a) + (privata(a) && a.sito ? \' \\u00b7 \' + a.sito : \'\');',
+    '    if (privata(a)) sp.className = \'privata\';',
+    '    t.appendChild(b);',
+    '    t.appendChild(sp);',
+    '    r.appendChild(t);',
+    '    r.insertAdjacentHTML(\'beforeend\', FRECCIA_DX);',
+    '    r.addEventListener(\'click\', function () { paginaApp(a.chiave); });',
+    '    return r;',
+    '  }',
+    '  function sezione(titolo, voci, grande) {',
+    '    var s = document.createElement(\'div\'), h = document.createElement(\'h3\'), l = document.createElement(\'div\');',
+    '    s.className = \'sezione-store\';',
+    '    h.textContent = titolo;',
+    '    l.className = \'scorri\';',
+    '    voci.forEach(function (a) { l.appendChild(grande ? cartaGrande(a) : cartaApp(a)); });',
+    '    s.appendChild(h);',
+    '    s.appendChild(l);',
+    '    return s;',
+    '  }',
+    '  function tutteApp() { return storeDati ? storeDati.app.concat(storeDati.mie) : []; }',
+    '  function cercaQui(a, q) {',
+    '    return piano([a.nome, a.descrizione, a.autore, TITOLI_STORE[a.categoria] || \'\', a.sito].join(\' \')).indexOf(q) !== -1;',
+    '  }',
+    '  function mostraStore() {',
+    '    var corpo = $(\'store-corpo\'), testoQ = $(\'cerca-store\').value.replace(/^\\s+|\\s+$/g, \'\'), q = piano(testoQ), d = storeDati, nota = $(\'store-nota\');',
+    '    nota.textContent = storeInCasa ? \'\' : \'Sul TV \\u00e8 aperto \' + (storeDove || \'altro\') + \': installa e disinstalla si fanno appena torni alla home.\';',
+    '    nota.className = storeInCasa ? \'nota store-nota via\' : \'nota store-nota\';',
+    '    while (corpo.firstChild) corpo.removeChild(corpo.firstChild);',
+    '    if (!d) { corpo.innerHTML = \'<p class="vuoto-store">Apri la home sul TV: lo Store arriva da l\\u00ec.</p>\'; return; }',
+    '    var n = d.app.filter(function (a) { return a.stato !== \'orfana\'; }).length;',
+    '    $(\'store-sotto\').textContent = n === 1 ? \'1 app per il tuo TV\' : n + \' app per il tuo TV\';',
+    '    if (q) {',
+    '      var trovate = tutteApp().filter(function (a) { return cercaQui(a, q); });',
+    '      var s = document.createElement(\'div\'), h = document.createElement(\'h3\');',
+    '      s.className = \'sezione-store\';',
+    '      h.textContent = trovate.length ? (trovate.length === 1 ? \'1 app\' : trovate.length + \' app\') + \' per \\u00ab\' + testoQ + \'\\u00bb\' : \'Nessuna app per \\u00ab\' + testoQ + \'\\u00bb\';',
+    '      s.appendChild(h);',
+    '      trovate.forEach(function (a) { s.appendChild(rigaApp(a)); });',
+    '      corpo.appendChild(s);',
+    '      return;',
+    '    }',
+    '    var evid = d.app.filter(function (a) { return a.evidenza && a.stato !== \'ritirata\' && a.stato !== \'orfana\'; });',
+    '    if (evid.length) corpo.appendChild(sezione(\'In evidenza\', evid, true));',
+    '    var tue = d.app.filter(installataApp);',
+    '    if (tue.length) corpo.appendChild(sezione(\'Le tue app\', tue));',
+    '    ORDINE_STORE.forEach(function (cat) {',
+    '      var qui = d.app.filter(function (a) { return a.categoria === cat && a.stato !== \'ritirata\' && a.stato !== \'orfana\'; });',
+    '      if (qui.length) corpo.appendChild(sezione(TITOLI_STORE[cat], qui));',
+    '    });',
+    '    if (d.mie.length) corpo.appendChild(sezione(\'Le mie app\', d.mie));',
+    '    if (!d.app.length && !d.mie.length) corpo.innerHTML = \'<p class="vuoto-store">Lo Store \\u00e8 vuoto per ora.</p>\';',
+    '  }',
+    '  function trovaAppStore(chiave) {',
+    '    var l = tutteApp();',
+    '    for (var i = 0; i < l.length; i++) if (l[i].chiave === chiave) return l[i];',
+    '    return null;',
+    '  }',
+    '  // la pagina di un\'app, come sul TV: copertina, icona, nome, e il pulsante grande "Installa sul TV"',
+    '  function paginaApp(chiave, soloAggiorna) {',
+    '    var a = trovaAppStore(chiave);',
+    '    if (!a) { if (soloAggiorna && appAperta) { appAperta = \'\'; mostra(\'store\'); } return; }',
+    '    appAperta = chiave;',
+    '    var cop = $(\'app-copertina\');',
+    '    while (cop.firstChild) cop.removeChild(cop.firstChild);',
+    '    cop.hidden = !a.copertina;',
+    '    if (a.copertina) {',
+    '      var im = document.createElement(\'img\');',
+    '      im.alt = a.nome;',
+    '      im.onerror = function () { cop.hidden = true; };',
+    '      im.src = a.copertina;',
+    '      cop.appendChild(im);',
+    '    }',
+    '    var vecchia = $(\'app-icona\'), nuova = iconaApp(a, \'app-icona\');',
+    '    nuova.id = \'app-icona\';',
+    '    vecchia.parentNode.replaceChild(nuova, vecchia);',
+    '    var sopra = $(\'app-sopra\'), info = [];',
+    '    sopra.textContent = privata(a) ? \'App privata \\u00b7 non verificata\' : (TITOLI_STORE[a.categoria] || \'App\') + (a.autore ? \' \\u00b7 di \' + a.autore : \'\');',
+    '    sopra.className = privata(a) ? \'privata\' : \'\';',
+    '    $(\'app-nome\').textContent = a.nome;',
+    '    if (a.versione) info.push(\'Versione \' + a.versione);',
+    '    if (privata(a)) { info.push(\'da \' + (a.sito || \'una fonte privata\')); if (a.autore) info.push(\'autore dichiarato: \' + a.autore); }',
+    '    else if (a.stato !== \'installa\') info.push(sottoApp(a));',
+    '    $(\'app-info\').textContent = info.join(\' \\u00b7 \');',
+    '    var az = $(\'app-azioni\'), l = azioniApp(a);',
+    '    while (az.firstChild) az.removeChild(az.firstChild);',
+    '    if (!l.length) {',
+    '      var sp = document.createElement(\'div\');',
+    '      sp.className = \'spento\';',
+    '      sp.textContent = sottoApp(a);',
+    '      az.appendChild(sp);',
+    '    }',
+    '    l.forEach(function (x, i) {',
+    '      var p = document.createElement(\'button\');',
+    '      p.textContent = NOMI_AZIONI[x];',
+    '      p.setAttribute(\'data-azione\', x);',
+    '      if (i === 0 && (x === \'installa\' || x === \'apri\')) p.className = \'primo\';',
+    '      p.addEventListener(\'click\', function () { azioneStore(a, x, p); });',
+    '      az.appendChild(p);',
+    '    });',
+    '    $(\'app-descr\').textContent = a.descrizione || \'\';',
+    '    var nov = $(\'app-novita\');',
+    '    nov.hidden = !a.novita;',
+    '    nov.textContent = \'\';',
+    '    if (a.novita) {',
+    '      var bb = document.createElement(\'b\');',
+    '      bb.textContent = \'Novit\\u00e0 della versione \' + a.versione + \': \';',
+    '      nov.appendChild(bb);',
+    '      nov.appendChild(document.createTextNode(a.novita));',
+    '    }',
+    '    if (!soloAggiorna) { mostra(\'app\'); try { window.scrollTo(0, 0); } catch (e) {} }',
+    '  }',
+    '  function caricaStore() {',
+    '    if (DEMO) return;',
+    '    api(\'/store?t=\' + encodeURIComponent(token)).then(function (j) {',
+    '      if (j.__stato === 401) { perso(); return; }',
+    '      storeDati = j.store || null;',
+    '      storeDove = j.dove || \'\';',
+    '      storeInCasa = !!j.casa;',
+    '      // l\'esito dell\'ultima azione fatta dal TV (installata, non trovata...): il primo si guarda e basta, gli altri si dicono',
+    '      var e = storeDati && storeDati.esito, at = (e && e.at) || 0;',
+    '      if (storeEsito && at > storeEsito && e.testo) avviso(e.testo, 3500);',
+    '      if (!storeEsito || at > storeEsito) storeEsito = Math.max(at, 1);',
+    '      if (!$(\'vista-store\').hidden) mostraStore();',
+    '      if (appAperta && !$(\'vista-app\').hidden) paginaApp(appAperta, true);',
+    '    }, function () { if (!storeDati) $(\'store-corpo\').innerHTML = \'<p class="vuoto-store">Non trovo il TV: riprova.</p>\'; });',
+    '  }',
+    '  function azioneStore(a, x, p) {',
+    '    // disinstallare o togliere: un secondo tocco per conferma',
+    '    if ((x === \'disinstalla\' || x === \'togli\') && p.className !== \'conferma\') {',
+    '      p.className = \'conferma\';',
+    '      p.textContent = \'Sicuro?\';',
+    '      clearTimeout(confermaTimer);',
+    '      confermaTimer = setTimeout(function () { p.className = \'\'; p.textContent = NOMI_AZIONI[x]; }, 3000);',
+    '      return;',
+    '    }',
+    '    clearTimeout(confermaTimer);',
+    '    var c = { tipo: \'store\', azione: x };',
+    '    if (!privata(a) && x !== \'apri\') c.id = a.chiave.slice(3); else c.riquadro = a.chiave;',
+    '    invia(c).then(function (k) {',
+    '      if (!k || k.error || k.__stato >= 400) return;',
+    '      if (k.coda) avviso(x === \'apri\' ? \'Apro la home sul TV\' : \'Si far\\u00e0 sul TV appena torni alla home\', 3500);',
+    '      else avviso(x === \'installa\' ? \'Installo sul TV\\u2026\' : x === \'apri\' ? \'Apro sul TV\' : x === \'disinstalla\' ? \'Disinstallo sul TV\\u2026\' : \'Tolgo dal TV\\u2026\', 2000);',
+    '    });',
+    '  }',
+    '  $(\'apri-store\').addEventListener(\'click\', function () {',
+    '    appAperta = \'\';',
+    '    mostra(\'store\');',
+    '    try { window.scrollTo(0, 0); } catch (e) {}',
+    '    $(\'avviso-app\').hidden = true;',
+    '    if (DEMO) {',
+    '      storeDati = { catalogo: \'Store\', mie: [], app: [',
+    '        { chiave: \'ws:orologio\', nome: \'Orologio\', descrizione: "L\'ora grande e la data, leggibili dal divano.", categoria: \'strumenti\', stato: \'installata\', evidenza: true, versione: \'1.0.0\' },',
+    '        { chiave: \'ws:meteo\', nome: \'Meteo\', descrizione: \'Il tempo di oggi e della settimana.\', categoria: \'strumenti\', stato: \'installa\', versione: \'1.0.0\', colore: [\'15,155,142\', \'10,71,68\'] },',
+    '        { chiave: \'ws:scacchi\', nome: \'Scacchi\', descrizione: \'Una partita col telecomando.\', categoria: \'giochi\', stato: \'installa\', versione: \'1.0.0\', colore: [\'142,63,184\', \'61,24,87\'] }] };',
+    '      mostraStore();',
+    '      return;',
+    '    }',
+    '    if (!storeDati) $(\'store-corpo\').innerHTML = \'<p class="vuoto-store">Chiedo lo Store al TV\\u2026</p>\';',
+    '    else mostraStore();',
+    '    caricaStore();',
+    '    invia({ tipo: \'store\', azione: \'elenco\' });',
+    '  });',
+    '  $(\'store-indietro\').addEventListener(\'click\', function () { appAperta = \'\'; mostra(\'comandi\'); });',
+    '  $(\'app-indietro\').addEventListener(\'click\', function () { appAperta = \'\'; mostra(\'store\'); mostraStore(); });',
+    '  $(\'cerca-store\').addEventListener(\'input\', function () { if (storeDati) mostraStore(); });',
+    '  $(\'aggiungi-app\').addEventListener(\'click\', function () {',
+    '    if (!$(\'indirizzo-app\').value.replace(/\\s+/g, \'\')) { try { $(\'indirizzo-app\').focus(); } catch (e) {} return; }',
+    '    if (storeDati && storeDati.mie.length >= 300) { avviso(\'Le mie app \\u00e8 piena (300 app): sul TV togli una fonte prima\', 4000); return; }',
+    '    $(\'avviso-app\').hidden = false;',
+    '  });',
+    '  $(\'annulla-app\').addEventListener(\'click\', function () { $(\'avviso-app\').hidden = true; });',
+    '  $(\'conferma-app\').addEventListener(\'click\', function () {',
+    '    var t = $(\'indirizzo-app\').value.replace(/^\\s+|\\s+$/g, \'\');',
+    '    $(\'avviso-app\').hidden = true;',
+    '    invia({ tipo: \'store\', azione: \'aggiungi\', indirizzo: t }).then(function (k) {',
+    '      if (!k || k.error || k.__stato >= 400) return;',
+    '      if (k.coda) avviso(\'Si far\\u00e0 sul TV appena torni alla home\', 3500);',
+    '      else { avviso(\'Il TV cerca l\\u2019app\\u2026\', 2500); $(\'indirizzo-app\').value = \'\'; }',
+    '    });',
+    '  });',
     '  // scheda nuova: sul TV il browser con la ricerca pronta; qui si apre subito la casella per scrivere l\'indirizzo',
     '  $(\'nuova-scheda\').addEventListener(\'click\', function () {',
     '    apriFoglio(\'foglio-scrivi\');',
@@ -4391,6 +7463,7 @@
     '      mostraVideo(j.video || null);',
     '      sotto = j.sotto || null;',
     '      statoVer = j.ver || 0;',
+    '      if (typeof j.storeVer === \'number\' && j.storeVer !== storeVer) { storeVer = j.storeVer; if (storeAperto() || storeEsito) caricaStore(); }',
     '      statoTimer = setTimeout(controllaStato, j.ver ? 40 : 4000);',
     '    }, function () {',
     '      if (mio !== statoGiro) return;',
