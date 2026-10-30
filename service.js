@@ -533,6 +533,10 @@
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
   var ALTRA = typeof HOMETV_PIATTAFORMA === 'object' && HOMETV_PIATTAFORMA ? HOMETV_PIATTAFORMA : null;
+  // le funzioni in piu' di questo servizio, con la loro versione (GET /api/status, docs/contratto-servizio.md): lo Store le
+  // confronta con "richiede" del catalogo. video 1 = l'app Video (gettone, chiavette, ponti jf/ e mac/, tv/cpu). Le altre TV
+  // con questo stesso file (LG) dicono le loro nell'adattatore (funzioni): nessuna finche' non sono provate su un TV vero
+  var FUNZIONI = ALTRA ? (ALTRA.funzioni && typeof ALTRA.funzioni === 'object' ? ALTRA.funzioni : {}) : { video: 1 };
 
   var SHARE = '/home/owner/share';
   var CACHE_DIR = ALTRA && ALTRA.dati ? ALTRA.dati : fs.existsSync(SHARE) ? SHARE : require('os').tmpdir();
@@ -1089,8 +1093,8 @@
     if (route === 'GET /api/icon') { serveIcon(req, res, url.query.path); return; }
 
     if (route === 'GET /api/status') {
-      // piattaforma e api: il contratto del servizio (docs/contratto-servizio.md), uguale per ogni TV
-      sendJson(req, res, 200, { ok: true, version: VERSION, piattaforma: ALTRA ? ALTRA.nome : 'tizen', api: 3, tizen: HAS_TIZEN, apps: cache.apps ? cache.apps.length : 0,
+      // piattaforma, api e funzioni: il contratto del servizio (docs/contratto-servizio.md), uguale per ogni TV
+      sendJson(req, res, 200, { ok: true, version: VERSION, piattaforma: ALTRA ? ALTRA.nome : 'tizen', api: 4, funzioni: FUNZIONI, tizen: HAS_TIZEN, apps: cache.apps ? cache.apps.length : 0,
         casa: trovaCasa().base });
       return;
     }
@@ -2653,6 +2657,9 @@
           if (m.cluster1 > 0) c.push(m.cluster1);
           for (i = 0; i < m.tracce.length; i++) if (m.tracce[i].tipo === 17) sott[m.tracce[i].num] = true;
           if (m.cues) {
+            for (i = 0; i < m.tracce.length && !m.ritmo; i++) {
+              if (m.tracce[i].tipo === 1 && m.cues[m.tracce[i].num]) m.ritmo = ritmoDaCues(m.cues[m.tracce[i].num], m.scala, m.durata);
+            }
             for (var tr in m.cues) {
               if (!Object.prototype.hasOwnProperty.call(m.cues, tr)) continue;
               var l = m.cues[tr];
@@ -2669,6 +2676,117 @@
 
         prossimo();
       }));
+    }
+
+    /* ============================================================ i picchi stimati dal TV
+     * Quanti Mbps chiede il film secondo per secondo, senza leggerlo tutto: dalle Cues dell'MKV (dove sta ogni fotogramma
+     * chiave e quando) o dalle tabelle dell'MP4 (misura e durata di ogni fotogramma). Serve per avvisare prima: i momenti
+     * in cui il film supera quello che il TV (o la rete) regge, il tetto. Il Mac (limitatore) misura meglio, pacchetto per
+     * pacchetto; questa e' la stima che il TV fa da solo, subito. */
+
+    var MAX_SECONDI_RITMO = 6 * 3600;
+    // dalle Cues di una traccia video: [{ t (in unita' della scala), cl, rel }] -> Mbps per secondo (interpolati nel GOP)
+    function ritmoDaCues(l, scala, durata) {
+      if (!l || l.length < 2 || !(durata > 1)) return null;
+      var p = [], i, ultimo = -1;
+      var q = l.slice().sort(function (x, y) { return x.t - y.t; });
+      for (i = 0; i < q.length; i++) {
+        var t = q[i].t * scala / 1e9, pos = q[i].cl + (q[i].rel > 0 ? q[i].rel : 0);
+        if (pos <= ultimo || (p.length && t <= p[p.length - 1].t)) continue;
+        p.push({ t: t, pos: pos });
+        ultimo = pos;
+      }
+      if (p.length < 2) return null;
+      var n = Math.min(MAX_SECONDI_RITMO, Math.ceil(Math.min(durata, p[p.length - 1].t))), out = [], k = 0;
+      function posA(t) {
+        while (k + 1 < p.length - 1 && p[k + 1].t <= t) k++;
+        var a = p[k], b = p[k + 1];
+        if (t <= a.t) return a.pos;
+        if (t >= b.t) return b.pos;
+        return a.pos + (b.pos - a.pos) * (t - a.t) / (b.t - a.t);
+      }
+      for (i = 0; i < n; i++) {
+        var x = posA(i), y = posA(i + 1);
+        out.push(Math.round(Math.max(0, y - x) * 8 / 1e5) / 10);
+      }
+      return { mbps: out, da: 'cues' };
+    }
+    // dalle tabelle dell'MP4: i fotogrammi del video secondo per secondo, piu' le altre tracce in media. I numeri scritti nel
+    // file non si credono: i giri si fermano alla fine dei riquadri, con la misura fissa non si gira per fotogramma, e dopo
+    // 50 ms di lavoro si rinuncia (niente stima: un MP4 fatto apposta non ferma il servizio)
+    var MAX_FOTOGRAMMI_RITMO = MAX_SECONDI_RITMO * 240;
+    function ritmoDaMp4(b, tracce, durata) {
+      if (!(durata > 1)) return null;
+      var fino = Date.now() + 50, v = null, altri = 0, i;
+      for (i = 0; i < tracce.length; i++) {
+        var t = tracce[i];
+        if (!t._stsz) continue;
+        if (t.tipo === 1 && !v) v = t;
+        else { var x = totaleStsz(b, t._stsz, fino); if (x < 0) return null; altri += x; }
+      }
+      if (!v || !v._stts || !v.scala) return null;
+      var n = Math.min(MAX_SECONDI_RITMO, Math.ceil(durata)), sec = [], s0 = v._stsz, t0 = v._stts;
+      for (i = 0; i < n; i++) sec.push(0);
+      var fisso = b.readUInt32BE(s0[0] + 4), quanti = b.readUInt32BE(s0[0] + 8);
+      if (!fisso) quanti = Math.min(quanti, Math.floor((s0[1] - s0[0] - 12) / 4));
+      quanti = Math.min(quanti, MAX_FOTOGRAMMI_RITMO);
+      var voci = Math.min(b.readUInt32BE(t0[0] + 4), Math.floor((t0[1] - t0[0] - 8) / 8)), c = 0, tempo = 0;
+      for (var e = 0; e < voci && c < quanti; e++) {
+        var cnt = Math.min(b.readUInt32BE(t0[0] + 8 + e * 8), quanti - c), delta = b.readUInt32BE(t0[0] + 12 + e * 8);
+        if (fisso) {
+          // misura fissa: fisso x cnt sparso sui secondi di questa voce
+          spargi(sec, tempo / v.scala, (tempo + cnt * delta) / v.scala, fisso * cnt);
+          tempo += cnt * delta;
+          c += cnt;
+        } else {
+          for (var k = 0; k < cnt; k++, c++) {
+            var j = Math.floor(tempo / v.scala);
+            if (j < n) sec[j] += b.readUInt32BE(s0[0] + 12 + c * 4);
+            tempo += delta;
+            if ((c & 0xffff) === 0xffff && Date.now() > fino) return null;
+          }
+        }
+        if ((e & 0xff) === 0xff && Date.now() > fino) return null;
+      }
+      var resto = altri / durata;
+      for (i = 0; i < n; i++) sec[i] = Math.round((sec[i] + resto) * 8 / 1e5) / 10;
+      return { mbps: sec, da: 'mp4' };
+    }
+    // byte sparsi in modo uniforme sui secondi tra da e a
+    function spargi(sec, da, a, byte) {
+      if (!(a > da)) { var j0 = Math.floor(da); if (j0 >= 0 && j0 < sec.length) sec[j0] += byte; return; }
+      var per = byte / (a - da), s1 = Math.max(0, Math.floor(da)), fine = Math.min(sec.length, Math.ceil(a));
+      for (var s2 = s1; s2 < fine; s2++) {
+        var x = Math.max(da, s2), y = Math.min(a, s2 + 1);
+        if (y > x) sec[s2] += per * (y - x);
+      }
+    }
+    // tutti i byte di una traccia (le altre, in media); -1 se ci vuole troppo
+    function totaleStsz(b, s0, fino) {
+      var fisso = b.readUInt32BE(s0[0] + 4), quanti = b.readUInt32BE(s0[0] + 8), tot = 0;
+      if (fisso) return fisso * Math.min(quanti, MAX_FOTOGRAMMI_RITMO);
+      quanti = Math.min(quanti, Math.floor((s0[1] - s0[0] - 12) / 4));
+      for (var c = 0; c < quanti; c++) {
+        tot += b.readUInt32BE(s0[0] + 12 + c * 4);
+        if ((c & 0xffff) === 0xffff && Date.now() > fino) return -1;
+      }
+      return tot;
+    }
+    // i momenti oltre il tetto: tratti vicini (meno di 3 s tra l'uno e l'altro) uniti
+    function picchiDi(r, tetto) {
+      if (!r || !r.mbps || !r.mbps.length) return null;
+      var l = r.mbps, mx = 0, al = 0, tot = 0, lista = [], cur = null, secondi = 0, i;
+      for (i = 0; i < l.length; i++) {
+        tot += l[i];
+        if (l[i] > mx) { mx = l[i]; al = i; }
+        if (l[i] > tetto) {
+          secondi++;
+          if (cur && i - cur.a <= 3) { cur.a = i + 1; if (l[i] > cur.mbps) cur.mbps = l[i]; }
+          else { cur = { da: i, a: i + 1, mbps: l[i] }; lista.push(cur); }
+        }
+      }
+      return { da: r.da, tetto: tetto, media: Math.round(tot / l.length * 10) / 10, massimo: mx, al: al, secondi: secondi,
+        momenti: lista.length, lista: lista.slice(0, 40) };
     }
 
     /* ============================================================ MP4 e MOV */
@@ -2716,6 +2834,8 @@
             }
           });
         } catch (e) { cb(errore('formato', 'MP4 rovinato')); return; } // un file fatto male non ferma il servizio
+        try { m.ritmo = ritmoDaMp4(moov, m.tracce, m.durata); } catch (e2) { m.ritmo = null; }
+        for (var k = 0; k < m.tracce.length; k++) { delete m.tracce[k]._stsz; delete m.tracce[k]._stts; }
         cb(null, m);
       }
     }
@@ -2767,6 +2887,7 @@
           riquadri(b, a, z, function (t2, a2, z2) {
             if (t2 === 'mdhd' && z2 - a2 >= (b[a2] === 1 ? 34 : 22)) {
               var v2 = b[a2], l = b.readUInt16BE(a2 + (v2 === 1 ? 32 : 20));
+              t.scala = b.readUInt32BE(a2 + (v2 === 1 ? 20 : 12));
               t.lingua = String.fromCharCode(((l >> 10) & 31) + 96, ((l >> 5) & 31) + 96, (l & 31) + 96);
             } else if (t2 === 'hdlr' && z2 - a2 >= 12) {
               t.tipo = MP4_TIPO[b.toString('binary', a2 + 8, a2 + 12)] || 0;
@@ -2781,6 +2902,9 @@
     function trovaStsd(b, s, f, t) {
       riquadri(b, s, f, function (tipo, a, z) {
         if (tipo === 'stbl') { trovaStsd(b, a, z, t); return; }
+        // per la stima dei picchi: dove stanno le misure (stsz) e le durate (stts) dei fotogrammi, nel moov
+        if (tipo === 'stsz' && z - a >= 12) { t._stsz = [a, z]; return; }
+        if (tipo === 'stts' && z - a >= 8) { t._stts = [a, z]; return; }
         if (tipo !== 'stsd' || z - a < 16) return;
         var e = a + 8; // versione, flag, numero di voci
         if (e + 8 > z) return;
@@ -3429,6 +3553,7 @@
                 out.cartelle.sort(function (a, b) { return confrontaNomi(a.nome, b.nome); });
                 out.video.sort(function (a, b) { return confrontaNomi(a.nome, b.nome); });
                 out.sotto.sort(function (a, b) { return confrontaNomi(a.nome, b.nome); });
+                unisciVersioniTv(out);
                 cb(null, out);
                 return;
               }
@@ -3444,6 +3569,22 @@
             })();
           });
         });
+      }
+
+      // la "versione TV" che il limitatore del Mac scrive accanto al film ("<nome> [TV 80].mkv", senza i picchi oltre il
+      // tetto): non e' un film in piu', e' un modo di guardare lo stesso. Va dentro la voce del film (l'app la sceglie da
+      // sola); se il film vero non c'e', resta un video come gli altri
+      var VERSIONE_TV = /^(.+) \[TV (\d{1,4})(?: [0-9a-f]{6})?\]\.mkv$/i;
+      function unisciVersioniTv(out) {
+        var per = Object.create(null), i, m, resto = []; // senza prototipo: un file "__proto__.mkv" e' un nome come gli altri
+        for (i = 0; i < out.video.length; i++) per[out.video[i].nome.replace(/\.[^.]+$/, '').toLowerCase()] = out.video[i];
+        for (i = 0; i < out.video.length; i++) {
+          var v = out.video[i], o = (m = VERSIONE_TV.exec(v.nome)) ? per[m[1].toLowerCase()] : null;
+          if (o && typeof o === 'object' && o !== v && !VERSIONE_TV.test(o.nome)) {
+            if (!o.tv || +m[2] < o.tv.tetto) o.tv = { nome: v.nome, dim: v.dim, data: v.data, tetto: +m[2] };
+          } else resto.push(v);
+        }
+        out.video = resto;
       }
 
       // un file della chiavetta: la struttura si legge una volta sola (finche' dimensione e data non cambiano)
@@ -3532,6 +3673,7 @@
         if (pi.senzaAudio) out.avvisi.push('audio');
         if (out.video && !out.video.letto) out.avvisi.push('video');
         if (out.durata > 0) out.mbps = Math.round(f.dim * 8 / out.durata / 1e5) / 10;
+        out.picchi = picchiDi(m.ritmo, scelte && scelte.tetto >= 1 && scelte.tetto <= 1000 ? scelte.tetto : 80);
         cb(null, out);
       }
 
@@ -4430,7 +4572,7 @@
         vt.cartella(d, p, function (e, r) { if (e) errore(e); else rispondi(res, 200, r); });
       } else if (cosa === 'info' && get) {
         var lingue = String(q.lingue || '').split(',').filter(function (x) { return /^[a-z]{2,3}$/.test(x); }).slice(0, 6);
-        vt.info(d, p, { lingue: lingue.length ? lingue : null }, function (e, r) { if (e) errore(e); else rispondi(res, 200, r); });
+        vt.info(d, p, { lingue: lingue.length ? lingue : null, tetto: +q.tetto || 0 }, function (e, r) { if (e) errore(e); else rispondi(res, 200, r); });
       } else if (cosa.indexOf('file/') === 0 && (get || req.method === 'HEAD')) {
         vt.servi(req, res, d, p, { audio: +q.a || 0 });
       } else if (cosa === 'scheda' && get) {
@@ -5482,7 +5624,7 @@
             if (cosa === 'file') { vt.remoto.servi(req, res, s.x, { audio: +q.a || 0 }); return; }
             if (cosa === 'info') {
               var lingue = String(q.lingue || '').split(',').filter(function (x) { return /^[a-z]{2,3}$/.test(x); }).slice(0, 6);
-              vt.remoto.info(s.x, { lingue: lingue.length ? lingue : null }, function (e2, r) { if (e2) errore2(e2); else rispondi(res, 200, r); });
+              vt.remoto.info(s.x, { lingue: lingue.length ? lingue : null, tetto: +q.tetto || 0 }, function (e2, r) { if (e2) errore2(e2); else rispondi(res, 200, r); });
               return;
             }
             vt.remoto.sotto(s.x, +q.t, +q.da || 0, function (e2, r) { if (e2) errore2(e2); else rispondi(res, 200, r); }, q.dopo);
@@ -5501,7 +5643,8 @@
           var msl = String(q.ms || '').toLowerCase(), tetto = +q.tetto || 0;
           if (!idBuono(msl)) { rispondi(res, 400, { error: 'manca il file', codice: 'corpo' }); return; }
           if (!mac.indirizzo || !mac.chiave) { rispondi(res, 409, { error: 'collega il limitatore del Mac', codice: 'mac' }); return; }
-          limita(m[1].toLowerCase(), msl, tetto >= 1 && tetto <= 1000 ? Math.round(tetto) : 0, function (e, r) {
+          var aJf = q.a !== undefined && q.a !== '' && isFinite(+q.a) ? Math.floor(+q.a) : -1;
+          limita(m[1].toLowerCase(), msl, tetto >= 1 && tetto <= 1000 ? Math.round(tetto) : tettoTv(), aJf, function (e, r) {
             if (!e) { rispondi(res, 200, r); return; }
             if (e.codice === 'mac') rispondi(res, 409, { error: e.message, codice: 'mac' }); else errore2(e);
           });
@@ -5521,6 +5664,24 @@
        * Come per Jellyfin: un solo limitatore salvato, la chiave resta qui (limitatore.json, 600) e va solo nell'intestazione
        * X-Chiave; all'app arriva "collegato". Il collegamento: il Mac mostra un codice di 6 cifre (Terminale e notifica),
        * chi guarda lo scrive sul TV, il limitatore da' la chiave al ponte. */
+
+      // il tetto del TV: quanti Mbps regge senza scatti (150; 80; o misurato dal TV col video a scalini del Mac). Lo usano la
+      // stima dei picchi della chiavetta e il limitatore. Di partenza 150 sui TV dal 2020 (Node 12: il Q80B ha retto 194 Mbps
+      // senza fermate, prova del 30/10), 80 sui 2017-2019 (Node 4)
+      var TETTO_PARTENZA = o.tettoPartenza || (+String(process.versions && process.versions.node || '0').split('.')[0] >= 12 ? '150' : '80');
+      var FILE_IMP = path.join(o.cartella, 'video-impostazioni.json'), imp = caricaImp();
+      function caricaImp() {
+        var c = null;
+        try { c = JSON.parse(fs.readFileSync(FILE_IMP, 'utf8')); } catch (e) { c = null; }
+        if (!c || typeof c !== 'object') c = {};
+        var prova = c.prova && +c.prova.mbps >= 10 && +c.prova.mbps <= 1000 ? { mbps: Math.round(+c.prova.mbps), quando: +c.prova.quando || 0 } : null;
+        var scelta = c.scelta === '150' || c.scelta === '80' || (c.scelta === 'prova' && prova) ? c.scelta : TETTO_PARTENZA;
+        // quanto si uniscono i tratti da ricodificare (secondi): piu' si uniscono, meno giunture (se il TV scatta li')
+        var unione = c.unione === 30 || c.unione === 60 ? c.unione : 10;
+        return { scelta: scelta, prova: prova, unione: unione };
+      }
+      function tettoTv() { return imp.scelta === '150' ? 150 : imp.scelta === 'prova' && imp.prova ? imp.prova.mbps : 80; }
+      function statoTetto() { return { scelta: imp.scelta, mbps: tettoTv(), prova: imp.prova, unione: imp.unione }; }
 
       var FILE_MAC = path.join(o.cartella, 'limitatore.json');
       var mac = caricaMac(), abbinando = null, proveMac = [];
@@ -5670,7 +5831,7 @@
         return { id: testo(l.id, 40), stato: testo(l.stato, 20), fase: testo(a.fase, 60), percentuale: +a.percentuale || 0, stima: +a.stimaSecondi || 0,
           errore: l.errore ? testo(l.errore, 200) : '' };
       }
-      function limita(id, msid, tetto, cb) {
+      function limita(id, msid, tetto, aJf, cb) {
         function daMac(e) { return e.codice === 'accesso' ? errore('mac', 'il Mac non riconosce piu\' questo TV: ricollegalo') : e; }
         if (!cfg.token || !cfg.utente) { cb(errore('accesso', 'serve l\'accesso a Jellyfin')); return; }
         chiedi({ percorso: 'Items/' + id, query: 'userId=' + cfg.utente.id }, function (err, st, j) {
@@ -5680,8 +5841,14 @@
           if (st !== 200 || !ms) { cb(errore('assente', 'film non trovato')); return; }
           var file = String(ms.Path || '');
           if (file.charAt(0) !== '/' || file.length > 4096 || /[\u0000-\u001f]/.test(file)) { cb(errore('cartella', 'il limitatore del Mac non vede questo file')); return; }
-          var corpo = { file: file };
+          var corpo = { file: file, unione: imp.unione };
           if (tetto) corpo.tetto = tetto;
+          // l'audio scelto: Jellyfin conta tutte le tracce del file, il limitatore solo quelle audio (da 0)
+          if (aJf >= 0) {
+            var au = (Array.isArray(ms.MediaStreams) ? ms.MediaStreams : []).filter(function (x) { return x && x.Type === 'Audio'; })
+              .sort(function (x, y) { return x.Index - y.Index; });
+            for (var k = 0; k < au.length; k++) if (au[k].Index === aJf) corpo.audio = k;
+          }
           chiedi({ mac: true, percorso: 'analisi', metodo: 'POST', corpo: corpo, tempo: 15000, max: 1 << 20 }, function (e2, st2, j2) {
             if (e2) { cb(daMac(e2)); return; }
             if (st2 === 403 || st2 === 404 || st2 === 415) { cb(errore('cartella', 'il limitatore del Mac non vede questo file: aggiungi la sua cartella sul Mac')); return; }
@@ -5760,6 +5927,20 @@
             return;
           }
           if (cosa.indexOf('mac/') === 0) { trattaMac(req, res, cosa.slice(4), q || {}, u); return; }
+          if (cosa === 'tv/tetto' && req.method === 'GET') { rispondi(res, 200, statoTetto()); return; }
+          if (cosa === 'tv/tetto' && req.method === 'POST') {
+            corpoJson(req, function (b) {
+              var sc = b && b.scelta !== undefined ? String(b.scelta) : '', mb = b ? Math.round(+b.mbps) : 0, un = b ? +b.unione : 0;
+              if (!b || (sc && sc !== '80' && sc !== '150' && !(sc === 'prova' && mb >= 10 && mb <= 1000)) || (b.unione !== undefined && un !== 10 && un !== 30 && un !== 60) ||
+                  (!sc && b.unione === undefined)) { rispondi(res, 400, { error: 'scelta non valida', codice: 'corpo' }); return; }
+              if (sc) imp.scelta = sc;
+              if (sc === 'prova') imp.prova = { mbps: mb, quando: Date.now() };
+              if (b.unione !== undefined) imp.unione = un;
+              scriviPrivato(FILE_IMP, imp, 'Tetto');
+              rispondi(res, 200, statoTetto());
+            });
+            return;
+          }
           rispondi(res, 404, { error: 'domanda sconosciuta', codice: 'assente' });
         },
         stato: statoPubblico,
