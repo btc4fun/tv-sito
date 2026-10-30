@@ -333,6 +333,13 @@ var ProfiloTV = (function () {
     if (s === 'negato') return r(false, 'Permesso negato sul TV', 'Blu, Telefono, Tasti del TV dal telefono, poi Consenti sul TV');
     if (s === 'assente') return r(false, 'Questo TV non offre l\'ingresso per i telecomandi', 'Il telefono funziona lo stesso nella home, nel browser e nei siti');
     if (s === 'attesa') return r(null, 'Il TV sta chiedendo il permesso: scegli Consenti');
+    // provato, ma il TV non ha mai mostrato la richiesta: si dice cosa ha risposto e dove si sblocca
+    if (f.remotoErrore) {
+      return r(null, 'Provato ' + (f.remotoTentativi || 1) + ' volte, il TV non ha chiesto il permesso (' + f.remotoErrore + ')',
+        'Sul TV: Impostazioni, Tutte le impostazioni, Connessione, Gestione dispositivi esterni, Gestione connessione ' +
+        'dispositivi: Notifica di accesso su "Solo la prima volta", e in Elenco dispositivi Home TV su Consenti. Poi premi ' +
+        'un tasto sul telefono');
+    }
     return r(null, 'Non ancora provato (si prova col primo telefono collegato)');
   }
   function haPortaTelefono(f) {
