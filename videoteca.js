@@ -1896,6 +1896,9 @@ var Videoteca = (function () {
       if (sa) out.audioTv = sa; // DTS o TrueHD nel file: il TV li converte? { stato: pronto | lento | spento | misura | rotto }
       if (pi.senzaAudio) out.avvisi.push('audio');
       if (out.video && !out.video.letto) out.avvisi.push('video');
+      // Dolby Vision senza una base che il TV legge (profilo 5: compatibilita' 0). I TV senza Dolby Vision (tutti i Samsung)
+      // lo mostrerebbero coi colori sbagliati, viola e verdi. Con la base HDR10, HLG o SDR (profili 7, 8 e 4) usano quella
+      if (out.video && out.video.dv && out.video.dv.compatibile === 0 && !letti.video.DV) out.avvisi.push('colori');
       if (out.durata > 0) out.mbps = Math.round(f.dim * 8 / out.durata / 1e5) / 10;
       out.picchi = picchiDi(m.ritmo, scelte && scelte.tetto >= 1 && scelte.tetto <= 1000 ? scelte.tetto : 80);
       cb(null, out);
@@ -2256,10 +2259,12 @@ var Videoteca = (function () {
       // senza copia) e nessun pezzo sospeso lo guarda. Di solito due; se sono tutti in viaggio uno in piu', fino a tre,
       // poi uno a perdere come prima
       var blocchi = [];
-      function bloccoLibero() {
+      function bloccoLibero(n) {
         for (var i = 0; i < blocchi.length; i++) {
           if (!blocchi[i].attese && !(sospeso && nelBlocco(sospeso, blocchi[i].b))) return blocchi[i].b;
         }
+        // una lettura piccola (un file corto, l'ultimo pezzo) non fa un blocco intero
+        if (n < bloccoFile) return nuovo(n);
         var b = nuovo(bloccoFile);
         if (blocchi.length < 3) blocchi.push({ b: b, attese: 0 });
         return b;
@@ -2310,7 +2315,7 @@ var Videoteca = (function () {
         if (lettura >= fine && !sospeso) { finisci(); return; }
         var n = Math.min(bloccoFile, fine - lettura);
         if (n <= 0) { manda(sospeso, sospesoPos, true); sospeso = null; finisci(); return; }
-        leggiIn(fs, fd, bloccoLibero(), lettura, n, function (e3, b) {
+        leggiIn(fs, fd, bloccoLibero(n), lettura, n, function (e3, b) {
           if (e3 || !b.length) { if (sospeso) manda(sospeso, sospesoPos, true); finisci(lettura <= z); return; }
           var avanti;
           try { avanti = pezzo(b); } catch (ex) { rotto(); return; }
@@ -3366,6 +3371,8 @@ var Videoteca = (function () {
         sotto: function (x, num, da, cb, dopo) { apriF(x, function (e, f) { if (e) cb(e); else sottoF(f, num, da, cb, dopo); }); }
       },
       previsto: radici.length > 0, domain: o.domain || null, log: typeof o.log === 'function' ? o.log : null,
+      asyncHooks: o.asyncHooks && typeof o.asyncHooks.createHook === 'function' && typeof o.asyncHooks.executionAsyncId === 'function' ? o.asyncHooks : null,
+      riposoSenzaDomande: o.riposoSenzaDomande > 0 ? o.riposoSenzaDomande : 15 * 60000,
       // per le prove
       _apri: apri, _sottoTot: function () { return sottoTot; }
     };
@@ -3416,25 +3423,186 @@ var Videoteca = (function () {
       catch (e) { cb(null); }
     });
   }
+  /* ============================================================ le isole delle domande dell'app
+   * Ogni domanda dell'app Video gira in un'"isola": un errore in uno qualsiasi dei suoi callback (file, stream, zlib, timer)
+   * chiude solo quella risposta e si annota; il servizio del TV (home, telefono, blocco della pubblicita') resta su. Prima
+   * erano i "domini" di Node, che dalla prima domanda dell'app lasciano acceso per sempre il loro async hook: poi ogni
+   * domanda del servizio costava il 12-20% di CPU in piu' (revisione del peso, punto 11; misurato col Node 12 dei TV). Qui
+   * l'async hook e' nostro e resta acceso solo finche' un'isola e' viva: la sua risposta aperta, o qualcosa di suo che deve
+   * ancora arrivare (una lettura, un timer, un socket). Ogni risorsa asincrona creata dentro un'isola la ricorda; un errore
+   * che scappa da un suo callback arriva a process.on('uncaughtException') del servizio, che lo passa qui (prendiErrore).
+   * Senza async_hooks (il Node 4 dei TV vecchi) restano i domini, che li' non accendono nessun hook */
+  var isole = { ah: null, hook: null, di: null, corrente: null, fuori: false, vive: 0, accensioni: 0, attesa: 30000, spegnendo: false };
+  function nuovaIsola(ah, errore, annota) {
+    if (!isole.hook) {
+      isole.ah = ah;
+      // (un errore dentro un async hook ferma il processo: qui niente puo' fallire. Spento l'hook, Node puo' ancora
+      // consegnare i "destroy" gia' in coda: la mappa non c'e' piu' e non si fa niente)
+      isole.hook = ah.createHook({
+        init: function (id) {
+          if (!isole.di || isole.fuori) return;
+          var x = isole.corrente || isole.di.get(isole.ah.executionAsyncId());
+          if (x && x.viva) { isole.di.set(id, x); x.risorse++; }
+        },
+        destroy: function (id) {
+          var x = isole.di ? isole.di.get(id) : null;
+          if (!x) return;
+          isole.di['delete'](id);
+          x.risorse--;
+          forseFinita(x);
+        }
+      });
+      // prima di ogni altro ascoltatore (quello del servizio, di TizenBrew, di un'altra copia del servizio): l'errore di
+      // un'isola si prende qui e si segna, cosi' nessuno lo conta come "sfuggito". Se non c'e' nessun altro ascoltatore, un
+      // errore che non e' di un'isola ferma il processo come farebbe Node da solo
+      if (typeof process.prependListener === 'function') {
+        process.prependListener('uncaughtException', function (e) {
+          if (!prendiErrore(e) && process.listenerCount('uncaughtException') === 1) throw e;
+        });
+      }
+    }
+    var x = { aperta: true, viva: true, risorse: 0, errore: errore, annota: annota };
+    if (!isole.vive++) { if (!isole.di) isole.di = new Map(); isole.hook.enable(); isole.accensioni++; }
+    return x;
+  }
+  // un'isola finisce quando la sua risposta e' chiusa e non ha piu' niente in arrivo; finite tutte, l'hook si spegne
+  function forseFinita(x) {
+    if (!x.viva || x.aperta || x.risorse > 0) return;
+    x.viva = false;
+    if (!--isole.vive) spegniDopo();
+  }
+  // l'hook si spegne al giro dopo, fuori dai suoi callback: nel Node 12 disable() chiamato dentro un hook (un destroy) lascia
+  // acceso il PromiseHook di V8, e ogni Promise del processo costerebbe 10-20 volte tanto (revisione delle isole)
+  function spegniDopo() {
+    if (isole.spegnendo) return;
+    isole.spegnendo = true;
+    isole.fuori = true;
+    try {
+      setImmediate(function () {
+        isole.spegnendo = false;
+        if (isole.vive) return; // un'isola nuova intanto: resta acceso
+        isole.hook.disable();
+        isole.di = null;
+      });
+    } finally { isole.fuori = false; }
+  }
+  // chiusa la risposta, al piu' 30 secondi: qualcosa che vive per sempre (un socket tenuto aperto, lo stdout creato la
+  // prima volta qui dentro) non deve tenere acceso l'hook. Un errore che arrivasse dopo va al servizio, come prima dei domini
+  function chiusaIsola(x) {
+    if (!x.aperta) return;
+    x.aperta = false;
+    // la risposta e' chiusa: un errore che arriva dopo si annota soltanto, e l'isola non tiene piu' req e res (con i loro
+    // blocchi) per i secondi in cui resta viva
+    x.errore = x.annota;
+    forseFinita(x);
+    if (!x.viva) return;
+    // (il timer e' fuori dall'isola: se no la terrebbe viva lui)
+    isole.fuori = true;
+    try {
+      var t = setTimeout(function () {
+        if (!x.viva || !isole.di) return;
+        isole.di.forEach(function (v, id) { if (v === x) isole.di['delete'](id); });
+        x.risorse = 0;
+        forseFinita(x);
+      }, isole.attesa);
+      if (t && t.unref) t.unref();
+    } finally { isole.fuori = false; }
+  }
+  // fn dentro l'isola (anche gli errori subito, non solo quelli dei callback)
+  function inIsola(x, fn) {
+    var prima = isole.corrente;
+    isole.corrente = x;
+    try { fn(); } catch (e) { x.errore(e); } finally { isole.corrente = prima; }
+  }
+  // gli eventi di req e res arrivano dal socket (fuori dall'isola): girano dentro, come faceva dominio.add
+  function legaIsola(em, x) {
+    var emit = em.emit;
+    em.emit = function () {
+      var prima = isole.corrente;
+      isole.corrente = x;
+      try { return emit.apply(this, arguments); } catch (e) { x.errore(e); return true; } finally { isole.corrente = prima; }
+    };
+  }
+  // dall'ascoltatore di 'uncaughtException': true = era un errore di una domanda dell'app (preso, risposta chiusa). Si
+  // prende una volta sola (lo chiede anche il servizio), e niente qui puo' fallire: un errore dentro l'ascoltatore
+  // fermerebbe tutto il processo di TizenBrew
+  function prendiErrore(e) {
+    try {
+      if (e && (typeof e === 'object' || typeof e === 'function') && e.presoDaVideo === true) return true;
+      if (!isole.vive || !isole.di) return false;
+      var x = isole.corrente || isole.di.get(isole.ah.executionAsyncId());
+      if (!x) return false;
+      try { if (e && typeof e === 'object') e.presoDaVideo = true; } catch (e1) { /* congelato */ }
+      x.errore(e);
+      return true;
+    } catch (e2) { return true; }
+  }
+
   var RE_VIDEO = /^\/api\/video\/g\/([^\/]*)\/(.*)$/;
   // gli errori presi dalla rete (un file fatto in un modo che il codice non si aspettava): per le prove e per il registro
   var presi = { n: 0, ultimo: '' };
-  // true = era una domanda dell'app Video (la risposta e' data). Ogni domanda gira in un "dominio" di Node: un errore in
-  // uno qualsiasi dei suoi callback (file, stream, zlib, timer) chiude solo quella risposta e si annota; il servizio
-  // del TV (home, telefono, blocco della pubblicita') resta su
+  // annota un errore preso (fuori da gestisci: cosi' non tiene req e res)
+  function annotaErrori(log) {
+    return function (e) {
+      presi.n++;
+      var testo = '';
+      try { testo = String(e && e.stack || e); } catch (e1) { testo = 'errore senza testo'; } // (Object.create(null) non diventa testo)
+      presi.ultimo = testo.slice(0, 400);
+      if (log) { try { log('app Video: errore preso (' + testo.split('\n')[0].slice(0, 200) + ')'); } catch (x) {} }
+    };
+  }
+  // un gettone rimasto (lo Store ricaricato o caduto senza "chiudi": vale 12 ore) non deve tenere film e schede fino a
+  // sera: senza domande dell'app aperte per 15 minuti il servizio va a riposo lo stesso (durante un film la domanda del
+  // <video> resta aperta)
+  function domandaAperta(vt, req, res) {
+    if (typeof vt.riposa !== 'function') return;
+    vt.aperte = (vt.aperte || 0) + 1;
+    if (vt.timerRiposo) { clearTimeout(vt.timerRiposo); vt.timerRiposo = null; }
+    var chiusa = false;
+    function fine() {
+      if (chiusa) return;
+      chiusa = true;
+      if (--vt.aperte > 0) return;
+      isole.fuori = true;
+      try {
+        vt.timerRiposo = setTimeout(function () { vt.timerRiposo = null; if (!vt.aperte) vt.riposa(); }, vt.riposoSenzaDomande);
+        if (vt.timerRiposo.unref) vt.timerRiposo.unref();
+      } finally { isole.fuori = false; }
+    }
+    res.on('finish', fine);
+    res.on('close', fine);
+    req.on('aborted', fine);
+  }
+  // true = era una domanda dell'app Video (la risposta e' data). Ogni domanda gira in un'isola (sul Node 4 in un "dominio"
+  // di Node): un errore in uno qualsiasi dei suoi callback (file, stream, zlib, timer) chiude solo quella risposta e si
+  // annota; il servizio del TV (home, telefono, blocco della pubblicita') resta su
   function gestisci(vt, g, req, res, u, opzioni) {
     var m = RE_VIDEO.exec(u.pathname || '');
     if (!m) return false;
+    var annota = annotaErrori(vt.log);
+    function preso(e) {
+      annota(e);
+      try { if (!res.headersSent) rispondi(res, 500, { error: 'file non leggibile', codice: 'formato' }); else res.destroy(); } catch (x) {}
+    }
+    domandaAperta(vt, req, res);
+    if (vt.asyncHooks) {
+      var isola = nuovaIsola(vt.asyncHooks, preso, annota);
+      // la chiusura un giro dopo, dentro l'isola: prima girano gli altri 'close' (le pulizie della risposta), ancora dentro.
+      // 'aborted': una domanda in coda su una connessione che cade non riceve ne' 'finish' ne' 'close'
+      var finita = function () { process.nextTick(function () { chiusaIsola(isola); }); };
+      legaIsola(req, isola);
+      legaIsola(res, isola);
+      res.on('finish', finita);
+      res.on('close', finita);
+      req.on('aborted', finita);
+      inIsola(isola, function () { tratta(vt, g, req, res, u, opzioni || {}, m); });
+      return true;
+    }
     var dom = vt.domain ? vt.domain.create() : null;
     if (!dom) { tratta(vt, g, req, res, u, opzioni || {}, m); return true; }
     dom.add(req);
     dom.add(res);
-    dom.on('error', function (e) {
-      presi.n++;
-      presi.ultimo = String(e && e.stack || e).slice(0, 400);
-      if (vt.log) { try { vt.log('app Video: errore preso (' + String(e && e.message || e).slice(0, 200) + ')'); } catch (x) {} }
-      try { if (!res.headersSent) rispondi(res, 500, { error: 'file non leggibile', codice: 'formato' }); else res.destroy(); } catch (x) {}
-    });
+    dom.on('error', preso);
     dom.run(function () { tratta(vt, g, req, res, u, opzioni || {}, m); });
     return true;
   }
@@ -3484,6 +3652,8 @@ var Videoteca = (function () {
 
   return {
     crea: crea, LETTI: LETTI, gettoni: gettoni, gestisci: gestisci, presi: function () { return { n: presi.n, ultimo: presi.ultimo }; },
+    prendiErrore: prendiErrore, isole: function () { return { vive: isole.vive, acceso: !!isole.di, accensioni: isole.accensioni }; },
+    _attesaIsole: function (ms) { isole.attesa = ms; },
     // per le prove e per l'app (le stesse regole)
     _interni: { leggiId: leggiId, leggiVint: leggiVint, famiglia: famiglia, lingua: lingua, piano: piano,
       leggiSottotitoli: leggiSottotitoli, testoDi: testoDi, apriMkv: apriMkv, apriMp4: apriMp4, Scansione: Scansione,

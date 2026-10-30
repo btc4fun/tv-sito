@@ -991,7 +991,7 @@ var AudioTv = (function () {
         for (var i = 0; i < pezzi.length; i++) if (nelBlocco(pezzi[i].b, x.b)) return true;
         return false;
       }
-      function bloccoLibero() {
+      function bloccoLibero(n) {
         var libero = null, liberi = 0;
         blocchi = blocchi.filter(function (x) {
           if (usato(x)) return true;
@@ -999,6 +999,7 @@ var AudioTv = (function () {
           return ++liberi <= 4;
         });
         if (libero) return libero.b;
+        if (n < BLOCCO) return nuovo(n); // una lettura piccola (l'ultimo pezzo) non fa un blocco intero
         var b = nuovo(BLOCCO);
         if (blocchi.length < 48) blocchi.push({ b: b, attese: 0 });
         return b;
@@ -1014,18 +1015,26 @@ var AudioTv = (function () {
       // (l'ancora e i primi frame, finche' il Cluster di adesso non e' convertito): una tela sola
       // con un quarto in piu' (a 64 KB), cosi' i Cluster di misura vicina non la rifanno ogni volta
       function misuraTela(n) { return Math.max(n, Math.min(maxCluster, Math.ceil(n * 1.25 / 65536) * 65536)); }
+      // una tela molto piu' grande del Cluster (dopo uno enorme) si rifa' della misura giusta: se no resterebbe per tutto il
+      // film (le tele vivono quanto la risposta)
+      function troppoGrande(b, n) { return b.length > 4 * n && b.length > (8 << 20); }
+      function libera(t) { return !t.attese && !(voce && voce.byte && nelBlocco(voce.byte, t.b)); }
       function telaCluster(n) {
-        for (var i = 0; i < tele.length; i++) {
-          if (tele[i].attese || (voce && voce.byte && nelBlocco(voce.byte, tele[i].b))) continue;
-          if (tele[i].b.length < n) tele[i] = { b: nuovo(misuraTela(n)), attese: 0 };
-          return tele[i].b;
+        var k = -1, i;
+        // la piu' piccola libera che basta
+        for (i = 0; i < tele.length; i++) if (libera(tele[i]) && tele[i].b.length >= n && (k < 0 || tele[i].b.length < tele[k].b.length)) k = i;
+        if (k >= 0) {
+          if (troppoGrande(tele[k].b, n)) tele[k] = { b: nuovo(misuraTela(n)), attese: 0 };
+          return tele[k].b;
         }
+        // nessuna libera che basta: una libera piu' piccola si rifa' piu' grande; se no una nuova (al massimo due)
+        for (i = 0; i < tele.length; i++) if (libera(tele[i])) { tele[i] = { b: nuovo(misuraTela(n)), attese: 0 }; return tele[i].b; }
         if (tele.length >= 2) return nuovo(n);
         tele.push({ b: nuovo(misuraTela(n)), attese: 0 });
         return tele[tele.length - 1].b;
       }
       function telaSeguito(n) {
-        if (!telaSeg || telaSeg.length < n) telaSeg = nuovo(misuraTela(n));
+        if (!telaSeg || telaSeg.length < n || troppoGrande(telaSeg, n)) telaSeg = nuovo(misuraTela(n));
         return telaSeg;
       }
 
@@ -1052,7 +1061,7 @@ var AudioTv = (function () {
         }
         var n = Math.min(BLOCCO, dim - lettura);
         if (n <= 0) { eof = true; giro(); return; }
-        leggiIn(fs, fd, bloccoLibero(), lettura, n, function (e3, b) {
+        leggiIn(fs, fd, bloccoLibero(n), lettura, n, function (e3, b) {
           if (finito) return;
           if (chiuso) { finisci(); return; }
           if (e3 || !b || !b.length) { eof = true; giro(); return; }

@@ -28,7 +28,10 @@ var PontiVideo = (function () {
   'use strict';
 
   var VERSIONE = '1.0.0';
-  var MAX_CORPO = 64 << 10, MAX_JSON = 8 << 20, MAX_PLAYLIST = 2 << 20, MAX_SOTTO = 4 << 20;
+  // MAX_PLAYLIST: la lista dei pezzi di un film convertito ha un pezzo ogni 3 s, ognuno con un indirizzo lungo (tutte le scelte
+  // della conversione): Iron Man (2 h 6 min) in 4K 25 supera i 2 MB, e con 2 MB il TV riceveva un errore e non partiva
+  // nessun film (30/10/2026). 8 MB bastano per un film di 6-7 ore
+  var MAX_CORPO = 64 << 10, MAX_JSON = 8 << 20, MAX_PLAYLIST = 8 << 20, MAX_SOTTO = 4 << 20;
   // gli id di Jellyfin: 32 cifre esadecimali, a volte coi trattini (negli indirizzi che crea lui: HLS, sottotitoli)
   var ID = '[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}';
   // i percorsi di Jellyfin che l'app puo' chiedere, con i metodi: il resto risponde 403
