@@ -853,6 +853,73 @@ var UI = (function () {
     el.style.transform = v;
   }
 
+  /* ------------------------------------------------------------ il guardiano del servizio
+   * Sul TV vero il sistema puo' chiudere di forza il servizio di TizenBrew (30/10/2026: quando parte un video 4K): niente
+   * home, telefono, film. La pagina di TizenBrew, quando si apre, lo riaccende e rilancia la home; questa pagina invece
+   * non ha le API di Tizen. Se il servizio non risponde per circa 15 s la home torna indietro fino alla prima pagina della
+   * cronologia, che e' quella di TizenBrew. Al massimo 2 volte in 10 minuti (se no resta il messaggio di sempre); mai sugli
+   * altri TV (Android, LG), mai fuori dal TV. opz.altra: la home gira su un altro TV; opz.messaggio(testo) */
+  function guardiano(opz) {
+    opz = opz || {};
+    if (DEMO || opz.altra || window.top !== window) return;
+    var falliti = 0, CHIAVE_RIAVVII = 'hometv-riavvii-servizio';
+    // dove sta la pagina di TizenBrew nella cronologia: subito prima della prima pagina della home di questa sessione
+    // (TizenBrew la apre con location.href). Si segna alla prima apertura; poi si torna indietro di quanto serve
+    var primaCasa = 0;
+    try {
+      primaCasa = +sessionStorage.getItem('hometv-prima-casa') || 0;
+      if (!primaCasa) { primaCasa = history.length; sessionStorage.setItem('hometv-prima-casa', String(primaCasa)); }
+    } catch (e) { primaCasa = 0; }
+    function prova() {
+      var fatto = false;
+      function esito(buono) {
+        if (fatto) return;
+        fatto = true;
+        falliti = buono ? 0 : falliti + 1;
+        if (falliti >= 3) riparti(); else setTimeout(prova, 5000);
+      }
+      // un servizio fermo rifiuta subito la connessione; uno vivo ma lento non conta come fermo prima di 8 s. Qualsiasi
+      // risposta, anche un rifiuto (403 "chiave"), vuol dire vivo: senza chiave il servizio vero risponde 403, e contarlo come
+      // fermo riavviava la home ogni 20 secondi. Con la chiave e "davanti" (la pagina si vede): il servizio sa che sullo
+      // schermo c'e' la home, e solo allora chiude le app rimaste aperte da sole (service.js, il custode delle app)
+      setTimeout(function () { esito(false); }, 8000);
+      try {
+        fetch(SERVICE + conChiave('/api/status?davanti=' + (document.hidden ? 0 : 1), CHIAVE), { cache: 'no-store' })
+          .then(function (r) { esito(!!r); }, function () { esito(false); });
+      } catch (e) { esito(false); }
+    }
+    function riparti() {
+      var ora = Date.now(), prima = load(CHIAVE_RIAVVII, []);
+      if (!Array.isArray(prima)) prima = [];
+      prima = prima.filter(function (t) { return typeof t === 'number' && ora - t < 600000 && t <= ora; });
+      if (prima.length >= 2 || history.length < 2) {
+        if (opz.messaggio) opz.messaggio('Il servizio del TV si e\' fermato: riapri TizenBrew');
+        falliti = 0;
+        setTimeout(prova, 60000);
+        return;
+      }
+      prima.push(ora);
+      save(CHIAVE_RIAVVII, prima);
+      // un'app aperta nello Store (Real4K con un film, di solito; lo dice la pagina): la home, ripartita, riprende il film
+      // da sola (home.js, riprendiDopoCaduta)
+      try { if (opz.appAperta && opz.appAperta()) save('hometv-riprendi', { t: ora }); } catch (e) {}
+      if (opz.messaggio) opz.messaggio('Il servizio del TV si e\' fermato: riavvio Home TV');
+      setTimeout(function () {
+        // dalla pagina attuale (l'ultima) a quella di TizenBrew (primaCasa - 2, contando da 0)
+        var passi = primaCasa >= 2 ? history.length - primaCasa + 1 : history.length - 1;
+        try { history.go(-Math.max(1, passi)); } catch (e) {}
+      }, 1500);
+    }
+    // appena la pagina si nasconde (un'altra app sullo schermo) o torna, il servizio lo sa subito, senza aspettare i 5 s:
+    // il custode delle app smette di chiudere (service.js)
+    try {
+      document.addEventListener('visibilitychange', function () {
+        try { fetch(SERVICE + conChiave('/api/status?davanti=' + (document.hidden ? 0 : 1), CHIAVE), { cache: 'no-store' })['catch'](function () {}); } catch (e) {}
+      });
+    } catch (e) {}
+    setTimeout(prova, 8000);
+  }
+
   return {
     SERVICE: SERVICE, ON_TV: ON_TV, DEMO: DEMO, preferitiIniziali: preferitiIniziali, preferitiBrowser: preferitiBrowser,
     $: $, load: load, save: save, esc: esc, hostOf: hostOf, validUrl: validUrl, hash: hash,
@@ -860,6 +927,7 @@ var UI = (function () {
     onKeys: onKeys, pushKeys: pushKeys, popKeys: popKeys,
     openSheet: openSheet, closeSheet: closeSheet, sheetOpen: sheetOpen,
     openEditor: openEditor, editorOpen: editorOpen, closeEditor: function () { if (editorChiudi) editorChiudi(); }, ascoltaTelefono: ascoltaTelefono,
-    fitScreen: fitScreen, rem: rem, setTransform: setTransform, coloriImmagine: coloriImmagine, coloriApp: coloriApp
+    fitScreen: fitScreen, rem: rem, setTransform: setTransform, coloriImmagine: coloriImmagine, coloriApp: coloriApp,
+    guardiano: guardiano
   };
 })();

@@ -24,7 +24,7 @@
   // Aggiornamento a meta' (revisione "TV vecchi e aggiornamento", punto 1): come in home.js, se manca un pezzo che arriva da
   // un altro file (la cache di GitHub Pages puo' mescolare due versioni per qualche minuto) si dice cosa fare invece della
   // pagina nera. L'elenco: tutto quello che questo file usa degli altri (la prova test_aggiornamento.py controlla che ci sia)
-  if (mancaUnPezzo('UI.$ UI.DEMO UI.ON_TV UI.SERVICE UI.ascoltaTelefono UI.closeEditor UI.closeSheet UI.coloriApp UI.coloriImmagine ' +
+  if (mancaUnPezzo('UI.$ UI.DEMO UI.ON_TV UI.SERVICE UI.ascoltaTelefono UI.guardiano UI.closeEditor UI.closeSheet UI.coloriApp UI.coloriImmagine ' +
     'UI.editorOpen UI.esc UI.fitScreen UI.hash UI.hostOf UI.load UI.onKeys UI.openEditor UI.openSheet UI.popKeys UI.pushKeys UI.rem ' +
     'UI.save UI.service UI.setTransform UI.sheetOpen UI.toast ProfiloTV.altraTv ProfiloTV.motore ProfiloTV.piattaforma StoreDati.TITOLI ' +
     'StoreDati.adatta StoreDati.azioneTelefono StoreDati.cercaApp StoreDati.datiApp StoreDati.imposta StoreDati.perRiquadro StoreDati.perTelefono ' +
@@ -1128,6 +1128,11 @@
         UI.coloriApp()))['catch'](function () {});
     });
   }
+  // anche con un'app aperta (Real4K): se il servizio si ferma, si riparte dalla pagina di TizenBrew (UI.guardiano)
+  UI.guardiano({ altra: typeof ProfiloTV !== 'undefined' && ProfiloTV.altraTv({ piattaforma: ProfiloTV.piattaforma(window, UI.ON_TV) }),
+    messaggio: function (t) { UI.toast(t, 4000); },
+    // c'e' un'app aperta (Real4K con un film): dopo la caduta la home riprende il film da sola
+    appAperta: function () { return !!app; } });
   UI.ascoltaTelefono('Store', {
     store: storeDalTelefono,
     // la barra del video sul telefono: all'app aperta (HomeTV.video)

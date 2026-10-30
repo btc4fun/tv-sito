@@ -824,6 +824,12 @@ var StoreDati = (function () {
       return Promise.resolve(ufficiale.installa(e.id) ? { ok: true, testo: nome + ' installata dal telefono' } :
         { ok: false, testo: 'Non sono riuscito a installarla: la memoria del TV potrebbe essere piena' });
     }
+    if (e.azione === 'aggiorna') {
+      if (!i) return Promise.resolve({ ok: false, testo: nome + ' non e\' installata' });
+      if (!v || !ufficiale.nuovaVersione(e.id)) return Promise.resolve({ ok: true, testo: nome + ' e\' gia\' aggiornata' });
+      ufficiale.segnaVista(e.id);
+      return Promise.resolve({ ok: true, testo: nome + ' aggiornata alla versione ' + v.versione + (v.novita ? ': ' + v.novita : '') });
+    }
     if (e.azione === 'disinstalla') {
       if (!i) return Promise.resolve({ ok: true, testo: nome + ' non e\' installata' });
       ufficiale.disinstalla(e.id);

@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.5';
+  var VERSION = '1.3.6';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -792,6 +792,7 @@
   }
   function segnaRichiesta(req, res, chi) {
     try {
+      if (req.method === 'GET' && String(req.url).indexOf('/api/status') === 0) return; // il guardiano della home, ogni 5 s
       var p = tipoRichiesta(req.url), video = p.indexOf('/api/video/') === 0, fatto = false;
       traccia.richieste.push({ t: Date.now(), c: chi, m: String(req.method).slice(0, 7), p: p });
       if (traccia.richieste.length > 20) traccia.richieste.shift();
@@ -865,9 +866,11 @@
 
   /* ---------------------------------------------------------- dati salvati */
 
-  var settings = { apriAllAccensione: true };
+  // chiudiAppNascoste: il custode delle app (chiude quelle che il TV tiene aperte di nascosto), acceso di base
+  var settings = { apriAllAccensione: true, chiudiAppNascoste: true };
   var savedSettings = leggiJson(FILE_SETTINGS, {});
   if (savedSettings && typeof savedSettings.apriAllAccensione === 'boolean') settings.apriAllAccensione = savedSettings.apriAllAccensione;
+  if (savedSettings && typeof savedSettings.chiudiAppNascoste === 'boolean') settings.chiudiAppNascoste = savedSettings.chiudiAppNascoste;
 
   var prefs = leggiJson(FILE_PREFS, {});
   if (!prefs || typeof prefs !== 'object') prefs = {};
@@ -1032,15 +1035,18 @@
         finito = true;
         clearTimeout(attesa);
         try {
-          var seen = {};
+          var seen = {}, sistema = [];
           var out = [];
           for (var i = 0; i < infos.length; i++) {
             var info = infos[i];
+            // Samsung TV Plus (di sistema, fuori dall'elenco della home): la tiene chiusa il custode delle app
+            if (info && info.id && /\btv ?plus\b/i.test(String(info.name || '')) && sistema.length < 4) sistema.push({ id: String(info.id), nome: String(info.name).slice(0, 40) });
             if (!isUserApp(info) || seen[info.id]) continue;
             seen[info.id] = true;
             out.push({ id: info.id, name: shortName(info.name), icon: iconFile(info.iconPath) });
           }
           out.sort(function (a, b) { return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1; });
+          custode.sistema = sistema;
           resolve(out);
         } catch (e) { reject(e); }
       }, function (err) {
@@ -1081,6 +1087,7 @@
 
   function launchApp(id) {
     if (ALTRA) return ALTRA.apri(id);
+    custodeUsata(id);
     return new Promise(function (resolve, reject) {
       if (!HAS_TIZEN) { reject(new Error('API tizen non disponibile')); return; }
       try {
@@ -1183,6 +1190,10 @@
     };
   }
 
+  function gestisciVideo(req, res, url) {
+    return Videoteca.gestisci(videoteca, gettoniVideo, req, res, url, { punto: puntoVideo, ponti: pontiVideo.tratta });
+  }
+
   function handle(req, res) {
     var url = urlLib.parse(req.url, true);
     var route = req.method + ' ' + url.pathname;
@@ -1204,8 +1215,11 @@
       sendJson(req, res, 403, { error: 'indirizzo non autorizzato' });
       return;
     }
-    // l'app Video: il gettone nel percorso basta (il <video> non ha Origin, il riquadro dello Store ha "null")
-    if (Videoteca.gestisci(videoteca, gettoniVideo, req, res, url, { punto: puntoVideo, ponti: pontiVideo.tratta })) return;
+    // l'app Video: il gettone nel percorso basta (il <video> non ha Origin, il riquadro dello Store ha "null"). Col gettone
+    // giusto il custode delle app sa che Real4K lavora; la partenza di un film aspetta che la memoria sia libera
+    var gv = url.pathname.indexOf('/api/video/g/') === 0 && req.method !== 'OPTIONS' ? /^\/api\/video\/g\/([^\/]+)\/(.*)$/.exec(url.pathname) : null;
+    if (gv && gettoniVideo.valido(gv[1]) && custodePrimaDelFilm(gv[2], function () { gestisciVideo(req, res, url); })) return;
+    if (gestisciVideo(req, res, url)) return;
     if (req.method === 'OPTIONS') {
       res.writeHead(204, headers(req, 'text/plain', null, true));
       res.end();
@@ -1229,7 +1243,9 @@
     // le icone (immagini) e il ritorno alla home (una navigazione) non portano la chiave: non dicono niente di tuo
     var libera = route === 'GET /api/icon' || route === 'GET /casa';
     var conChiave = chiaveGiusta(url.query.chiave);
-    if (conChiave) finestraChiave = false;
+    // la finestra della chiave la chiude la home che lavora, non il guardiano (GET /api/status ogni 5 s, ui.js): una pagina
+    // rimasta aperta col servizio appena ripartito la chiuderebbe prima che la home ricaricata riprenda la chiave
+    if (conChiave && route !== 'GET /api/status') finestraChiave = false;
     var fidata = comeLaHome ? conChiave || libera : paginaDiProva(origin);
     // con l'Origin della home ma senza la chiave giusta niente, neanche le domande aperte ai siti: la home capisce che deve
     // chiedere la chiave, invece di prendere le risposte per i siti (le scelte senza la sua copia) e poi scriverci sopra
@@ -1246,6 +1262,8 @@
     if (route === 'GET /api/icon') { serveIcon(req, res, url.query.path); return; }
 
     if (route === 'GET /api/status') {
+      // il guardiano della home (ui.js) dice anche se la pagina si vede: il custode delle app chiude solo con la home davanti
+      if (url.query.davanti === '1' || url.query.davanti === '0') custodeDavanti(url.query.davanti === '1');
       // piattaforma, api e funzioni: il contratto del servizio (docs/contratto-servizio.md), uguale per ogni TV
       sendJson(req, res, 200, { ok: true, version: VERSION, piattaforma: ALTRA ? ALTRA.nome : 'tizen', api: 4, funzioni: FUNZIONI, tizen: HAS_TIZEN, apps: cache.apps ? cache.apps.length : 0,
         casa: trovaCasa().base });
@@ -1286,6 +1304,7 @@
     if (route === 'POST /api/settings') {
       readBody(req).then(function (body) {
         if (typeof body.apriAllAccensione === 'boolean') settings.apriAllAccensione = body.apriAllAccensione;
+        if (typeof body.chiudiAppNascoste === 'boolean') settings.chiudiAppNascoste = body.chiudiAppNascoste;
         scriviJson(FILE_SETTINGS, settings);
         sendJson(req, res, 200, settings);
       })['catch'](fail(req, res, 400));
@@ -1370,7 +1389,7 @@
     if (route === 'GET /api/adblock/stato') { sendJson(req, res, 200, statoAdblock()); return; }
     // l'app Video: il gettone per l'app ufficiale che la home apre (lo Store controlla il permesso nel catalogo), e via
     // quando la chiude
-    if (route === 'POST /api/video/gettone') { sendJson(req, res, 200, gettoniVideo.nuovo()); return; }
+    if (route === 'POST /api/video/gettone') { custodeReal4K(); sendJson(req, res, 200, gettoniVideo.nuovo()); return; }
     if (route === 'POST /api/video/gettone/via') {
       readBody(req).then(function (b) {
         gettoniVideo.togli(b.gettone);
@@ -16568,7 +16587,7 @@
       // l'azione aspetta che si torni alla home; aprire un'app ci porta subito (da un sito come un link, da un'altra app
       // riaprendo la home)
       var az2 = body.azione, ev2 = { tipo: 'store', azione: az2 };
-      if (az2 === 'installa' || az2 === 'disinstalla') {
+      if (az2 === 'installa' || az2 === 'disinstalla' || az2 === 'aggiorna') {
         if (!ID_STORE.test(String(body.id || ''))) return 'app non valida';
         ev2.id = String(body.id);
       } else if (az2 === 'togli' || az2 === 'apri') {
@@ -16663,6 +16682,7 @@
         // la memoria adesso e come sono finite le ultime volte (la traccia su file: vedi scriviTraccia)
         try { p.memoria = memoriaVera(); p.acceso = { minuti: Math.round((Date.now() - traccia.avvio) / 60000), inVolo: traccia.inVolo, video: traccia.video };
           p.ultimeFini = traccia.fini.slice(); } catch (e) { annotaErrore('tv traccia', e); }
+        try { p.custode = statoCustode(); } catch (e) { annotaErrore('tv custode', e); }
         try { rispondiTel(res, 200, p); } catch (e) { annotaErrore('tv risposta', e); }
       });
       return;
@@ -17536,6 +17556,285 @@
     } catch (e) { log('controllo accensione: ' + e.message); }
   }
 
+  /* ---------------------------------------------------------- il custode delle app
+   * Il TV tiene aperte di nascosto alcune app (YouTube, Netflix, Prime Video; Samsung TV Plus all'accensione) per farle
+   * partire subito, e le riapre da solo: occupano la memoria che serve a Real4K e ai film 4K, e quando non basta il TV
+   * chiude di forza proprio il servizio (30/10/2026: 18-25 MB liberi a ogni caduta; chiuse quelle app, 115-249 MB).
+   * Il custode le chiude dall'API del TV (porta 8001, DELETE /api/v2/applications/<id>), solo mentre sullo schermo c'e'
+   * la home (la pagina lo dice al guardiano di ui.js: /api/status?davanti=1), mai l'app che si vede ne' TizenBrew:
+   *  - un'app aperta dal TV da solo: chiusa dopo 25 s che la si vede nascosta (un giro ogni 30 s con la home davanti);
+   *  - un'app che hai usato (vista sullo schermo o aperta dalla home): resta finche' e' aperta (anche la musica che
+   *    suona dietro); si chiude solo quando serve la memoria, cioe' con Real4K e i film. Una appena aperta dalla home
+   *    (60 s) mai, neanche per un film; una che il TV riapre subito (entro 3 minuti) si lascia stare per mezz'ora;
+   *  - Real4K che si apre: un giro su tutte le app, che chiude subito quelle nascoste; un film che parte (Jellyfin:
+   *    guarda) aspetta il giro in corso, o ne fa uno rapido, al massimo 2,5 s: la memoria si libera prima che il TV
+   *    prepari il video 4K, non mentre lo prepara;
+   *  - mentre si guarda un film: solo le app note, Samsung TV Plus e quelle gia' viste nascoste, ogni 2 minuti.
+   * Le chiude una alla volta (la seguente quando la prima risulta chiusa, al massimo 2 s): mai due che si chiudono insieme.
+   * Prima di ogni chiusura si riguarda che la home sia ancora davanti (la pagina lo dice anche appena si nasconde), e
+   * un'app di cui il TV non dice "visible: false" conta come quella che stai guardando.
+   * I giri su tutte le app solo all'apertura di Real4K e ogni 5 minuti; gli altri al massimo 8 domande. Le misure (giri,
+   * domande, la piu' lenta, memoria libera prima e dopo ogni chiusura, dopo quanto il TV riapre un'app) in 8091/tv, campo
+   * custode, coi nomi solo per le app di Samsung (le note e TV Plus): le altre sono "un'altra app". Si spegne con "Tieni chiuse le app che non usi" (impostazioni, Questo TV). Prove: prove/test_custode.py. */
+  var CUSTODE_NOTE = [ // quelle che il TV riapre da solo (viste su un Q80B del 2022, 30/10/2026)
+    { id: '111299001912', nome: 'YouTube' }, { id: '3201907018807', nome: 'Netflix' },
+    { id: '3201910019365', nome: 'Prime Video' }, { id: '3201901017640', nome: 'Disney+' }
+  ];
+  // nelle prove sul computer i tempi si accorciano (prove/sabbiera.js)
+  var CUSTODE_T = typeof HOMETV_PROVE_CUSTODE === 'object' && HOMETV_PROVE_CUSTODE ? HOMETV_PROVE_CUSTODE : {};
+  function tempoCustode(k, def) { return typeof CUSTODE_T[k] === 'number' ? CUSTODE_T[k] : def; }
+  var custode = { davanti: 0, davantiDa: 0, video: 0, film: 0, nascoste: {}, usate: {}, sistema: [], inCorso: false,
+    inizio: 0, ultimo: 0, ultimoFine: 0, ultimoUtile: 0, ultimoPieno: 0, ultimoSubito: 0, errori: 0, pausaFino: 0, dopo: null, attese: [],
+    chiuse: 0, ultime: [], chiuseAt: {}, riaperte: [], lanciate: {}, tregua: {}, davantiNo: 0,
+    misure: { giri: 0, domande: 0, lentaMs: 0, ultimoGiroMs: 0 } };
+  function chiaveCustode(nome) { return String(nome || '').toLowerCase().replace(/[^a-z0-9+]+/g, ' ').replace(/^ +| +$/g, ''); }
+  function custodeAcceso() { return HAS_TIZEN && !ALTRA && settings.chiudiAppNascoste !== false; }
+  function liberaOraMB() { try { return Math.round(require('os').freemem() / 1048576); } catch (e) { return null; } }
+  // il nome che si mostra fuori (8091/tv, la traccia): solo per le app di Samsung, le altre dicono cosa usi
+  function nomeFuori(a, nome) {
+    var i;
+    for (i = 0; i < CUSTODE_NOTE.length; i++) if (CUSTODE_NOTE[i].id === a.id || chiaveCustode(CUSTODE_NOTE[i].nome) === a.chiave) return nome;
+    for (i = 0; i < custode.sistema.length; i++) if (custode.sistema[i].id === a.id) return nome;
+    return 'un\'altra app';
+  }
+
+  // una domanda all'API locale del TV: cb(json o null, codice HTTP; 0 = nessuna risposta)
+  function apiTv(metodo, percorso, cb) {
+    var fatto = false, t0 = Date.now();
+    function fine(j, c) {
+      if (fatto) return;
+      fatto = true;
+      custode.misure.domande++;
+      if (Date.now() - t0 > custode.misure.lentaMs) custode.misure.lentaMs = Date.now() - t0;
+      cb(j, c);
+    }
+    try {
+      var req = http.request({ host: '127.0.0.1', port: PORTA_API_TV, path: percorso, method: metodo }, function (res) {
+        var parti = [], n = 0;
+        res.on('data', function (d) { n += d.length; if (n <= 65536) parti.push(d); });
+        res.on('end', function () {
+          var j = null;
+          try { j = JSON.parse(Buffer.concat(parti).toString('utf8')); } catch (e) { j = null; }
+          fine(j, res.statusCode || 0);
+        });
+        res.on('error', function () { fine(null, 0); });
+        res.on('aborted', function () { fine(null, 0); });
+        res.on('close', function () { fine(null, 0); });
+      });
+      req.on('error', function () { fine(null, 0); });
+      req.setTimeout(3000, function () { try { req.abort(); } catch (e) { /* niente */ } fine(null, 0); });
+      req.end();
+    } catch (e) { fine(null, 0); }
+  }
+
+  // chi guardare: le app note, Samsung TV Plus e quelle viste nascoste o usate da poco (al massimo 8); in un giro pieno
+  // anche tutte quelle dell'elenco della home. Al massimo 40, mai TizenBrew
+  function candidatiCustode(pieno) {
+    var out = [], visti = {}, tb = tizenBrewAppId(), ora = Date.now(), i;
+    function metti(id, nome) {
+      id = String(id || '');
+      if (!id || id === tb || visti[id] || out.length >= 40 || NEVER.test(id) || NEVER.test(String(nome || ''))) return;
+      visti[id] = true;
+      out.push({ id: id, nome: String(nome || id).slice(0, 40), chiave: chiaveCustode(nome || id) });
+    }
+    for (i = 0; i < CUSTODE_NOTE.length; i++) metti(CUSTODE_NOTE[i].id, CUSTODE_NOTE[i].nome);
+    for (i = 0; i < custode.sistema.length; i++) metti(custode.sistema[i].id, custode.sistema[i].nome);
+    var apps = cache.apps || [];
+    for (i = 0; i < apps.length; i++) {
+      var a = apps[i];
+      if (a && a.id && (pieno || custode.nascoste[a.id] || ora - (custode.usate[a.id] || 0) < tempoCustode('usata', 600000))) metti(a.id, a.name);
+    }
+    return out;
+  }
+
+  // chiude un'app e aspetta che risulti chiusa (al massimo 2 s, poi si va avanti lo stesso): una sola alla volta
+  function chiudiAppCustode(a, nome, motivo, poi) {
+    var prima = liberaOraMB(), t0 = Date.now();
+    apiTv('DELETE', '/api/v2/applications/' + encodeURIComponent(a.id), function (j2, c2) {
+      try {
+        if (!(c2 >= 200 && c2 < 300)) { log('custode: ' + nome + ' non chiusa (' + c2 + ')'); poi(false); return; }
+        var passo = tempoCustode('controllo', 500), volte = Math.max(1, Math.round(tempoCustode('chiusura', 2000) / passo));
+        var controlla = function (n) {
+          setTimeout(function () {
+            apiTv('GET', '/api/v2/applications/' + encodeURIComponent(a.id), function (j3, c3) {
+              try {
+                if (c3 && j3 && j3.running === true && n < volte) { controlla(n + 1); return; }
+                custode.chiuse++;
+                custode.chiuseAt[a.chiave] = Date.now();
+                var fuori = nomeFuori(a, nome);
+                custode.ultime.push({ nome: fuori, t: Date.now(), perche: motivo, ms: Date.now() - t0, liberaPrimaMB: prima, liberaDopoMB: liberaOraMB() });
+                if (custode.ultime.length > 8) custode.ultime.shift();
+                log('custode: chiusa ' + fuori + ' (' + motivo + ')');
+                segna('custode: chiusa ' + fuori + ' (' + motivo + ')');
+              } catch (e) { annotaErrore('custode', e); }
+              poi(true);
+            });
+          }, passo);
+        };
+        controlla(1);
+      } catch (e) { annotaErrore('custode', e); poi(false); }
+    });
+  }
+
+  // un giro: lo stato di ogni candidata dall'API del TV (aperta? si vede?), una dopo l'altra. o.subito = Real4K che si apre
+  // o un film che parte (la domanda arriva da Real4K, quindi sullo schermo c'e' lei): si chiudono tutte quelle nascoste,
+  // anche quelle usate da poco. poi(): quando il giro e' finito (o subito, se non parte)
+  function giroCustode(o, poi) {
+    o = o || {};
+    var finito = false;
+    function avvisa() { if (!finito) { finito = true; if (poi) { try { poi(); } catch (e) { annotaErrore('custode', e); } } } }
+    if (!custodeAcceso()) { avvisa(); return; }
+    var ora = Date.now();
+    if (custode.inCorso && ora - custode.inizio > 30000) custode.inCorso = false; // un giro rimasto appeso
+    if (ora < custode.pausaFino) { avvisa(); return; }
+    if (custode.inCorso) { // si fa appena finisce quello in corso; chi aspetta, aspetta quello
+      if (o.subito && !custode.dopo) custode.dopo = o;
+      if (poi) custode.attese.push(avvisa);
+      return;
+    }
+    if (o.subito && ora - custode.ultimoSubito < tempoCustode('subito', 8000)) { avvisa(); return; }
+    var davanti = o.subito || ora - custode.davanti < tempoCustode('davanti', 12000);
+    var film = o.subito || ora - custode.video < tempoCustode('filmScelto', 180000);
+    var pieno = !!o.pieno || davanti && !o.subito && ora - custode.ultimoPieno >= tempoCustode('pieno', 300000) && ora - custode.film > tempoCustode('filmCorre', 60000);
+    custode.inCorso = true;
+    custode.inizio = custode.ultimo = ora;
+    if (o.subito) custode.ultimoSubito = ora;
+    if (pieno) custode.ultimoPieno = ora;
+    custode.misure.giri++;
+    // le app usate da piu' di 10 minuti non contano piu' (e la lista non cresce)
+    var k;
+    for (k in custode.usate) if (Object.prototype.hasOwnProperty.call(custode.usate, k) && ora - custode.usate[k] > tempoCustode('usata', 600000)) delete custode.usate[k];
+    for (k in custode.tregua) if (Object.prototype.hasOwnProperty.call(custode.tregua, k) && custode.tregua[k] <= ora) delete custode.tregua[k];
+    for (k in custode.lanciate) if (Object.prototype.hasOwnProperty.call(custode.lanciate, k) && ora - custode.lanciate[k] > 600000) delete custode.lanciate[k];
+    var lista = candidatiCustode(pieno), i = 0, fatte = {};
+    function fineGiro() {
+      custode.inCorso = false;
+      custode.ultimoFine = Date.now();
+      if (davanti) custode.ultimoUtile = custode.ultimoFine; // un giro che poteva chiudere (non uno che guarda soltanto)
+      custode.misure.ultimoGiroMs = custode.ultimoFine - ora;
+      var chi = custode.attese;
+      custode.attese = [];
+      avvisa();
+      for (var x = 0; x < chi.length; x++) { try { chi[x](); } catch (e) { annotaErrore('custode', e); } }
+      if (custode.dopo) { var d = custode.dopo; custode.dopo = null; giroCustode(d); }
+    }
+    function prossima() {
+      if (i >= lista.length || Date.now() - ora > 25000) { fineGiro(); return; }
+      var a = lista[i++];
+      if (fatte[a.chiave]) { prossima(); return; } // la stessa app con l'altro id: gia' chiusa in questo giro
+      apiTv('GET', '/api/v2/applications/' + encodeURIComponent(a.id), function (j, codice) {
+        try {
+          if (!codice) { // l'API del TV non risponde: dopo 3 giri cosi', 5 minuti di pausa
+            if (++custode.errori >= 3) { custode.errori = 0; custode.pausaFino = Date.now() + tempoCustode('pausa', 300000); }
+            fineGiro();
+            return;
+          }
+          custode.errori = 0;
+          var adesso = Date.now(), nome = String(j && j.name || a.nome).slice(0, 40);
+          var lanciata = adesso - Math.max(custode.lanciate[a.id] || 0, custode.lanciate[a.chiave] || 0) < tempoCustode('lanciata', 60000);
+          if (!j || j.running !== true) {
+            delete custode.nascoste[a.id];
+            // chiusa (da te o dal custode): se la riapre il TV non e' piu' "tua". Appena aperta dalla home si aspetta
+            if (!lanciata) { delete custode.usate[a.id]; delete custode.usate[a.chiave]; }
+            prossima();
+            return;
+          }
+          // riaperta dopo che il custode l'aveva chiusa: dopo quanto (per capire ogni quanto lo fa il TV); se subito, per
+          // mezz'ora si lascia stare (niente giri a chi chiude e chi riapre)
+          if (custode.chiuseAt[a.chiave]) {
+            var dopoMs = adesso - custode.chiuseAt[a.chiave];
+            custode.riaperte.push({ nome: nomeFuori(a, nome), minuti: Math.round(dopoMs / 6000) / 10 });
+            if (custode.riaperte.length > 8) custode.riaperte.shift();
+            if (dopoMs < tempoCustode('presto', 180000)) custode.tregua[a.chiave] = adesso + tempoCustode('tregua', 1800000);
+            delete custode.chiuseAt[a.chiave];
+          }
+          if (j.visible !== false) { // la stai usando (o il TV non lo dice): mai chiusa, ed e' tua finche' resta aperta
+            custode.usate[a.id] = custode.usate[a.chiave] = adesso;
+            delete custode.nascoste[a.id];
+            prossima();
+            return;
+          }
+          var usata = !!(custode.usate[a.id] || custode.usate[a.chiave]);
+          if (usata) custode.usate[a.id] = custode.usate[a.chiave] = adesso; // e' ancora aperta: resta tua
+          if (!davanti) { prossima(); return; } // la home non e' sullo schermo: si guarda soltanto
+          var vista = custode.nascoste[a.id];
+          if (!vista || vista < custode.davantiDa) custode.nascoste[a.id] = vista = adesso;
+          if (lanciata || (custode.tregua[a.chiave] || 0) > adesso) { prossima(); return; }
+          if (!o.subito && (adesso - vista < tempoCustode('nascosta', 25000) || usata && !film)) { prossima(); return; }
+          // subito prima di chiudere: la home e' ancora davanti? (se si e' nascosta, o il custode e' spento, il giro finisce)
+          if (custode.davantiNo >= ora || !custodeAcceso() || !o.subito && Date.now() - custode.davanti >= tempoCustode('davanti', 12000)) { fineGiro(); return; }
+          chiudiAppCustode(a, nome, o.perche || (film ? 'film' : 'aperta da sola'), function (chiusa) {
+            delete custode.nascoste[a.id];
+            if (chiusa) fatte[a.chiave] = true;
+            prossima();
+          });
+        } catch (e) { annotaErrore('custode', e); fineGiro(); }
+      });
+    }
+    prossima();
+  }
+
+  // la home dice se e' sullo schermo (il guardiano, ogni 5 s); dopo un'assenza le app viste nascoste prima non contano
+  function custodeDavanti(si) {
+    var ora = Date.now();
+    if (!si) { custode.davanti = 0; custode.davantiNo = ora; return; }
+    if (ora - custode.davanti >= tempoCustode('davanti', 12000)) custode.davantiDa = ora;
+    custode.davanti = ora;
+  }
+  // Real4K si apre (il gettone): un giro su tutte le app, che chiude subito quelle nascoste
+  function custodeReal4K() {
+    try { custode.video = Date.now(); giroCustode({ pieno: true, subito: true, perche: 'Real4K' }); } catch (e) { annotaErrore('custode', e); }
+  }
+  // una domanda di Real4K col suo gettone (resto = quello che viene dopo il gettone). Un film che parte da Jellyfin
+  // (guarda) aspetta un giro rapido (o quello in corso), al massimo 2,5 s: true = la risposta la da' poi(); due partenze
+  // vicine fanno un giro solo (8 s). Da una chiavetta (info, che e' anche la scheda del film) solo un giro rapido, senza
+  // aspettare, se nell'ultimo minuto non ce n'e' stato uno che poteva chiudere
+  function custodePrimaDelFilm(resto, poi) {
+    try {
+      var ora = Date.now();
+      custode.video = ora;
+      if (/^(jf\/p\/|jf\/file\/|file\/)/.test(resto)) custode.film = ora; // il film passa: si sta guardando
+      if (!custodeAcceso() || ora < custode.pausaFino) return false;
+      if (/^jf\/guarda\//.test(resto)) {
+        var fatto = false, via = function () { if (!fatto) { fatto = true; poi(); } };
+        setTimeout(via, tempoCustode('attesaFilm', 2500));
+        giroCustode({ subito: true, perche: 'film' }, via);
+        return true;
+      }
+      if (resto === 'info' && !custode.inCorso && ora - custode.ultimoUtile >= tempoCustode('vicino', 60000)) giroCustode({ subito: true, perche: 'film' });
+    } catch (e) { annotaErrore('custode', e); }
+    return false;
+  }
+  // un'app aperta dalla home (o dal telefono): e' tua, resta come quelle che hai usato
+  function custodeUsata(id) {
+    try {
+      var ora = Date.now(), apps = cache.apps || [];
+      custode.usate[id] = custode.lanciate[id] = ora;
+      for (var i = 0; i < apps.length; i++) {
+        if (apps[i] && apps[i].id === id) custode.usate[chiaveCustode(apps[i].name)] = custode.lanciate[chiaveCustode(apps[i].name)] = ora;
+      }
+    } catch (e) { /* niente */ }
+  }
+  function statoCustode() {
+    return { acceso: custodeAcceso(), chiuse: custode.chiuse, ultime: custode.ultime.slice(), riaperte: custode.riaperte.slice(),
+      davanti: custode.davanti ? Math.round((Date.now() - custode.davanti) / 1000) : -1, film: !!custode.film && Date.now() - custode.film < tempoCustode('filmCorre', 60000),
+      sistema: custode.sistema.map(function (a) { return a.nome; }), pausa: Date.now() < custode.pausaFino,
+      giri: custode.misure.giri, domande: custode.misure.domande, lentaMs: custode.misure.lentaMs, ultimoGiroMs: custode.misure.ultimoGiroMs };
+  }
+  // con la home davanti un giro ogni 30 s (mentre si guarda un film ogni 2 minuti); se no ogni 30 s, solo per vedere
+  // quale app stai usando (cosi' resta tua); a TV spento niente
+  function avviaCustode() {
+    var t = setInterval(function () {
+      try {
+        var ora = Date.now(), davanti = ora - custode.davanti < tempoCustode('davanti', 12000), film = ora - custode.film < tempoCustode('filmCorre', 60000);
+        if (lastState === 'standby' || !custodeAcceso()) return;
+        var ogni = !davanti ? tempoCustode('guarda', 30000) : film ? tempoCustode('film', 120000) : tempoCustode('giro', 30000);
+        if (ora - custode.ultimo >= ogni) giroCustode({});
+      } catch (e) { annotaErrore('custode', e); }
+    }, tempoCustode('passo', 10000));
+    if (t && t.unref) t.unref();
+  }
+
   /* ---------------------------------------------------------- profilo del TV
    * I fatti che sa solo il servizio (API del TV, TizenBrew, porte, salvataggio) vanno a ProfiloTV (profilo.js, copiato
    * qui sopra): li' si decide cosa c'e', cosa manca e cosa fare. La home lo legge da /api/tv (impostazioni "Questo TV"
@@ -17618,6 +17917,7 @@
       refreshApps()['catch'](function (e) { log('elenco app: ' + e.message); });
       powerState(function () {}); // subito chi e' il TV (modello, risoluzione) per il profilo
       setTimeout(watchPower, 4000);
+      avviaCustode();
     } else if (ALTRA) refreshApps()['catch'](function (e) { log('elenco app: ' + e.message); });
   });
 
@@ -19077,7 +19377,7 @@
     '  var storeVer = -1, storeEsito = 0, storeDati = null, storeDove = \'\', storeInCasa = true, confermaTimer = null, appAperta = \'\';',
     '  var TITOLI_STORE = { film: \'Film e serie\', video: \'Video e musica\', sport: \'Sport\', giochi: \'Giochi\', strumenti: \'Strumenti\', altre: \'Altre app\' };',
     '  var ORDINE_STORE = [\'film\', \'video\', \'sport\', \'giochi\', \'strumenti\', \'altre\'];',
-    '  var NOMI_AZIONI = { installa: \'Installa sul TV\', apri: \'Apri sul TV\', disinstalla: \'Disinstalla\', togli: \'Togli\' };',
+    '  var NOMI_AZIONI = { installa: \'Installa sul TV\', aggiorna: \'Aggiorna\', apri: \'Apri sul TV\', disinstalla: \'Disinstalla\', togli: \'Togli\' };',
     '  var FRECCIA_DX = \'<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>\';',
     '  function piano(t) {',
     '    t = String(t || \'\').toLowerCase();',
@@ -19118,7 +19418,8 @@
     '  function azioniApp(a) {',
     '    if (privata(a)) return a.stato === \'nonAdatta\' || a.stato === \'ritirata\' ? [\'togli\'] : [\'apri\', \'togli\'];',
     '    if (a.stato === \'installa\') return [\'installa\'];',
-    '    if (a.stato === \'installata\' || a.stato === \'nuova\') return [\'apri\', \'disinstalla\'];',
+    '    if (a.stato === \'nuova\') return [\'aggiorna\', \'apri\', \'disinstalla\'];',
+    '    if (a.stato === \'installata\') return [\'apri\', \'disinstalla\'];',
     '    if (a.stato === \'orfana\' || a.stato === \'ritirata\') return [\'disinstalla\'];',
     '    return [];',
     '  }',
@@ -19265,7 +19566,7 @@
     '      var p = document.createElement(\'button\');',
     '      p.textContent = NOMI_AZIONI[x];',
     '      p.setAttribute(\'data-azione\', x);',
-    '      if (i === 0 && (x === \'installa\' || x === \'apri\')) p.className = \'primo\';',
+    '      if (i === 0 && (x === \'installa\' || x === \'apri\' || x === \'aggiorna\')) p.className = \'primo\';',
     '      p.addEventListener(\'click\', function () { azioneStore(a, x, p); });',
     '      az.appendChild(p);',
     '    });',
@@ -19311,7 +19612,7 @@
     '    invia(c).then(function (k) {',
     '      if (!k || k.error || k.__stato >= 400) return;',
     '      if (k.coda) avviso(x === \'apri\' ? \'Apro la home sul TV\' : \'Si far\\u00e0 sul TV appena torni alla home\', 3500);',
-    '      else avviso(x === \'installa\' ? \'Installo sul TV\\u2026\' : x === \'apri\' ? \'Apro sul TV\' : x === \'disinstalla\' ? \'Disinstallo sul TV\\u2026\' : \'Tolgo dal TV\\u2026\', 2000);',
+    '      else avviso(x === \'installa\' ? \'Installo sul TV\\u2026\' : x === \'aggiorna\' ? \'Aggiorno sul TV\\u2026\' : x === \'apri\' ? \'Apro sul TV\' : x === \'disinstalla\' ? \'Disinstallo sul TV\\u2026\' : \'Tolgo dal TV\\u2026\', 2000);',
     '    });',
     '  }',
     '  $(\'apri-store\').addEventListener(\'click\', function () {',

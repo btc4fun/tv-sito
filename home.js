@@ -16,7 +16,7 @@
   // ognuno con la sua scadenza, e subito dopo un aggiornamento la pagina puo' avere file di due versioni. Se manca un pezzo
   // che arriva da un altro file, invece della pagina nera si dice cosa fare. L'elenco: tutto quello che questo file usa
   // degli altri (la prova test_aggiornamento.py controlla che ci sia)
-  if (mancaUnPezzo('UI.$ UI.DEMO UI.ON_TV UI.ascoltaTelefono UI.closeEditor UI.coloriApp UI.coloriImmagine UI.editorOpen UI.esc ' +
+  if (mancaUnPezzo('UI.$ UI.DEMO UI.ON_TV UI.ascoltaTelefono UI.guardiano UI.closeEditor UI.coloriApp UI.coloriImmagine UI.editorOpen UI.esc ' +
     'UI.hash UI.hostOf UI.iconUrl UI.load UI.onKeys UI.openEditor UI.openSheet UI.popKeys UI.preferitiBrowser UI.preferitiIniziali ' +
     'UI.profiloTv UI.pushKeys UI.rem UI.saluto UI.save UI.service UI.setTransform UI.sheetOpen UI.startClock UI.toast UI.validUrl ' +
     'ProfiloTV.altraTv ProfiloTV.piattaforma StoreDati.azioneTelefono StoreDati.copia StoreDati.imposta StoreDati.mie.aggiornaTutte ' +
@@ -45,7 +45,7 @@
 
   var $ = UI.$;
   var DEMO = UI.DEMO;
-  var VERSIONE = '1.3.5';
+  var VERSIONE = '1.3.6';
 
   /* ============================================================ dati */
 
@@ -97,6 +97,7 @@
     tema: 'notte', luce: 'vivace', categorie: true, nome: '', ricerca: 'google',
     nomeSito: 'Il mio sito', url: '',
     bloccoPubblicita: true, bloccoAvanzato: false, schermoInteroAutomatico: true, apriHomeAllAccensione: true,
+    chiudiAppNascoste: true, // il custode delle app nel servizio: chiude quelle che il TV tiene aperte di nascosto
     riprendiAltroSito: false, // Continua a guardare: ogni sito tiene le sue schede (acceso: anche da un altro sito)
     decorazioni: true // le decorazioni delle feste (Halloween, Natale): si possono spegnere in Impostazioni
   };
@@ -848,6 +849,7 @@
     if (DEMO) return;
     UI.service('/api/visti').then(function (j) {
       var nuovi = j && Array.isArray(j.visti) ? j.visti : [];
+      riprendiDopoCaduta(nuovi);
       var totale = j && typeof j.totale === 'number' ? j.totale : nuovi.length;
       if (totale !== vistiTotale) { vistiTotale = totale; if (settingsOpen) drawSettings(); }
       if (JSON.stringify(nuovi) === JSON.stringify(visti)) return;
@@ -856,6 +858,20 @@
       render();
       if (settingsOpen) drawSettings();
     }, function () {});
+  }
+  // il servizio del TV era caduto con un'app aperta nello Store (il guardiano di ui.js l'ha riacceso): appena la home
+  // riparte, il video di Continua a guardare aggiornato nei 2 minuti prima della caduta riparte da dov'eri. Una volta
+  // sola e solo entro 3 minuti: il guardiano riaccende al massimo 2 volte in 10 minuti, quindi niente giri senza fine
+  function riprendiDopoCaduta(lista) {
+    var r = UI.load('hometv-riprendi', null), ora = Date.now(), v = null;
+    if (!r || typeof r.t !== 'number') return;
+    UI.save('hometv-riprendi', null);
+    if (ora - r.t > 180000 || r.t > ora + 60000) return;
+    for (var i = 0; i < lista.length; i++) {
+      var x = lista[i];
+      if (x && typeof x.quando === 'number' && x.quando <= r.t + 5000 && r.t - x.quando < 120000 && (!v || x.quando > v.quando)) v = x;
+    }
+    if (v) apriContinua(continuaItem(v), false);
   }
   // si apre la pagina e il video riparte da dov'eri (o dall'inizio)
   function apriContinua(item, daCapo) {
@@ -1134,6 +1150,9 @@
       altra ? { label: 'App Home TV', info: p.servizio || 'Versione non letta' } : { label: 'TizenBrew', info: p.tizenbrew || 'Versione non letta' },
       { label: 'Schermo', info: p.risoluzione || (window.innerWidth + 'x' + window.innerHeight) }
     ];
+    // il TV tiene aperte di nascosto YouTube, Netflix, Prime Video e Samsung TV Plus: la memoria che manca a Real4K e ai film.
+    // Acceso, il servizio le chiude (mai quella che stai guardando; quelle che usi restano 10 minuti dopo che le lasci)
+    if (!altra) righe.push({ label: 'Tieni chiuse le app che non usi', bool: 'chiudiAppNascoste' });
     (p.diagnosi || []).forEach(function (d) {
       if (d.id === 'tizen') return; // gia' in "Sistema"
       righe.push({ label: d.nome, value: (d.stato === 'manca' ? '✕ ' : d.stato === 'ok' ? '' : '? ') + d.testo,
@@ -1553,7 +1572,7 @@
       home: prefs
     };
     UI.service('/api/prefs', out)['catch'](function () {});
-    UI.service('/api/settings', { apriAllAccensione: !!opt('apriHomeAllAccensione') })['catch'](function () {});
+    UI.service('/api/settings', { apriAllAccensione: !!opt('apriHomeAllAccensione'), chiudiAppNascoste: !!opt('chiudiAppNascoste') })['catch'](function () {});
   }
 
   function applyPrefs() {
@@ -2045,6 +2064,9 @@
         UI.coloriApp()))['catch'](function () {});
     });
   }
+  // se il TV chiude di forza il servizio (succede quando parte un video 4K), la home torna alla pagina di TizenBrew, che lo
+  // riaccende e la rilancia (UI.guardiano)
+  UI.guardiano({ altra: ALTRA_TV, messaggio: function (t) { UI.toast(t, 4000); } });
   UI.ascoltaTelefono('Home', {
     store: storeDalTelefono,
     // testo senza una casella aperta: diventa una ricerca nel browser
