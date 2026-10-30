@@ -193,6 +193,8 @@ var AudioTv = (function () {
   function nuovo(n) { return typeof Buffer.allocUnsafe === 'function' ? Buffer.allocUnsafe(n) : new Buffer(n); }
   function copia(b) { var c = nuovo(b.length); b.copy(c); return c; }
   function unisci(l) { return l.length === 1 ? l[0] : Buffer.concat(l); }
+  // la vista v sta nella memoria di b (un pezzo di un blocco che si riusa)
+  function nelBlocco(v, b) { return v.buffer === b.buffer && v.byteOffset >= b.byteOffset && v.byteOffset < b.byteOffset + b.length; }
   function daTesto(s) { var b = nuovo(s.length); for (var i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 0xff; return b; }
   function byte(l) { var b = nuovo(l.length); for (var i = 0; i < l.length; i++) b[i] = l[i]; return b; }
   function uint(b, i, n) { var v = 0; for (var k = 0; k < n; k++) v = v * 256 + b[i + k]; return v; }
@@ -810,17 +812,19 @@ var AudioTv = (function () {
 
     /* ---- letture dal file */
 
-    function leggiTutto(fs, fd, pos, n, cb) {
-      var b = nuovo(n), fatto = 0;
+    // n byte da "pos" in b, dall'inizio di b: cb(err, la parte letta di b)
+    function leggiIn(fs, fd, b, pos, n, cb) {
+      var fatto = 0;
       (function giro() {
         fs.read(fd, b, fatto, n - fatto, pos + fatto, function (err, letti) {
           if (err) { cb(err); return; }
           fatto += letti;
-          if (letti === 0 || fatto >= n) { cb(null, fatto === n ? b : b.slice(0, fatto)); return; }
+          if (letti === 0 || fatto >= n) { cb(null, fatto === b.length ? b : b.slice(0, fatto)); return; }
           giro();
         });
       })();
     }
+    function leggiTutto(fs, fd, pos, n, cb) { leggiIn(fs, fd, nuovo(n), pos, n, cb); }
     // un Cluster intero letto dal file (al massimo maxCluster): cb(err, cluster, byte)
     function clusterDa(fs, fd, pos, st, cb) {
       leggiTutto(fs, fd, pos, 16, function (e, h) {
@@ -855,29 +859,36 @@ var AudioTv = (function () {
     // che porta a "pos". cb(err, cluster) (null se non trovato)
     function precedente(fs, fd, m, st, pos, confinePrima, cb) {
       var c0 = confinePrima ? confinePrima(m.confini || [], pos - 1) : -1;
+      // un pezzo da 1 MB alla volta, dal fondo, con 16 byte del pezzo dopo (l'intestazione di un Cluster a cavallo); il
+      // Cluster con la misura giusta si rilegge intero. Prima i pezzi si univano tutti a ogni giro: per un salto fino a
+      // 136 MB copiati e 32 MB in un colpo
       function cerca() {
-        var pezzi = [], da = pos, letti = 0;
+        var da = pos, letti = 0;
         (function giro() {
           if (da <= m.cluster1 || letti >= CERCA_INDIETRO) { cb(null, null); return; }
           var n = Math.min(1 << 20, da - m.cluster1);
-          leggiTutto(fs, fd, da - n, n, function (e, b) {
-            if (e || !b || b.length !== n) { cb(e || null, null); return; }
+          leggiTutto(fs, fd, da - n, n + 16, function (e, b) {
+            if (e || !b || b.length < n) { cb(e || null, null); return; }
             da -= n;
             letti += n;
-            pezzi.unshift(b);
-            var tutto = unisci(pezzi), base = da, i = tutto.length;
-            // dal fondo: l'inizio di Cluster piu' vicino a "pos" con la misura giusta
-            while (i > 0) {
-              i = tutto.lastIndexOf ? tutto.lastIndexOf(SINCRO_CLUSTER, i - 1) : -1;
-              if (i < 0) break;
-              var d = leggiVint(tutto, i + 4, tutto.length);
-              if (d && !d.rotto && !d.ignota && base + i + 4 + d.n + d.v === pos) {
-                var c = null;
-                try { c = leggiCluster(tutto, base, base + i, pos, st, false); } catch (e3) { c = null; }
-                if (c && c.completo) { cb(null, c); return; }
+            var base = da, i = n;
+            (function prossimo() {
+              // dal fondo: l'inizio di Cluster piu' vicino a "pos" con la misura giusta
+              while (i > 0) {
+                i = b.lastIndexOf ? b.lastIndexOf(SINCRO_CLUSTER, i - 1) : -1;
+                if (i < 0) break;
+                var d = leggiVint(b, i + 4, b.length);
+                if (d && !d.rotto && !d.ignota && base + i + 4 + d.n + d.v === pos) {
+                  clusterDa(fs, fd, base + i, st, function (e2, c) {
+                    if (e2) { cb(e2, null); return; }
+                    if (c && c.completo && c.fine === pos) { cb(null, c); return; }
+                    prossimo();
+                  });
+                  return;
+                }
               }
-            }
-            setImmediate(giro);
+              setImmediate(giro);
+            })();
           });
         })();
       }
@@ -902,6 +913,8 @@ var AudioTv = (function () {
       var p = 0;               // il prossimo elemento di primo livello da guardare
       var voce = null;         // { tipo: 'passa' | 'cluster', pos, fine, c, seg }
       var storia = [];         // i frame della traccia prima del Cluster di adesso (contigui)
+      var blocchi = [];        // i blocchi letti, che si riusano: [{ b, attese }]
+      var tele = [], telaSeg = null; // le copie dei Cluster in piu' pezzi, che si riusano: [{ b, attese }] e la testa del seguito
       var cercaCluster = false; // la richiesta comincia dove non si conosce un confine: si cerca il prossimo Cluster
       var trovato = -1;        // ... e qui e' stato trovato
 
@@ -968,6 +981,54 @@ var AudioTv = (function () {
         try { inizia(); } catch (e3) { rotto(e3); }
       });
 
+      // i blocchi letti si riusano, come nella videoteca (prima ogni lettura ne faceva uno nuovo: col DTS convertito fino a
+      // +76 MB di Buffer morti). Un blocco torna libero quando la rete ha preso tutto quello che e' partito da lui (il
+      // callback di res.write) e nessuno lo guarda piu': i pezzi da mandare, il pezzo sospeso, il Cluster di adesso (anche
+      // mentre si converte: intanto non si legge). Un Cluster grande ne tiene tanti finche' non e' convertito: dopo, quelli
+      // liberi oltre quattro si lasciano andare
+      function usato(x) {
+        if (x.attese || (sospeso && nelBlocco(sospeso, x.b)) || (voce && voce.byte && nelBlocco(voce.byte, x.b))) return true;
+        for (var i = 0; i < pezzi.length; i++) if (nelBlocco(pezzi[i].b, x.b)) return true;
+        return false;
+      }
+      function bloccoLibero() {
+        var libero = null, liberi = 0;
+        blocchi = blocchi.filter(function (x) {
+          if (usato(x)) return true;
+          if (!libero) libero = x;
+          return ++liberi <= 4;
+        });
+        if (libero) return libero.b;
+        var b = nuovo(BLOCCO);
+        if (blocchi.length < 48) blocchi.push({ b: b, attese: 0 });
+        return b;
+      }
+      function bloccoDi(v) {
+        for (var i = 0; i < blocchi.length; i++) if (nelBlocco(v, blocchi[i].b)) return blocchi[i];
+        for (var j = 0; j < tele.length; j++) if (nelBlocco(v, tele[j].b)) return tele[j];
+        return null;
+      }
+      // un Cluster che sta in piu' pezzi si copia in una "tela" che si riusa, invece che in un Buffer nuovo ogni volta (col
+      // DTS erano due copie di ogni Cluster: il Cluster e la testa del seguito). Due tele per il Cluster di adesso: mentre una
+      // parte verso la rete, l'altra si riempie; libera come i blocchi (callback di res.write). Il seguito si legge soltanto
+      // (l'ancora e i primi frame, finche' il Cluster di adesso non e' convertito): una tela sola
+      // con un quarto in piu' (a 64 KB), cosi' i Cluster di misura vicina non la rifanno ogni volta
+      function misuraTela(n) { return Math.max(n, Math.min(maxCluster, Math.ceil(n * 1.25 / 65536) * 65536)); }
+      function telaCluster(n) {
+        for (var i = 0; i < tele.length; i++) {
+          if (tele[i].attese || (voce && voce.byte && nelBlocco(voce.byte, tele[i].b))) continue;
+          if (tele[i].b.length < n) tele[i] = { b: nuovo(misuraTela(n)), attese: 0 };
+          return tele[i].b;
+        }
+        if (tele.length >= 2) return nuovo(n);
+        tele.push({ b: nuovo(misuraTela(n)), attese: 0 });
+        return tele[tele.length - 1].b;
+      }
+      function telaSeguito(n) {
+        if (!telaSeg || telaSeg.length < n) telaSeg = nuovo(misuraTela(n));
+        return telaSeg;
+      }
+
       // il giro: prima si lavora quello che c'e', poi si legge
       function giro() {
         if (finito) return;
@@ -991,7 +1052,7 @@ var AudioTv = (function () {
         }
         var n = Math.min(BLOCCO, dim - lettura);
         if (n <= 0) { eof = true; giro(); return; }
-        leggiTutto(fs, fd, lettura, n, function (e3, b) {
+        leggiIn(fs, fd, bloccoLibero(), lettura, n, function (e3, b) {
           if (finito) return;
           if (chiuso) { finisci(); return; }
           if (e3 || !b || !b.length) { eof = true; giro(); return; }
@@ -1035,15 +1096,19 @@ var AudioTv = (function () {
         if (dati.length) pezzi.push({ pos: pos, b: dati });
       }
       function fineDati() { return pezzi.length ? pezzi[pezzi.length - 1].pos + pezzi[pezzi.length - 1].b.length : emesso; }
-      // i byte [da, al) dai pezzi (una copia se stanno in piu' pezzi)
-      function prendi(da, al) {
-        var parti = [];
+      // i byte [da, al) dai pezzi (una copia se stanno in piu' pezzi: in tela(n) se c'e', se no in un Buffer nuovo)
+      function prendi(da, al, tela) {
+        var parti = [], n = 0;
         for (var i = 0; i < pezzi.length; i++) {
           var q = pezzi[i], qa = q.pos + q.b.length;
           if (qa <= da || q.pos >= al) continue;
           parti.push(q.b.slice(Math.max(0, da - q.pos), Math.min(q.b.length, al - q.pos)));
+          n += parti[parti.length - 1].length;
         }
-        return unisci(parti.length ? parti : [nuovo(0)]);
+        if (parti.length < 2 || !tela) return unisci(parti.length ? parti : [nuovo(0)]);
+        var t = tela(n), k = 0;
+        for (var j = 0; j < parti.length; j++) { parti[j].copy(t, k); k += parti[j].length; }
+        return t.length === n ? t : t.slice(0, n);
       }
       // via i pezzi prima di "fino"
       function scarta(fino) {
@@ -1052,8 +1117,9 @@ var AudioTv = (function () {
       }
       // manda [pos, pos + b.length) per la parte che cade in [a, z]; false = aspettare "drain"
       function manda(b, pos) {
-        var da = Math.max(a, pos), al = Math.min(z + 1, pos + b.length), ok = true;
-        if (al > da && !chiuso) ok = res.write(b.slice(da - pos, al - pos));
+        var da = Math.max(a, pos), al = Math.min(z + 1, pos + b.length), ok = true, x = al > da && !chiuso ? bloccoDi(b) : null;
+        if (x) { x.attese++; ok = res.write(b.slice(da - pos, al - pos), function () { x.attese--; }); }
+        else if (al > da && !chiuso) ok = res.write(b.slice(da - pos, al - pos));
         emesso = Math.max(emesso, pos + b.length);
         if (!ok) { aspettaDrain = true; res.once('drain', dopoDrain); }
         return ok;
@@ -1136,7 +1202,7 @@ var AudioTv = (function () {
           return 'dati';
         }
         if (!v.c) {
-          v.byte = prendi(v.pos, v.fine);
+          v.byte = prendi(v.pos, v.fine, telaCluster);
           try { v.c = leggiCluster(v.byte, v.pos, v.pos, v.fine, st, false); } catch (e1) { v.c = null; }
           if (v.c) ancoraSicura(v.c);
         }
@@ -1229,7 +1295,7 @@ var AudioTv = (function () {
             continue;
           }
           var fine = hd.ignota ? -1 : q + hi.n + hd.n + hd.v, al = fine < 0 ? fd2 : Math.min(fine, fd2);
-          var b = prendi(q, al), c = null;
+          var b = prendi(q, al, telaSeguito), c = null;
           try { c = leggiCluster(b, q, q, fine < 0 ? q + b.length : fine, st, true); } catch (e) { c = null; }
           if (!c) return { g0: null, frame: [] };
           var completo = c.completo || (fine >= 0 && al >= fine);
@@ -1363,6 +1429,8 @@ var AudioTv = (function () {
       statoPubblico: function () {
         return { codec: codec ? codec.nome : null, velocita: vel, soglia: soglia, conti: conti, cache: Math.round(cache.peso / 1024) };
       },
+      // l'app Video e' chiusa: i Cluster convertiti tenuti (fino a 6 MB) se ne vanno, come al riposo del codec
+      riposa: function () { cache.voci = {}; cache.peso = 0; },
       _svuotaCache: function () { cache.voci = {}; cache.peso = 0; }
     };
   }

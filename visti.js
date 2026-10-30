@@ -4,6 +4,8 @@
  * l'app Android fa girare questo file cosi' com'e' in un motore web nascosto (android/src/it/hometv/tv/Visti.java).
  * Si modifica SOLO questo file, poi si lancia lo script; le prove controllano che la copia sia uguale.
  * Solo ES5 e solo ASCII (\uXXXX per le lettere accentate).
+ * Nella versione personale lo stesso sito e' anche quello che cambia solo la fine dell'indirizzo ("sito.com", "sito.biz",
+ * vedi senzaFine); la copia per il pubblico (docs/consegna/taglia-pubblico.py) tiene il nome intero, come prima.
  *
  *   var v = VistiTV.crea({ dati: [...], salva: function (elenco, subito) {}, prefs: function () { return prefs; },
  *                          casuale: function (byte) { return 'esadecimale'; } });
@@ -51,11 +53,12 @@ var VistiTV = (function () {
       return m ? m[1].toLowerCase().replace(/\.$/, '') : '';
     }
     var MAX_SCHEDE = 10, MAX_VISTI = 30, MIN_DURATA = 300, MIN_VISTO = 60;
-    // lo stesso sito? Per ora lo stesso nome, con o senza "www." davanti. E' l'unico posto che lo decide (proposta
-    // "Eri a ...", schede, pagina riaperta dalla home)
+    // lo stesso sito? Lo stesso nome, con o senza "www." davanti; nella versione personale anche con un'altra fine
+    // ("www.sito.com" e "sito.biz", senzaFine). E' l'unico posto che lo decide (proposta "Eri a ...", schede, pagina
+    // riaperta dalla home)
     function stessoSito(a, b) {
-      a = String(a || '').toLowerCase().replace(/^www\./, '');
-      b = String(b || '').toLowerCase().replace(/^www\./, '');
+      a = senzaFine(String(a || '').toLowerCase().replace(/^www\./, ''));
+      b = senzaFine(String(b || '').toLowerCase().replace(/^www\./, ''));
       return !!a && a === b;
     }
     // "Riprendi anche su un altro sito" (spenta all'inizio): se no proposta e schede restano del loro sito. Mai per le pagine
@@ -67,23 +70,43 @@ var VistiTV = (function () {
     /* ---------------------------------------------------------- le pagine (revisione d'insieme, punto 1)
      * Quello che dice una pagina (un sito, col suo Origin; un lettore in un riquadro passa dalla pagina che lo contiene)
      * vale solo per il suo sito:
-     *  - scrive e chiede solo schede del suo indirizzo (lo stesso nome, con o senza "www.": una pagina vera manda sempre il
-     *    suo), mai di altri siti, neanche con "Riprendi anche su un altro sito" (quella resta della home e dell'app Video);
+     *  - scrive e chiede solo schede del suo indirizzo (stessoSito: una pagina vera manda sempre il suo), mai di altri
+     *    siti, neanche con "Riprendi anche su un altro sito" (quella resta della home e dell'app Video);
      *  - l'immagine solo https e del suo sito, la puntata dopo solo del suo sito (se no via);
      *  - al massimo MAX_PER_SITO schede per sito: la nuova prende il posto della sua piu' vecchia; con l'elenco pieno quello
      *    di una scheda finita (la home non la mostra), mai quello di una scheda in corso di un altro sito.
      * La home mostra l'immagine di una scheda solo se e' del suo sito (anche per le schede di prima). */
     var MAX_PER_SITO = 3, daPagina = null;
     // il sito di un nome (il dominio registrabile): "www.sito.it" e "img.sito.it" -> "sito.it", "news.bbc.co.uk" ->
-    // "bbc.co.uk"; sui domini condivisi ogni nome e' un sito ("utente.github.io"); gli indirizzi IP interi
+    // "bbc.co.uk"; sui domini condivisi ogni nome e' un sito ("utente.github.io"); gli indirizzi IP interi. Nella versione
+    // personale senza la fine: "sito.*", "bbc.*" (senzaFine)
     var CONDIVISI = /(^|\.)((github|gitlab)\.io|(netlify|vercel|web)\.app|(pages|workers)\.dev|(firebaseapp|herokuapp|appspot|blogspot|wordpress|wixsite|amazonaws|cloudfront)\.com|azurewebsites\.net|glitch\.me|altervista\.org)$/;
     function sitoDi(h) {
       h = String(h || '').toLowerCase().replace(/\.$/, '');
       if (/^[\d.]+$/.test(h) || h.indexOf(':') !== -1) return h;
-      var p = h.split('.'), c = CONDIVISI.exec(h), n = c ? c[2].split('.').length + 1 : 2;
-      if (!c && p.length > 2 && p[p.length - 1].length === 2 && /^(co|com|net|org|gov|edu|ac|or|ne|go)$/.test(p[p.length - 2])) n = 3;
-      return p.length > n ? p.slice(-n).join('.') : h;
+      var p = h.split('.'), c = CONDIVISI.exec(h), n = c ? c[2].split('.').length + 1 : fineDi(p) + 1;
+      return senzaFine(p.length > n ? p.slice(-n).join('.') : h);
     }
+    // <solo-completa>
+    // la fine dell'indirizzo (versione personale): i siti che cambiano dominio ogni tanto restano lo stesso sito se cambia
+    // solo quella. "sito.com", "www.sito.biz" e "sito.mba" -> "sito.*"; "sito.co.uk" e "sito.it.com" -> "sito.*", ma
+    // "film.co.uk" non e' "serie.co.uk". La fine e' l'ultima parte del nome, o le ultime due per quelle fatte di due
+    // (FINE2: lista corta, niente liste scaricate). Restano interi gli indirizzi IP, "localhost" e i domini condivisi
+    // ("utente.github.io" non e' "utente.com"); il nome davanti resta ("player.sito.com" -> "player.sito.*")
+    var FINE2 = /^((co|com|net|org|gov|gob|edu|ac|or|ne|go|mil|me|ltd|plc)\.[a-z]{2}|(it|uk|us|eu|br|cn|de|ru|sa|za|gb)\.com|(uk|gb)\.net|us\.org)$/;
+    function fineDi(p) { return p.length > 2 && FINE2.test(p.slice(-2).join('.')) ? 2 : 1; }
+    function senzaFine(h) {
+      h = String(h || '').replace(/^www\./, '');
+      if (!h || /^[\d.]+$/.test(h) || h.indexOf(':') !== -1 || CONDIVISI.test(h)) return h;
+      var p = h.split('.'), n = fineDi(p);
+      return p.length > n ? p.slice(0, -n).join('.') + '.*' : h;
+    }
+    // </solo-completa>
+    /* <solo-pubblica>
+    // la fine dell'indirizzo (versione per il pubblico): conta, lo stesso sito e' lo stesso nome intero
+    function fineDi(p) { return p.length > 2 && p[p.length - 1].length === 2 && /^(co|com|net|org|gov|edu|ac|or|ne|go)$/.test(p[p.length - 2]) ? 2 : 1; }
+    function senzaFine(h) { return h; }
+    </solo-pubblica> */
     function comePagina(origine, fai) {
       var h = typeof origine === 'string' && origine ? hostLink(origine) : null;
       daPagina = h === null ? null : { host: h, sito: sitoDi(h) };
@@ -328,10 +351,34 @@ var VistiTV = (function () {
         // l'anno puo' essere in un'altra fonte ("Il Gladiatore" nell'h1, "(2000)" nel titolo)
         for (i = 0; i < fonti.length && !anno; i++) anno = annoDi(fonti[i]);
       }
-      return { chiave: chiaveDi(nome, frasi), nome: nome, stagione: se ? se.s : null, episodio: se ? se.e : null, anno: anno || null,
+      var chiave = chiaveDi(nome, frasi);
+      // dall'app Video il titolo e' quello del file o del .nfo, sicuro: un'opera anche quando la chiave non lo sa leggere
+      // (solo numeri come "2012", una parola come "Free" o "Serie", un alfabeto non latino). La chiave e' allora il titolo
+      // com'e' (minuscolo, senza accenti) e il resto lo decidono durata, anno, stagione e puntata (revisione d'insieme, punto 3)
+      if (!chiave && dallApp(p)) {
+        var grezzo = testo(ld.nome || ld.serie, 200).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+        if (grezzo) {
+          nome = grezzo.slice(0, 80);
+          chiave = grezzo.toLowerCase();
+          for (i = 0; i < ACCENTI.length; i++) chiave = chiave.replace(ACCENTI[i][0], ACCENTI[i][1]);
+        }
+      }
+      return { chiave: chiave, nome: nome, stagione: se ? se.s : null, episodio: se ? se.e : null, anno: anno || null,
         durata: durata };
     }
-    function urlNorm(u) { return senzaAncoraVera(u).replace(/^https?:\/\/(www\.)?/i, '').replace(/\/+$/, '').toLowerCase(); }
+    // il punto viene dall'app Video (dal servizio, col gettone: video "chiavetta:..." o "jellyfin:..."), non da una pagina
+    function dallApp(p) { return !daPagina && /^(chiavetta|jellyfin):/.test(p.video || ''); }
+    // l'indirizzo per confrontare due pagine: senza "https://", "www.", ancora e barra in fondo; nella versione personale
+    // anche senza la fine del nome ("sito.com/film/x" e "sito.biz/film/x" sono la stessa pagina)
+    function urlNorm(u) {
+      var s = senzaAncoraVera(u).replace(/^https?:\/\/(www\.)?/i, '').replace(/\/+$/, '').toLowerCase(), k = s.search(/[\/?#]/);
+      return k === -1 ? senzaFine(s) : senzaFine(s.slice(0, k)) + s.slice(k);
+    }
+    // un link della scheda sul vecchio indirizzo del sito: sul nuovo, con lo stesso percorso
+    function sulNuovo(u, vecchio, nuovo) {
+      if (hostLink(u).replace(/^www\./, '') !== vecchio) return u;
+      return String(u).replace(/^(https?:\/\/)(?:[^\/?#@]*@)?[^\/?#]*/i, function (x, inizio) { return inizio + nuovo; });
+    }
     // due video diversi della stessa pagina (la pagina dice quale: la sorgente, o il riquadro del lettore)
     function stessoVideoDi(e, p) { return !(e.video && p.video && e.video !== p.video); }
     function stessoPosto(e, p) { return urlNorm(e.url) === urlNorm(p.url) && stessoVideoDi(e, p); }
@@ -441,6 +488,15 @@ var VistiTV = (function () {
       e.stagione = id.stagione;
       e.episodio = id.episodio;
       if (id.anno) e.anno = id.anno;
+      // la scheda da un altro indirizzo dello stesso sito (versione personale: cambiata solo la fine, "sito.com" ->
+      // "sito.biz"): passa tutta al nuovo, anche la puntata dopo e l'immagine sapute prima. Riaprendola si va al sito che
+      // funziona oggi, non a quello vecchio
+      var vecchio = e.url ? hostLink(e.url).replace(/^www\./, '') : '', nuovo = hostLink(p.url);
+      if (vecchio && vecchio !== nuovo.replace(/^www\./, '') && stessoSito(vecchio, nuovo)) {
+        var dopo = e.prossimo ? sulNuovo(e.prossimo, vecchio, nuovo) : '';
+        if (dopo && dopo !== e.prossimo) { e.prossimo = dopo; e.prossimoSito = nomeSito(p); }
+        if (e.immagine) e.immagine = sulNuovo(e.immagine, vecchio, nuovo);
+      }
       e.url = senzaAncoraVera(p.url);
       e.video = p.video;
       e.sito = nomeSito(p);

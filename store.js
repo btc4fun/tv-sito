@@ -882,6 +882,9 @@
     var e = p.tipo === 'ws' ? elemWs(p.voce) : { tipo: 'mia', chiave: riquadro, voce: p.voce, nome: p.voce.nome, riquadro: riquadro, sito: p.sito };
     var x = app = { riquadro: riquadro, info: p, elem: e, da: da, pronta: false, seq: 0, attese: {}, backDiFila: 0, furti: [], finestra: 0,
       messaggi: 0, iframe: null, daScrivere: null, timerScrivi: null, annullato: 0, ancora: ancoraBuona(ancora) };
+    // un'ancora che non va (troppo lunga, caratteri strani): l'app si apre dall'inizio, e lo si dice invece di tacere
+    // (revisione d'insieme, punto 5)
+    if (ancora && !x.ancora) UI.toast(p.voce.nome + ': non riesco a riprendere questo film, si apre dall\'inizio', 6000);
     mostraAttesa('Apro ' + p.voce.nome + '…', e);
     UI.pushKeys(tastiApp);
     carica(x);
@@ -896,8 +899,10 @@
     }
   }
   // l'ancora che la home passa all'app: solo "#/..." con i caratteri di un indirizzo (cambia solo la parte dopo #: la
-  // pagina dell'app e il suo indirizzo restano quelli del catalogo)
-  function ancoraBuona(a) { return typeof a === 'string' && /^#\/[\x21-\x7e]{0,1500}$/.test(a) ? a : ''; }
+  // pagina dell'app e il suo indirizzo restano quelli del catalogo). Fino a 2100 caratteri: l'indirizzo di una scheda di
+  // Continua a guardare arriva a 2000 (visti.js), piu' il punto da cui riprendere; prima 1500 tagliava i film in cartelle
+  // con nomi lunghi
+  function ancoraBuona(a) { return typeof a === 'string' && /^#\/[\x21-\x7e]{0,2100}$/.test(a) ? a : ''; }
   function carica(x) {
     var f = document.createElement('iframe');
     // niente allow-same-origin: indirizzo anonimo (niente dati della home, il servizio la rifiuta); niente popup, finestre
@@ -964,8 +969,11 @@
     UI.popKeys(tastiApp);
     clearTimeout(x.timerPronto);
     clearTimeout(x.timerCarica);
-    // i gettoni dei permessi valgono solo finche' l'app e' aperta
-    if (x.gettoni) { x.gettoni.forEach(togliGettone); x.gettoni = null; }
+    // i gettoni dei permessi valgono solo finche' l'app e' aperta: si tolgono quando il riquadro se ne va (200 ms dopo il
+    // "chiudi"), cosi' l'app fa in tempo a salvare col suo gettone (Real4K: il punto del film, lo Stopped a Jellyfin)
+    var gettoni = x.gettoni;
+    x.gettoni = null;
+    function togliGettoni() { if (gettoni) { gettoni.forEach(togliGettone); gettoni = null; } }
     if (x.iframe) {
       try { x.iframe.contentWindow.postMessage({ hometvApp: 1, tipo: 'chiudi' }, '*'); } catch (e) {}
       chiusa = { x: x, win: x.iframe.contentWindow, fino: Date.now() + 1500 };
@@ -977,7 +985,8 @@
     x.iframe = null;
     appEl.hidden = true;
     // il riquadro si svuota dopo un attimo (l'app manda le ultime scritture), poi si toglie: la memoria si libera
-    if (f) setTimeout(function () { try { f.src = 'about:blank'; } catch (e) {} if (f.parentNode) f.parentNode.removeChild(f); }, 200);
+    if (f) setTimeout(function () { togliGettoni(); try { f.src = 'about:blank'; } catch (e) {} if (f.parentNode) f.parentNode.removeChild(f); }, 200);
+    else togliGettoni();
     if (perRiaprire) return;
     if (allaHome || x.da === 'home') { setTimeout(casa, 250); return; }
     if (listaFatta) rinfresca(); else fattaLista(null);

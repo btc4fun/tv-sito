@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.2';
+  var VERSION = '1.3.3';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -697,6 +697,77 @@
     try { return Math.round(process.memoryUsage().rss / 1e6); } catch (e) { /* vietata sul TV */ }
     try { return Math.round(require('v8').getHeapStatistics().total_heap_size / 1e6); } catch (e2) { return null; }
   }
+  // la memoria vista da fuori: il picco del processo (getrusage, non /proc, che sul TV e' vietato), quella libera del TV
+  // e l'heap di V8. Ogni pezzo per conto suo: null se il TV non lo permette
+  function memoriaVera() {
+    var m = { piccoMB: null, liberaMB: null, totaleMB: null, heapMB: null, fuoriHeapMB: null };
+    try { m.piccoMB = Math.round(process.resourceUsage().maxRSS / 1024); } catch (e) { /* Node vecchio o vietato */ }
+    try { m.liberaMB = Math.round(require('os').freemem() / 1048576); m.totaleMB = Math.round(require('os').totalmem() / 1048576); } catch (e2) {}
+    try {
+      var h = require('v8').getHeapStatistics();
+      m.heapMB = Math.round(h.total_heap_size / 1048576);
+      if (typeof h.malloced_memory === 'number') m.fuoriHeapMB = Math.round(h.malloced_memory / 1048576);
+    } catch (e3) {}
+    return m;
+  }
+
+  /* ---------------------------------------------------------- la traccia: gli ultimi secondi del servizio, su file
+   * Quando il TV chiude il processo (per esempio per la memoria, mentre passa un film 4K) non resta nessun errore: resta
+   * questo file, scritto ogni 5 secondi mentre passano video e ogni minuto se no. Al riavvio quello che c'era diventa una
+   * "fine" (le ultime 5 si leggono da 8091/tv): quando, da quanto era acceso, memoria, richieste in corso e ultime
+   * richieste (solo il tipo: niente gettoni, id o nomi di film), ultimi errori. */
+  var TRACCIA = pathLib.join(CACHE_DIR, 'hometv-traccia.json');
+  var traccia = { avvio: Date.now(), richieste: [], inVolo: 0, video: 0, ultimoVideo: 0, fini: [], scritta: 0 };
+  (function () {
+    var prec = leggiJsonSubito(TRACCIA);
+    if (!prec || typeof prec !== 'object') return;
+    if (Array.isArray(prec.fini)) traccia.fini = prec.fini.slice(-4);
+    var ultima = traccia.fini[traccia.fini.length - 1];
+    if (typeof prec.t === 'number' && !(ultima && ultima.fine === prec.t)) {
+      traccia.fini.push({ fine: prec.t, minuti: Math.round((prec.t - (+prec.avvio || prec.t)) / 60000), versione: String(prec.versione || '').slice(0, 12),
+        memoria: prec.memoria || null, inVolo: +prec.inVolo || 0, video: +prec.video || 0,
+        richieste: Array.isArray(prec.richieste) ? prec.richieste.slice(-8) : [], errori: Array.isArray(prec.errori) ? prec.errori.slice(-3) : [] });
+    }
+  })();
+  function leggiJsonSubito(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return null; } }
+  // il tipo della richiesta, senza niente di personale: /api/video/g/<gettone>/jf/file/<id>/<nome> -> /api/video/g/*/jf/file
+  function tipoRichiesta(url) {
+    var p = String(url || '').split('?')[0];
+    var v = /^\/api\/video\/g\/[^\/]+\/(.*)$/.exec(p);
+    // un pezzo lungo, con punti o caratteri codificati e' un id, un nome o un indirizzo: resta solo "*"
+    function pulito(s) { return s.length > 24 || /[.%@:]/.test(s) ? '*' : s; }
+    if (v) return '/api/video/g/*/' + v[1].split('/').slice(0, 2).map(pulito).join('/');
+    return p.split('/').slice(0, 4).map(pulito).join('/');
+  }
+  function segnaRichiesta(req, res, chi) {
+    try {
+      var p = tipoRichiesta(req.url), video = p.indexOf('/api/video/') === 0, fatto = false;
+      traccia.richieste.push({ t: Date.now(), c: chi, m: String(req.method).slice(0, 7), p: p });
+      if (traccia.richieste.length > 20) traccia.richieste.shift();
+      traccia.inVolo++;
+      if (video) { traccia.video++; traccia.ultimoVideo = Date.now(); }
+      var fine = function () { if (fatto) return; fatto = true; traccia.inVolo--; if (video) traccia.video--; };
+      res.on('finish', fine);
+      res.on('close', fine);
+    } catch (e) { /* la traccia non deve mai fermare una richiesta */ }
+  }
+  function scriviTraccia() {
+    try {
+      var dati = { v: 1, t: Date.now(), avvio: traccia.avvio, versione: VERSION, memoria: memoriaVera(), inVolo: traccia.inVolo,
+        video: traccia.video, richieste: traccia.richieste.slice(-12), errori: erroriRecenti.slice(-5), fini: traccia.fini };
+      // sincrona e piccola (un paio di KB): se il processo viene chiuso subito dopo, il file c'e' gia'
+      fs.writeFileSync(TRACCIA + '.tmp', JSON.stringify(dati));
+      fs.renameSync(TRACCIA + '.tmp', TRACCIA);
+      traccia.scritta = dati.t;
+    } catch (e) { /* senza spazio o senza permessi: niente traccia, il resto va avanti */ }
+  }
+  // subito una volta: se il processo venisse chiuso nei primi secondi, la fine di prima non si conterebbe due volte
+  scriviTraccia();
+  var timerTraccia = setInterval(function () {
+    var ora = Date.now();
+    if (traccia.video > 0 || ora - traccia.ultimoVideo < 30000 || ora - traccia.scritta >= 60000) scriviTraccia();
+  }, 5000);
+  if (timerTraccia && timerTraccia.unref) timerTraccia.unref();
 
   function leggiJson(file, def) {
     try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return def; }
@@ -1250,6 +1321,9 @@
     if (route === 'POST /api/video/gettone/via') {
       readBody(req).then(function (b) {
         gettoniVideo.togli(b.gettone);
+        // l'app Video e' chiusa davvero (non resta nessun gettone): il servizio lascia andare film aperti, sottotitoli, schede
+        // e Cluster convertiti (revisione del peso, punto 4: prima restavano 25-30 MB fino a sera)
+        if (!gettoniVideo.quanti()) riposaVideo();
         sendJson(req, res, 200, { ok: true });
       })['catch'](fail(req, res, 400));
       return;
@@ -1765,6 +1839,8 @@
    * l'app Android fa girare questo file cosi' com'e' in un motore web nascosto (android/src/it/hometv/tv/Visti.java).
    * Si modifica SOLO questo file, poi si lancia lo script; le prove controllano che la copia sia uguale.
    * Solo ES5 e solo ASCII (\uXXXX per le lettere accentate).
+   * Nella versione personale lo stesso sito e' anche quello che cambia solo la fine dell'indirizzo ("sito.com", "sito.biz",
+   * vedi senzaFine); la copia per il pubblico (docs/consegna/taglia-pubblico.py) tiene il nome intero, come prima.
    *
    *   var v = VistiTV.crea({ dati: [...], salva: function (elenco, subito) {}, prefs: function () { return prefs; },
    *                          casuale: function (byte) { return 'esadecimale'; } });
@@ -1812,11 +1888,12 @@
         return m ? m[1].toLowerCase().replace(/\.$/, '') : '';
       }
       var MAX_SCHEDE = 10, MAX_VISTI = 30, MIN_DURATA = 300, MIN_VISTO = 60;
-      // lo stesso sito? Per ora lo stesso nome, con o senza "www." davanti. E' l'unico posto che lo decide (proposta
-      // "Eri a ...", schede, pagina riaperta dalla home)
+      // lo stesso sito? Lo stesso nome, con o senza "www." davanti; nella versione personale anche con un'altra fine
+      // ("www.sito.com" e "sito.biz", senzaFine). E' l'unico posto che lo decide (proposta "Eri a ...", schede, pagina
+      // riaperta dalla home)
       function stessoSito(a, b) {
-        a = String(a || '').toLowerCase().replace(/^www\./, '');
-        b = String(b || '').toLowerCase().replace(/^www\./, '');
+        a = senzaFine(String(a || '').toLowerCase().replace(/^www\./, ''));
+        b = senzaFine(String(b || '').toLowerCase().replace(/^www\./, ''));
         return !!a && a === b;
       }
       // "Riprendi anche su un altro sito" (spenta all'inizio): se no proposta e schede restano del loro sito. Mai per le pagine
@@ -1828,23 +1905,43 @@
       /* ---------------------------------------------------------- le pagine (revisione d'insieme, punto 1)
        * Quello che dice una pagina (un sito, col suo Origin; un lettore in un riquadro passa dalla pagina che lo contiene)
        * vale solo per il suo sito:
-       *  - scrive e chiede solo schede del suo indirizzo (lo stesso nome, con o senza "www.": una pagina vera manda sempre il
-       *    suo), mai di altri siti, neanche con "Riprendi anche su un altro sito" (quella resta della home e dell'app Video);
+       *  - scrive e chiede solo schede del suo indirizzo (stessoSito: una pagina vera manda sempre il suo), mai di altri
+       *    siti, neanche con "Riprendi anche su un altro sito" (quella resta della home e dell'app Video);
        *  - l'immagine solo https e del suo sito, la puntata dopo solo del suo sito (se no via);
        *  - al massimo MAX_PER_SITO schede per sito: la nuova prende il posto della sua piu' vecchia; con l'elenco pieno quello
        *    di una scheda finita (la home non la mostra), mai quello di una scheda in corso di un altro sito.
        * La home mostra l'immagine di una scheda solo se e' del suo sito (anche per le schede di prima). */
       var MAX_PER_SITO = 3, daPagina = null;
       // il sito di un nome (il dominio registrabile): "www.sito.it" e "img.sito.it" -> "sito.it", "news.bbc.co.uk" ->
-      // "bbc.co.uk"; sui domini condivisi ogni nome e' un sito ("utente.github.io"); gli indirizzi IP interi
+      // "bbc.co.uk"; sui domini condivisi ogni nome e' un sito ("utente.github.io"); gli indirizzi IP interi. Nella versione
+      // personale senza la fine: "sito.*", "bbc.*" (senzaFine)
       var CONDIVISI = /(^|\.)((github|gitlab)\.io|(netlify|vercel|web)\.app|(pages|workers)\.dev|(firebaseapp|herokuapp|appspot|blogspot|wordpress|wixsite|amazonaws|cloudfront)\.com|azurewebsites\.net|glitch\.me|altervista\.org)$/;
       function sitoDi(h) {
         h = String(h || '').toLowerCase().replace(/\.$/, '');
         if (/^[\d.]+$/.test(h) || h.indexOf(':') !== -1) return h;
-        var p = h.split('.'), c = CONDIVISI.exec(h), n = c ? c[2].split('.').length + 1 : 2;
-        if (!c && p.length > 2 && p[p.length - 1].length === 2 && /^(co|com|net|org|gov|edu|ac|or|ne|go)$/.test(p[p.length - 2])) n = 3;
-        return p.length > n ? p.slice(-n).join('.') : h;
+        var p = h.split('.'), c = CONDIVISI.exec(h), n = c ? c[2].split('.').length + 1 : fineDi(p) + 1;
+        return senzaFine(p.length > n ? p.slice(-n).join('.') : h);
       }
+      // <solo-completa>
+      // la fine dell'indirizzo (versione personale): i siti che cambiano dominio ogni tanto restano lo stesso sito se cambia
+      // solo quella. "sito.com", "www.sito.biz" e "sito.mba" -> "sito.*"; "sito.co.uk" e "sito.it.com" -> "sito.*", ma
+      // "film.co.uk" non e' "serie.co.uk". La fine e' l'ultima parte del nome, o le ultime due per quelle fatte di due
+      // (FINE2: lista corta, niente liste scaricate). Restano interi gli indirizzi IP, "localhost" e i domini condivisi
+      // ("utente.github.io" non e' "utente.com"); il nome davanti resta ("player.sito.com" -> "player.sito.*")
+      var FINE2 = /^((co|com|net|org|gov|gob|edu|ac|or|ne|go|mil|me|ltd|plc)\.[a-z]{2}|(it|uk|us|eu|br|cn|de|ru|sa|za|gb)\.com|(uk|gb)\.net|us\.org)$/;
+      function fineDi(p) { return p.length > 2 && FINE2.test(p.slice(-2).join('.')) ? 2 : 1; }
+      function senzaFine(h) {
+        h = String(h || '').replace(/^www\./, '');
+        if (!h || /^[\d.]+$/.test(h) || h.indexOf(':') !== -1 || CONDIVISI.test(h)) return h;
+        var p = h.split('.'), n = fineDi(p);
+        return p.length > n ? p.slice(0, -n).join('.') + '.*' : h;
+      }
+      // </solo-completa>
+      /* <solo-pubblica>
+      // la fine dell'indirizzo (versione per il pubblico): conta, lo stesso sito e' lo stesso nome intero
+      function fineDi(p) { return p.length > 2 && p[p.length - 1].length === 2 && /^(co|com|net|org|gov|edu|ac|or|ne|go)$/.test(p[p.length - 2]) ? 2 : 1; }
+      function senzaFine(h) { return h; }
+      </solo-pubblica> */
       function comePagina(origine, fai) {
         var h = typeof origine === 'string' && origine ? hostLink(origine) : null;
         daPagina = h === null ? null : { host: h, sito: sitoDi(h) };
@@ -2089,10 +2186,34 @@
           // l'anno puo' essere in un'altra fonte ("Il Gladiatore" nell'h1, "(2000)" nel titolo)
           for (i = 0; i < fonti.length && !anno; i++) anno = annoDi(fonti[i]);
         }
-        return { chiave: chiaveDi(nome, frasi), nome: nome, stagione: se ? se.s : null, episodio: se ? se.e : null, anno: anno || null,
+        var chiave = chiaveDi(nome, frasi);
+        // dall'app Video il titolo e' quello del file o del .nfo, sicuro: un'opera anche quando la chiave non lo sa leggere
+        // (solo numeri come "2012", una parola come "Free" o "Serie", un alfabeto non latino). La chiave e' allora il titolo
+        // com'e' (minuscolo, senza accenti) e il resto lo decidono durata, anno, stagione e puntata (revisione d'insieme, punto 3)
+        if (!chiave && dallApp(p)) {
+          var grezzo = testo(ld.nome || ld.serie, 200).replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+          if (grezzo) {
+            nome = grezzo.slice(0, 80);
+            chiave = grezzo.toLowerCase();
+            for (i = 0; i < ACCENTI.length; i++) chiave = chiave.replace(ACCENTI[i][0], ACCENTI[i][1]);
+          }
+        }
+        return { chiave: chiave, nome: nome, stagione: se ? se.s : null, episodio: se ? se.e : null, anno: anno || null,
           durata: durata };
       }
-      function urlNorm(u) { return senzaAncoraVera(u).replace(/^https?:\/\/(www\.)?/i, '').replace(/\/+$/, '').toLowerCase(); }
+      // il punto viene dall'app Video (dal servizio, col gettone: video "chiavetta:..." o "jellyfin:..."), non da una pagina
+      function dallApp(p) { return !daPagina && /^(chiavetta|jellyfin):/.test(p.video || ''); }
+      // l'indirizzo per confrontare due pagine: senza "https://", "www.", ancora e barra in fondo; nella versione personale
+      // anche senza la fine del nome ("sito.com/film/x" e "sito.biz/film/x" sono la stessa pagina)
+      function urlNorm(u) {
+        var s = senzaAncoraVera(u).replace(/^https?:\/\/(www\.)?/i, '').replace(/\/+$/, '').toLowerCase(), k = s.search(/[\/?#]/);
+        return k === -1 ? senzaFine(s) : senzaFine(s.slice(0, k)) + s.slice(k);
+      }
+      // un link della scheda sul vecchio indirizzo del sito: sul nuovo, con lo stesso percorso
+      function sulNuovo(u, vecchio, nuovo) {
+        if (hostLink(u).replace(/^www\./, '') !== vecchio) return u;
+        return String(u).replace(/^(https?:\/\/)(?:[^\/?#@]*@)?[^\/?#]*/i, function (x, inizio) { return inizio + nuovo; });
+      }
       // due video diversi della stessa pagina (la pagina dice quale: la sorgente, o il riquadro del lettore)
       function stessoVideoDi(e, p) { return !(e.video && p.video && e.video !== p.video); }
       function stessoPosto(e, p) { return urlNorm(e.url) === urlNorm(p.url) && stessoVideoDi(e, p); }
@@ -2202,6 +2323,15 @@
         e.stagione = id.stagione;
         e.episodio = id.episodio;
         if (id.anno) e.anno = id.anno;
+        // la scheda da un altro indirizzo dello stesso sito (versione personale: cambiata solo la fine, "sito.com" ->
+        // "sito.biz"): passa tutta al nuovo, anche la puntata dopo e l'immagine sapute prima. Riaprendola si va al sito che
+        // funziona oggi, non a quello vecchio
+        var vecchio = e.url ? hostLink(e.url).replace(/^www\./, '') : '', nuovo = hostLink(p.url);
+        if (vecchio && vecchio !== nuovo.replace(/^www\./, '') && stessoSito(vecchio, nuovo)) {
+          var dopo = e.prossimo ? sulNuovo(e.prossimo, vecchio, nuovo) : '';
+          if (dopo && dopo !== e.prossimo) { e.prossimo = dopo; e.prossimoSito = nomeSito(p); }
+          if (e.immagine) e.immagine = sulNuovo(e.immagine, vecchio, nuovo);
+        }
         e.url = senzaAncoraVera(p.url);
         e.video = p.video;
         e.sito = nomeSito(p);
@@ -2461,17 +2591,21 @@
 
     /* ============================================================ lettura del file */
 
-    function leggi(fs, fd, pos, n, cb) {
-      var b = nuovo(n), fatto = 0;
+    // n byte da "pos" in b, dall'inizio di b: cb(err, la parte letta di b)
+    function leggiIn(fs, fd, b, pos, n, cb) {
+      var fatto = 0;
       (function giro() {
         fs.read(fd, b, fatto, n - fatto, pos + fatto, function (err, letti) {
           if (err) { cb(err); return; }
           fatto += letti;
-          if (letti === 0 || fatto >= n) { cb(null, fatto === n ? b : b.slice(0, fatto)); return; }
+          if (letti === 0 || fatto >= n) { cb(null, fatto === b.length ? b : b.slice(0, fatto)); return; }
           giro();
         });
       })();
     }
+    function leggi(fs, fd, pos, n, cb) { leggiIn(fs, fd, nuovo(n), pos, n, cb); }
+    // la vista v sta nella memoria di b (un pezzo di un blocco che si riusa)
+    function nelBlocco(v, b) { return v.buffer === b.buffer && v.byteOffset >= b.byteOffset && v.byteOffset < b.byteOffset + b.length; }
 
     /* ============================================================ le tracce di un MKV */
 
@@ -4036,6 +4170,8 @@
     function crea(o) {
       o = o || {};
       var fs = o.fs, path = o.path, zlib = o.zlib || null;
+      // le letture dal file: 512 KB (le prove lo fanno piccolo, per avere tanti pezzi in viaggio sulla rete lenta)
+      var bloccoFile = o.blocco > 0 ? o.blocco : BLOCCO;
       // i codec che il TV legge: dal profilo del TV (profilo.js), che il servizio conosce strada facendo
       function lettiOra() { var x = typeof o.letti === 'function' ? o.letti() : o.letti; return x && x.audio && x.video ? x : LETTI; }
       // l'audio DTS e TrueHD convertito dal TV (tv-sito/audio-tv.js): se c'e' e il TV regge, per questo file quelle tracce
@@ -4580,7 +4716,7 @@
         f.usato = Date.now();
         if (pi && pi.converti) {
           // la traccia diventa AC3 mentre passa: legge, scansiona e manda audio-tv.js (stessa scansione, stessi confini)
-          audioTv.servi(req, res, f, pi, { a: a, z: z, fisse: fisse, blocco: BLOCCO, confinePrima: confinePrima,
+          audioTv.servi(req, res, f, pi, { a: a, z: z, fisse: fisse, blocco: bloccoFile, confinePrima: confinePrima,
             scansione: function () {
               return new Scansione(m, pi.nascoste, attiveDi(f), function (num, ev) { nuovoSotto(f, num, ev); }, function (pos) { nuovoConfine(m, pos); });
             } });
@@ -4602,6 +4738,24 @@
         }
         var fine = Math.min(dim, z + 1 + (scan ? 64 : 0)); // qualche byte in piu' per decidere l'ultimo blocco
         var lettura = inizio, sospeso = null, sospesoPos = 0, chiuso = false, fd = -1, nf = 0, inAttesa = false, fermataScan = false;
+        // i blocchi di questa risposta si riusano: prima ogni lettura ne faceva uno nuovo, e durante un film restavano
+        // +58-76 MB di Buffer morti finche' V8 non li raccoglieva. Un blocco torna libero solo quando la rete ha preso tutto
+        // quello che e' partito da lui (il callback di res.write: sulla rete lenta i byte aspettano nella coda del socket,
+        // senza copia) e nessun pezzo sospeso lo guarda. Di solito due; se sono tutti in viaggio uno in piu', fino a tre,
+        // poi uno a perdere come prima
+        var blocchi = [];
+        function bloccoLibero() {
+          for (var i = 0; i < blocchi.length; i++) {
+            if (!blocchi[i].attese && !(sospeso && nelBlocco(sospeso, blocchi[i].b))) return blocchi[i].b;
+          }
+          var b = nuovo(bloccoFile);
+          if (blocchi.length < 3) blocchi.push({ b: b, attese: 0 });
+          return b;
+        }
+        function bloccoDi(v) {
+          for (var i = 0; i < blocchi.length; i++) if (nelBlocco(v, blocchi[i].b)) return blocchi[i];
+          return null;
+        }
         // il lettore chiude mentre si aspetta "drain": nessuno richiamerebbe giro() e il file resterebbe aperto. Un file remoto
         // (Jellyfin) si chiude subito anche con una lettura in corso: la domanda verso il server si interrompe e la lettura si
         // sveglia con un errore (un server fermo a meta' non lascia domande aperte); quello della chiavetta quando la lettura finisce
@@ -4631,7 +4785,7 @@
           if (chiuso) { finisci(); return; }
           // la scansione e' rimasta indietro (fermata dopo 15 ms, o tanti blocchi minuscoli): prima si finisce cio' che
           // c'e', al giro dopo, senza leggere altro (la memoria non cresce) e senza mandare byte non controllati
-          if (sospeso && (sospeso.length >= BLOCCO || fermataScan)) {
+          if (sospeso && (sospeso.length >= bloccoFile || fermataScan)) {
             setImmediate(function () {
               if (chiuso) { finisci(); return; }
               var avanti;
@@ -4642,9 +4796,9 @@
             return;
           }
           if (lettura >= fine && !sospeso) { finisci(); return; }
-          var n = Math.min(BLOCCO, fine - lettura);
+          var n = Math.min(bloccoFile, fine - lettura);
           if (n <= 0) { manda(sospeso, sospesoPos, true); sospeso = null; finisci(); return; }
-          leggi(fs, fd, lettura, n, function (e3, b) {
+          leggiIn(fs, fd, bloccoLibero(), lettura, n, function (e3, b) {
             if (e3 || !b.length) { if (sospeso) manda(sospeso, sospesoPos, true); finisci(lettura <= z); return; }
             var avanti;
             try { avanti = pezzo(b); } catch (ex) { rotto(); return; }
@@ -4707,7 +4861,10 @@
           if (!dati || chiuso) return true;
           var da = Math.max(a, pos), al = Math.min(z + 1, pos + dati.length);
           if (al <= da) return true;
-          return res.write(dati.slice(da - pos, al - pos));
+          var x = bloccoDi(dati);
+          if (!x) return res.write(dati.slice(da - pos, al - pos));
+          x.attese++;
+          return res.write(dati.slice(da - pos, al - pos), function () { x.attese--; });
         }
       }
 
@@ -5661,9 +5818,28 @@
         });
       }
 
+      // l'app Video e' chiusa (nessun gettone valido): via i film aperti (strutture, sottotitoli, Cues), le schede, gli elenchi
+      // delle cartelle e le analisi dei dischi copiati, e il convertitore lascia i Cluster convertiti. Prima restava tutto fino
+      // a sera (25-30 MB). Alla prossima apertura si rifanno; una risposta ancora in corso tiene il suo file
+      function riposa() {
+        for (var k in aperti) if (Object.prototype.hasOwnProperty.call(aperti, k)) dimenticaSotto(aperti[k], -1);
+        aperti = {};
+        sottoTot = 0;
+        elenchi = {};
+        schede = {};
+        discoCache = {};
+        analisiCache = {};
+        if (audioTv && typeof audioTv.riposa === 'function') audioTv.riposa();
+      }
+
       return {
         dischi: dischi, cartella: cartella, info: info, servi: servi, sotto: sotto, sottoEsterni: sottoEsterni, prova: prova,
-        scheda: scheda, immagine: immagine,
+        scheda: scheda, immagine: immagine, riposa: riposa,
+        // quello che il servizio tiene adesso (8091/tv): film aperti, sottotitoli, schede e cartelle ricordate
+        quanti: function () {
+          return { film: Object.keys(aperti).length, sottotitoliKB: Math.round(sottoTot / 1024), schede: Object.keys(schede).length,
+            cartelle: Object.keys(elenchi).length };
+        },
         // un file che non sta sulla chiavetta (il ponte verso Jellyfin): x = { percorso (chiave unica), nome, dim, data, est,
         // fs (open, read, close come quelli di Node) }. Stesse regole, stesso "vuoto", stessi sottotitoli
         remoto: {
@@ -6006,6 +6182,8 @@
     function nuovo(n) { return typeof Buffer.allocUnsafe === 'function' ? Buffer.allocUnsafe(n) : new Buffer(n); }
     function copia(b) { var c = nuovo(b.length); b.copy(c); return c; }
     function unisci(l) { return l.length === 1 ? l[0] : Buffer.concat(l); }
+    // la vista v sta nella memoria di b (un pezzo di un blocco che si riusa)
+    function nelBlocco(v, b) { return v.buffer === b.buffer && v.byteOffset >= b.byteOffset && v.byteOffset < b.byteOffset + b.length; }
     function daTesto(s) { var b = nuovo(s.length); for (var i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 0xff; return b; }
     function byte(l) { var b = nuovo(l.length); for (var i = 0; i < l.length; i++) b[i] = l[i]; return b; }
     function uint(b, i, n) { var v = 0; for (var k = 0; k < n; k++) v = v * 256 + b[i + k]; return v; }
@@ -6623,17 +6801,19 @@
 
       /* ---- letture dal file */
 
-      function leggiTutto(fs, fd, pos, n, cb) {
-        var b = nuovo(n), fatto = 0;
+      // n byte da "pos" in b, dall'inizio di b: cb(err, la parte letta di b)
+      function leggiIn(fs, fd, b, pos, n, cb) {
+        var fatto = 0;
         (function giro() {
           fs.read(fd, b, fatto, n - fatto, pos + fatto, function (err, letti) {
             if (err) { cb(err); return; }
             fatto += letti;
-            if (letti === 0 || fatto >= n) { cb(null, fatto === n ? b : b.slice(0, fatto)); return; }
+            if (letti === 0 || fatto >= n) { cb(null, fatto === b.length ? b : b.slice(0, fatto)); return; }
             giro();
           });
         })();
       }
+      function leggiTutto(fs, fd, pos, n, cb) { leggiIn(fs, fd, nuovo(n), pos, n, cb); }
       // un Cluster intero letto dal file (al massimo maxCluster): cb(err, cluster, byte)
       function clusterDa(fs, fd, pos, st, cb) {
         leggiTutto(fs, fd, pos, 16, function (e, h) {
@@ -6668,29 +6848,36 @@
       // che porta a "pos". cb(err, cluster) (null se non trovato)
       function precedente(fs, fd, m, st, pos, confinePrima, cb) {
         var c0 = confinePrima ? confinePrima(m.confini || [], pos - 1) : -1;
+        // un pezzo da 1 MB alla volta, dal fondo, con 16 byte del pezzo dopo (l'intestazione di un Cluster a cavallo); il
+        // Cluster con la misura giusta si rilegge intero. Prima i pezzi si univano tutti a ogni giro: per un salto fino a
+        // 136 MB copiati e 32 MB in un colpo
         function cerca() {
-          var pezzi = [], da = pos, letti = 0;
+          var da = pos, letti = 0;
           (function giro() {
             if (da <= m.cluster1 || letti >= CERCA_INDIETRO) { cb(null, null); return; }
             var n = Math.min(1 << 20, da - m.cluster1);
-            leggiTutto(fs, fd, da - n, n, function (e, b) {
-              if (e || !b || b.length !== n) { cb(e || null, null); return; }
+            leggiTutto(fs, fd, da - n, n + 16, function (e, b) {
+              if (e || !b || b.length < n) { cb(e || null, null); return; }
               da -= n;
               letti += n;
-              pezzi.unshift(b);
-              var tutto = unisci(pezzi), base = da, i = tutto.length;
-              // dal fondo: l'inizio di Cluster piu' vicino a "pos" con la misura giusta
-              while (i > 0) {
-                i = tutto.lastIndexOf ? tutto.lastIndexOf(SINCRO_CLUSTER, i - 1) : -1;
-                if (i < 0) break;
-                var d = leggiVint(tutto, i + 4, tutto.length);
-                if (d && !d.rotto && !d.ignota && base + i + 4 + d.n + d.v === pos) {
-                  var c = null;
-                  try { c = leggiCluster(tutto, base, base + i, pos, st, false); } catch (e3) { c = null; }
-                  if (c && c.completo) { cb(null, c); return; }
+              var base = da, i = n;
+              (function prossimo() {
+                // dal fondo: l'inizio di Cluster piu' vicino a "pos" con la misura giusta
+                while (i > 0) {
+                  i = b.lastIndexOf ? b.lastIndexOf(SINCRO_CLUSTER, i - 1) : -1;
+                  if (i < 0) break;
+                  var d = leggiVint(b, i + 4, b.length);
+                  if (d && !d.rotto && !d.ignota && base + i + 4 + d.n + d.v === pos) {
+                    clusterDa(fs, fd, base + i, st, function (e2, c) {
+                      if (e2) { cb(e2, null); return; }
+                      if (c && c.completo && c.fine === pos) { cb(null, c); return; }
+                      prossimo();
+                    });
+                    return;
+                  }
                 }
-              }
-              setImmediate(giro);
+                setImmediate(giro);
+              })();
             });
           })();
         }
@@ -6715,6 +6902,8 @@
         var p = 0;               // il prossimo elemento di primo livello da guardare
         var voce = null;         // { tipo: 'passa' | 'cluster', pos, fine, c, seg }
         var storia = [];         // i frame della traccia prima del Cluster di adesso (contigui)
+        var blocchi = [];        // i blocchi letti, che si riusano: [{ b, attese }]
+        var tele = [], telaSeg = null; // le copie dei Cluster in piu' pezzi, che si riusano: [{ b, attese }] e la testa del seguito
         var cercaCluster = false; // la richiesta comincia dove non si conosce un confine: si cerca il prossimo Cluster
         var trovato = -1;        // ... e qui e' stato trovato
 
@@ -6781,6 +6970,54 @@
           try { inizia(); } catch (e3) { rotto(e3); }
         });
 
+        // i blocchi letti si riusano, come nella videoteca (prima ogni lettura ne faceva uno nuovo: col DTS convertito fino a
+        // +76 MB di Buffer morti). Un blocco torna libero quando la rete ha preso tutto quello che e' partito da lui (il
+        // callback di res.write) e nessuno lo guarda piu': i pezzi da mandare, il pezzo sospeso, il Cluster di adesso (anche
+        // mentre si converte: intanto non si legge). Un Cluster grande ne tiene tanti finche' non e' convertito: dopo, quelli
+        // liberi oltre quattro si lasciano andare
+        function usato(x) {
+          if (x.attese || (sospeso && nelBlocco(sospeso, x.b)) || (voce && voce.byte && nelBlocco(voce.byte, x.b))) return true;
+          for (var i = 0; i < pezzi.length; i++) if (nelBlocco(pezzi[i].b, x.b)) return true;
+          return false;
+        }
+        function bloccoLibero() {
+          var libero = null, liberi = 0;
+          blocchi = blocchi.filter(function (x) {
+            if (usato(x)) return true;
+            if (!libero) libero = x;
+            return ++liberi <= 4;
+          });
+          if (libero) return libero.b;
+          var b = nuovo(BLOCCO);
+          if (blocchi.length < 48) blocchi.push({ b: b, attese: 0 });
+          return b;
+        }
+        function bloccoDi(v) {
+          for (var i = 0; i < blocchi.length; i++) if (nelBlocco(v, blocchi[i].b)) return blocchi[i];
+          for (var j = 0; j < tele.length; j++) if (nelBlocco(v, tele[j].b)) return tele[j];
+          return null;
+        }
+        // un Cluster che sta in piu' pezzi si copia in una "tela" che si riusa, invece che in un Buffer nuovo ogni volta (col
+        // DTS erano due copie di ogni Cluster: il Cluster e la testa del seguito). Due tele per il Cluster di adesso: mentre una
+        // parte verso la rete, l'altra si riempie; libera come i blocchi (callback di res.write). Il seguito si legge soltanto
+        // (l'ancora e i primi frame, finche' il Cluster di adesso non e' convertito): una tela sola
+        // con un quarto in piu' (a 64 KB), cosi' i Cluster di misura vicina non la rifanno ogni volta
+        function misuraTela(n) { return Math.max(n, Math.min(maxCluster, Math.ceil(n * 1.25 / 65536) * 65536)); }
+        function telaCluster(n) {
+          for (var i = 0; i < tele.length; i++) {
+            if (tele[i].attese || (voce && voce.byte && nelBlocco(voce.byte, tele[i].b))) continue;
+            if (tele[i].b.length < n) tele[i] = { b: nuovo(misuraTela(n)), attese: 0 };
+            return tele[i].b;
+          }
+          if (tele.length >= 2) return nuovo(n);
+          tele.push({ b: nuovo(misuraTela(n)), attese: 0 });
+          return tele[tele.length - 1].b;
+        }
+        function telaSeguito(n) {
+          if (!telaSeg || telaSeg.length < n) telaSeg = nuovo(misuraTela(n));
+          return telaSeg;
+        }
+
         // il giro: prima si lavora quello che c'e', poi si legge
         function giro() {
           if (finito) return;
@@ -6804,7 +7041,7 @@
           }
           var n = Math.min(BLOCCO, dim - lettura);
           if (n <= 0) { eof = true; giro(); return; }
-          leggiTutto(fs, fd, lettura, n, function (e3, b) {
+          leggiIn(fs, fd, bloccoLibero(), lettura, n, function (e3, b) {
             if (finito) return;
             if (chiuso) { finisci(); return; }
             if (e3 || !b || !b.length) { eof = true; giro(); return; }
@@ -6848,15 +7085,19 @@
           if (dati.length) pezzi.push({ pos: pos, b: dati });
         }
         function fineDati() { return pezzi.length ? pezzi[pezzi.length - 1].pos + pezzi[pezzi.length - 1].b.length : emesso; }
-        // i byte [da, al) dai pezzi (una copia se stanno in piu' pezzi)
-        function prendi(da, al) {
-          var parti = [];
+        // i byte [da, al) dai pezzi (una copia se stanno in piu' pezzi: in tela(n) se c'e', se no in un Buffer nuovo)
+        function prendi(da, al, tela) {
+          var parti = [], n = 0;
           for (var i = 0; i < pezzi.length; i++) {
             var q = pezzi[i], qa = q.pos + q.b.length;
             if (qa <= da || q.pos >= al) continue;
             parti.push(q.b.slice(Math.max(0, da - q.pos), Math.min(q.b.length, al - q.pos)));
+            n += parti[parti.length - 1].length;
           }
-          return unisci(parti.length ? parti : [nuovo(0)]);
+          if (parti.length < 2 || !tela) return unisci(parti.length ? parti : [nuovo(0)]);
+          var t = tela(n), k = 0;
+          for (var j = 0; j < parti.length; j++) { parti[j].copy(t, k); k += parti[j].length; }
+          return t.length === n ? t : t.slice(0, n);
         }
         // via i pezzi prima di "fino"
         function scarta(fino) {
@@ -6865,8 +7106,9 @@
         }
         // manda [pos, pos + b.length) per la parte che cade in [a, z]; false = aspettare "drain"
         function manda(b, pos) {
-          var da = Math.max(a, pos), al = Math.min(z + 1, pos + b.length), ok = true;
-          if (al > da && !chiuso) ok = res.write(b.slice(da - pos, al - pos));
+          var da = Math.max(a, pos), al = Math.min(z + 1, pos + b.length), ok = true, x = al > da && !chiuso ? bloccoDi(b) : null;
+          if (x) { x.attese++; ok = res.write(b.slice(da - pos, al - pos), function () { x.attese--; }); }
+          else if (al > da && !chiuso) ok = res.write(b.slice(da - pos, al - pos));
           emesso = Math.max(emesso, pos + b.length);
           if (!ok) { aspettaDrain = true; res.once('drain', dopoDrain); }
           return ok;
@@ -6949,7 +7191,7 @@
             return 'dati';
           }
           if (!v.c) {
-            v.byte = prendi(v.pos, v.fine);
+            v.byte = prendi(v.pos, v.fine, telaCluster);
             try { v.c = leggiCluster(v.byte, v.pos, v.pos, v.fine, st, false); } catch (e1) { v.c = null; }
             if (v.c) ancoraSicura(v.c);
           }
@@ -7042,7 +7284,7 @@
               continue;
             }
             var fine = hd.ignota ? -1 : q + hi.n + hd.n + hd.v, al = fine < 0 ? fd2 : Math.min(fine, fd2);
-            var b = prendi(q, al), c = null;
+            var b = prendi(q, al, telaSeguito), c = null;
             try { c = leggiCluster(b, q, q, fine < 0 ? q + b.length : fine, st, true); } catch (e) { c = null; }
             if (!c) return { g0: null, frame: [] };
             var completo = c.completo || (fine >= 0 && al >= fine);
@@ -7176,6 +7418,8 @@
         statoPubblico: function () {
           return { codec: codec ? codec.nome : null, velocita: vel, soglia: soglia, conti: conti, cache: Math.round(cache.peso / 1024) };
         },
+        // l'app Video e' chiusa: i Cluster convertiti tenuti (fino a 6 MB) se ne vanno, come al riposo del codec
+        riposa: function () { cache.voci = {}; cache.peso = 0; },
         _svuotaCache: function () { cache.voci = {}; cache.peso = 0; }
       };
     }
@@ -14289,6 +14533,10 @@
   var videoteca = Videoteca.crea({ fs: fs, path: pathLib, zlib: require('zlib'), radici: RADICI_USB, domain: require('domain'), log: log,
     letti: lettiTv, audioTv: audioTv });
   var gettoniVideo = Videoteca.gettoni(require('crypto'));
+  function riposaVideo() {
+    try { videoteca.riposa(); } catch (e) { log('Video a riposo: ' + e.message); }
+    try { pontiVideo.riposa(); } catch (e2) { log('Video a riposo (ponti): ' + e2.message); }
+  }
 
   /* ---------------------------------------------------------- l'app Video: i ponti verso Jellyfin e verso il Mac
    * La logica e' in tv-sito/ponti-video.js (qui la sua copia). Un solo server Jellyfin, scelto dall'app e salvato qui col
@@ -14514,8 +14762,11 @@
     }
     // il profilo del TV per Jellyfin (come quello provato col Jellyfin 12.4 vero, prove/jellyfin/profilo-samsung-2022.json):
     // cosa legge diretto, e in cosa convertire (HLS a pezzi MPEG-TS: HEVC copiato funziona, e il TV lo legge da sempre)
-    var GAMME = { h264: 'SDR', hevc: 'SDR|HDR10|HDR10Plus|HLG|DOVIWithHDR10|DOVIWithHLG|DOVIWithSDR', vp9: 'SDR|HDR10|HLG', av1: 'SDR|HDR10|HDR10Plus|HLG' };
-    function profilo(letti, q) {
+    // DOVIWithHDR10Plus: Dolby Vision 8.1 con l'HDR10+ dentro (per esempio Spider-Man: Brand New Day). Il TV legge la base
+    // HDR10 e l'HDR10+ (Samsung); senza questa voce Jellyfin ricodifica in SDR anche l'originale (VideoRangeTypeNotSupported)
+    var GAMME = { h264: 'SDR', hevc: 'SDR|HDR10|HDR10Plus|HLG|DOVIWithHDR10|DOVIWithHDR10Plus|DOVIWithHLG|DOVIWithSDR', vp9: 'SDR|HDR10|HLG', av1: 'SDR|HDR10|HDR10Plus|HLG' };
+    // gammaIn: un tipo di HDR in piu' per l'HEVC (il tipo esatto di un Dolby Vision che il profilo non elenca, vedi guarda)
+    function profilo(letti, q, gammaIn) {
       var v = [], a = [], k;
       for (k in JF_VIDEO) if (letti.video[k]) v.push(JF_VIDEO[k]);
       for (k in JF_AUDIO) if (letti.audio[k] === true) a.push(JF_AUDIO[k]);
@@ -14527,7 +14778,7 @@
         { Type: 'Video', Codec: 'h264', Conditions: [c('EqualsAny', 'VideoProfile', 'high|main|baseline|constrained baseline'), c('LessThanEqual', 'VideoLevel', '52'),
           c('LessThanEqual', 'VideoBitDepth', '8'), c('EqualsAny', 'VideoRangeType', GAMME.h264)] },
         { Type: 'Video', Codec: 'hevc', Conditions: [c('EqualsAny', 'VideoProfile', 'main|main 10'), c('LessThanEqual', 'VideoLevel', '183'),
-          c('LessThanEqual', 'VideoBitDepth', '10'), c('EqualsAny', 'VideoRangeType', GAMME.hevc)] },
+          c('LessThanEqual', 'VideoBitDepth', '10'), c('EqualsAny', 'VideoRangeType', GAMME.hevc + (gammaIn ? '|' + gammaIn : ''))] },
         { Type: 'Video', Codec: 'vp9', Conditions: [c('EqualsAny', 'VideoRangeType', GAMME.vp9)] },
         { Type: 'Video', Codec: 'av1', Conditions: [c('LessThanEqual', 'VideoBitDepth', '10'), c('EqualsAny', 'VideoRangeType', GAMME.av1)] }
       ];
@@ -15118,8 +15369,13 @@
       function guarda(id, q, cb) {
         if (!cfg.token || !cfg.utente) { cb(errore('accesso', 'serve l\'accesso a Jellyfin')); return; }
         var L = letti(), qual = q.q === 'auto' ? qualitaAuto(q.mbps) : Object.prototype.hasOwnProperty.call(QUALITA, q.q) ? QUALITA[q.q] : QUALITA.orig;
+        // l'originale da Jellyfin arriva gia' pronto dal server: HLS col video copiato bit per bit e l'audio scelto copiato o
+        // convertito li'. Sul TV i pezzi passano e basta. La strada diretta (il file dentro il servizio, con le tracce nascoste
+        // dalla Scansione) e' stata, sul TV vero, l'ultima cosa prima che il processo venisse chiuso, 2 volte su 2 (30/10/2026,
+        // Iron Man 4K). Resta per le chiavette, e qui solo se chiesta: q.via 'file' (prove) o o.direttoJf
+        var dalServer = !(q.via === 'file' || o.direttoJf === true);
         var corpo = { UserId: cfg.utente.id, DeviceProfile: profilo(L, qual), MaxStreamingBitrate: qual.mbps ? qual.mbps * 1e6 : 400e6,
-          StartTimeTicks: Math.max(0, Math.floor(+q.t || 0)) * 10000, EnableDirectPlay: true, EnableDirectStream: true, EnableTranscoding: true,
+          StartTimeTicks: Math.max(0, Math.floor(+q.t || 0)) * 10000, EnableDirectPlay: !dalServer, EnableDirectStream: true, EnableTranscoding: true,
           AllowVideoStreamCopy: true, AllowAudioStreamCopy: true, AutoOpenLiveStream: true, SubtitleStreamIndex: -1 };
         if (idBuono(String(q.ms || ''))) corpo.MediaSourceId = String(q.ms).toLowerCase();
         if (q.a !== undefined && q.a !== '' && isFinite(+q.a) && +q.a >= 0) corpo.AudioStreamIndex = +q.a;
@@ -15133,7 +15389,13 @@
           });
           return;
         }
-        chiedi({ percorso: 'Items/' + id + '/PlaybackInfo', query: 'userId=' + cfg.utente.id, metodo: 'POST', corpo: corpo, tempo: 20000 }, function (err, st, j) {
+        var gammaIn = '';
+        chiediInfo();
+        function chiediInfo() {
+          corpo.DeviceProfile = profilo(L, qual, gammaIn);
+          chiedi({ percorso: 'Items/' + id + '/PlaybackInfo', query: 'userId=' + cfg.utente.id, metodo: 'POST', corpo: corpo, tempo: 20000 }, risposta);
+        }
+        function risposta(err, st, j) {
           if (err) { cb(err); return; }
           if (st !== 200 || !j || !Array.isArray(j.MediaSources) || !j.MediaSources.length) { cb(errore('assente', 'il server non da\' il film')); return; }
           var ms = j.MediaSources[0];
@@ -15141,6 +15403,20 @@
           var msid = String(ms.Id || '').toLowerCase();
           if (!idBuono(msid)) { cb(errore('assente', 'file non trovato')); return; }
           var video = flussi(ms, 'Video')[0] || null, audio = flussi(ms, 'Audio'), sub = flussi(ms, 'Subtitle');
+          // un Dolby Vision che il profilo non elenca (cosi' il 30/10/2026 DOVIWithHDR10Plus: Spider-Man e Guardiani Vol. 2 sarebbero
+          // stati rifatti in SDR anche in originale). Se la base e' HDR10, HLG o SDR il TV la legge: si chiede di nuovo, una volta,
+          // col tipo esatto, e il video arriva com'e'. Mai per altri motivi
+          var gammaVera = video ? String(video.VideoRangeType || '') : '';
+          // DOVIInvalid: Jellyfin lo dice di un Dolby Vision 8.1 con le etichette dei colori fuori posto; con la curva PQ la base e'
+          // comunque HDR10. Mai il profilo 5 ("DOVI"): li' la base non e' HDR10 e il TV non la saprebbe mostrare
+          var baseNota = /^DOVIWith(HDR10|HLG|SDR|EL)[A-Za-z0-9]{0,20}$/.test(gammaVera) ||
+            (gammaVera === 'DOVIInvalid' && video && String(video.ColorTransfer || '').toLowerCase() === 'smpte2084');
+          if (!gammaIn && baseNota && motiviDi(ms).indexOf('VideoRangeTypeNotSupported') !== -1) {
+            log('Jellyfin: il tipo ' + gammaVera + ' non era nel profilo del TV, aggiunto');
+            gammaIn = gammaVera;
+            chiediInfo();
+            return;
+          }
           var fv = video ? famigliaJf(video.Codec) : '', audioLetti = audio.filter(function (s) { return L.audio[famigliaJf(s.Codec)]; });
           var mbps = (+ms.Bitrate || 0) / 1e6, larg = video ? +video.Width || 0 : 0, vl = videoLeggibile(video, L);
           // dentro la qualita' scelta (un bitrate sconosciuto non obbliga a convertire)
@@ -15154,12 +15430,13 @@
             sotto: sub.map(function (s) { return { indice: s.Index, codec: famigliaJf(s.Codec), lingua: testo(s.Language, 8), nome: testo(s.DisplayTitle || s.Title, 120),
               forzata: !!s.IsForced, predefinita: !!s.IsDefault, esterno: !!s.IsExternal }; }),
             motivi: motiviDi(ms).slice(0, 10).map(function (x) { return testo(x, 60); }) };
+          if (gammaIn) out.gammaAggiunta = testo(gammaIn, 40);
           // l'audio che si sente (indice di Jellyfin): quello chiesto, o quello che Jellyfin sceglie da solo
           out.audioScelto = corpo.AudioStreamIndex !== undefined ? corpo.AudioStreamIndex : typeof ms.DefaultAudioStreamIndex === 'number' ?
             ms.DefaultAudioStreamIndex : audio[0] ? audio[0].Index : -1;
           // l'audio scelto (indice di Jellyfin): se il TV non lo legge, lo converte il server
           var scelto = corpo.AudioStreamIndex !== undefined ? audio.filter(function (s) { return s.Index === corpo.AudioStreamIndex; })[0] : null;
-          var diretto = estDi(ms) && vl && (audioLetti.length || !audio.length) && dentro &&
+          var diretto = !dalServer && estDi(ms) && vl && (audioLetti.length || !audio.length) && dentro &&
             (!scelto || L.audio[famigliaJf(scelto.Codec)] === true) && String(ms.Protocol || 'File') === 'File' && !ms.IsRemote;
           if (diretto) {
             out.modo = 'diretto';
@@ -15184,14 +15461,20 @@
           // i sottotitoli dentro il file si leggono dal file vero, come nella strada diretta
           if (estDi(ms) === 'mkv' || estDi(ms) === 'webm') { sorgenteDaMs(id, msid, ms, function () { cb(null, out); }); return; }
           cb(null, out);
-        });
+        }
       }
 
       // quanti Mbps arrivano dal server (per la qualita' "Automatica"): 8 MB, e altri 16 se e' veloce. I byte si contano e si
-      // buttano: in memoria resta un pezzo alla volta
-      // quanti Mbps arrivano dal server (per la qualita' "Automatica"): 8 MB, e 16 se e' veloce. I byte si contano e si
-      // buttano: in memoria non resta niente
-      function veloce(cb) {
+      // buttano: in memoria non resta niente. La misura vale 20 minuti per lo stesso server: la rete di casa non cambia da un
+      // film all'altro, e prima ogni film ne scaricava 8-24 MB. "nuova" la rifa' (Automatica scelta dal pannello)
+      var VALE_VELOCITA = 20 * 60000, velocita = null;
+      function veloce(nuova, cb) {
+        var dove = cfg.indirizzo, eta = velocita ? Date.now() - velocita.quando : -1;
+        if (!nuova && velocita && velocita.dove === dove && eta >= 0 && eta < VALE_VELOCITA) { cb(null, { mbps: velocita.mbps }); return; }
+        function fatta(m) {
+          velocita = { dove: dove, mbps: Math.round(m), quando: Date.now() };
+          cb(null, { mbps: velocita.mbps });
+        }
         function prova(n, poi) {
           var t0 = Date.now(), tot = 0, fatto = false;
           function fine(e) { if (fatto) return; fatto = true; if (e) cb(e); else if (tot < n * 0.9) cb(errore('server', 'misura non riuscita')); else poi(tot * 8 / Math.max(1, Date.now() - t0) / 1000); }
@@ -15205,8 +15488,8 @@
           });
         }
         prova(8 << 20, function (m) {
-          if (m < 200) { cb(null, { mbps: Math.round(m) }); return; }
-          prova(16 << 20, function (m2) { cb(null, { mbps: Math.round(m2) }); });
+          if (m < 200) { fatta(m); return; }
+          prova(16 << 20, fatta);
         });
       }
 
@@ -15303,7 +15586,7 @@
           chiedi({ percorso: 'Sessions/Logout', metodo: 'POST', tempo: 4000 }, function () { dimentica(); rispondi(res, 200, statoPubblico()); });
           return;
         }
-        if (resto === 'veloce' && get) { veloce(function (e, r) { if (e) errore2(e); else rispondi(res, 200, r); }); return; }
+        if (resto === 'veloce' && get) { veloce(q.nuova === '1', function (e, r) { if (e) errore2(e); else rispondi(res, 200, r); }); return; }
         if ((m = /^guarda\/([0-9a-fA-F]{32})$/.exec(resto)) && get) {
           guarda(m[1].toLowerCase(), q, function (e, r) { if (e) errore2(e); else rispondi(res, 200, r); });
           return;
@@ -15724,6 +16007,9 @@
             return c;
           });
         },
+        // l'app Video e' chiusa: via le sorgenti di Jellyfin ricordate (i film aperti li lascia la videoteca). La misura della
+        // rete resta: vale per i prossimi 20 minuti
+        riposa: function () { sorgenti = {}; misure = {}; },
         // per le prove
         _cfg: function () { return cfg; }, _sorgenti: function () { return sorgenti; }, _mac: function () { return mac; }
       };
@@ -15831,7 +16117,8 @@
   function consegna(lista) {
     for (var i = 0; i < lista.length; i++) {
       var tp = lista[i].tipo;
-      if (tp === 'link' || tp === 'home' || tp === 'sito' || tp === 'puntatore' || tp === 'store') lista[i].consegnato = true;
+      // (anche i "video": lo "scorri" del telefono si fonde solo in uno non ancora consegnato, se no il TV non lo vedrebbe)
+      if (tp === 'link' || tp === 'home' || tp === 'sito' || tp === 'puntatore' || tp === 'video' || tp === 'store') lista[i].consegnato = true;
     }
     return lista;
   }
@@ -16012,16 +16299,20 @@
       } else if (pa === 'clic' || pa === 'tieni' || pa === 'fine' || pa === 'vivo' || pa === 'mostra' || pa === 'nascondi') aggiungiEvento({ tipo: 'puntatore', azione: pa });
       else return 'comando sconosciuto';
     } else if (tipo === 'video') {
-      // dalla sezione Video del telefono: vai a quel punto, salta avanti o indietro, play, pausa
+      // dalla sezione Video del telefono: vai a quel punto, scorri (il dito trascina la barra: l'app mostra l'anteprima di quel
+      // punto, il salto arriva con "vai" quando lo alza), salta avanti o indietro, play, pausa
       var az = body.azione, sec = Number(body.secondi);
-      if (az === 'vai') {
+      if (az === 'vai' || az === 'scorri') {
         if (!isFinite(sec) || sec < 0 || sec > 1e7) return 'comando sconosciuto';
       } else if (az === 'salta') {
         if (!isFinite(sec) || !sec || Math.abs(sec) > 3600) return 'comando sconosciuto';
       } else if (az !== 'play' && az !== 'pausa') return 'comando sconosciuto';
       var ev = { tipo: 'video', azione: az };
-      if (az === 'vai' || az === 'salta') ev.secondi = Math.round(sec * 10) / 10;
-      aggiungiEvento(ev);
+      if (az === 'vai' || az === 'salta' || az === 'scorri') ev.secondi = Math.round(sec * 10) / 10;
+      var uv = tel.eventi[tel.eventi.length - 1];
+      // la pagina non ha ancora preso lo "scorri" di prima: vale solo l'ultimo punto (niente code mentre il dito si muove)
+      if (az === 'scorri' && uv && uv.tipo === 'video' && uv.azione === 'scorri' && !uv.consegnato && Date.now() - uv.at < 2000) uv.secondi = ev.secondi;
+      else aggiungiEvento(ev);
     } else if (tipo === 'home') {
       aggiungiEvento({ tipo: 'home' });
       apriHome('tasto Home del telefono'); // funziona anche da Netflix e dalle altre app
@@ -16122,9 +16413,12 @@
         // il peso del servizio: la memoria adesso, e il convertitore dell'audio (in uso, a riposo, mai usato, assente)
         try {
           p.servizioVideo = { memoriaMB: memoriaProcessoMB(), codecAudio: !sc ? 'assente' : sc.es ? 'in uso' : sc.modulo ? 'a riposo' : 'mai usato',
-            codecLasciato: sc ? sc.lasciato : 0 };
+            codecLasciato: sc ? sc.lasciato : 0, tenuti: videoteca.quanti() };
         } catch (e) { annotaErrore('tv memoria', e); }
         p.errori = erroriRecenti.slice();
+        // la memoria adesso e come sono finite le ultime volte (la traccia su file: vedi scriviTraccia)
+        try { p.memoria = memoriaVera(); p.acceso = { minuti: Math.round((Date.now() - traccia.avvio) / 60000), inVolo: traccia.inVolo, video: traccia.video };
+          p.ultimeFini = traccia.fini.slice(); } catch (e) { annotaErrore('tv traccia', e); }
         try { rispondiTel(res, 200, p); } catch (e) { annotaErrore('tv risposta', e); }
       });
       return;
@@ -16189,6 +16483,7 @@
 
   function avviaServerTelefono() {
     var srv = http.createServer(function (req, res) {
+      segnaRichiesta(req, res, 't');
       try { gestisciTelefono(req, res); } catch (e) {
         annotaErrore('telefono ' + req.method + ' ' + String(req.url).split('?')[0].slice(0, 60), e);
         try { rispondiTel(res, 500, { error: 'errore', dettaglio: String(e && e.message || e).slice(0, 200) }); } catch (e2) {}
@@ -17062,6 +17357,7 @@
   /* ---------------------------------------------------------- avvio */
 
   var server = http.createServer(function (req, res) {
+    segnaRichiesta(req, res, 'c');
     try { handle(req, res); } catch (e) { annotaErrore('casa ' + req.method + ' ' + String(req.url).split('?')[0].slice(0, 60), e); fail(req, res, 500)(e); }
   });
   server.on('error', function (e) {
@@ -18099,6 +18395,15 @@
     '    if (ev.changedTouches && ev.changedTouches.length) x = ev.changedTouches[0].clientX;',
     '    return r.width > 0 ? Math.max(0, Math.min(1, (x - r.left) / r.width)) : 0;',
     '  }',
+    '  // mentre il dito trascina, il TV mostra l\'anteprima di quel punto ("scorri", al massimo ogni 180 ms); salta quando lo alzi',
+    '  var scorriUltimo = 0, scorriTimer = null;',
+    '  function mandaScorri() {',
+    '    var ora = Date.now();',
+    '    clearTimeout(scorriTimer);',
+    '    if (ora - scorriUltimo < 180) { scorriTimer = setTimeout(mandaScorri, 180 - (ora - scorriUltimo)); return; }',
+    '    scorriUltimo = ora;',
+    '    if (trascino && video) invia({ tipo: \'video\', azione: \'scorri\', secondi: Math.round(valoreTrascino * 10) / 10 });',
+    '  }',
     '  function inizioBarra(ev) {',
     '    if (!video || !video.durata) return;',
     '    if (ev.cancelable) ev.preventDefault();',
@@ -18106,16 +18411,19 @@
     '    valoreTrascino = frazione(ev) * video.durata;',
     '    barra.className = \'video-barra tocco\';',
     '    disegnaVideo();',
+    '    mandaScorri();',
     '  }',
     '  function muoviBarra(ev) {',
     '    if (!trascino || !video) return;',
     '    if (ev.cancelable) ev.preventDefault();',
     '    valoreTrascino = frazione(ev) * video.durata;',
     '    disegnaVideo();',
+    '    mandaScorri();',
     '  }',
     '  function fineBarra(ev) {',
     '    if (!trascino) return;',
     '    trascino = false;',
+    '    clearTimeout(scorriTimer);',
     '    barra.className = \'video-barra\';',
     '    if (video && video.durata) vaiA(frazione(ev) * video.durata);',
     '  }',

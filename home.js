@@ -22,7 +22,7 @@
     'ProfiloTV.altraTv ProfiloTV.piattaforma StoreDati.azioneTelefono StoreDati.copia StoreDati.imposta StoreDati.mie.aggiornaTutte ' +
     'StoreDati.mie.app StoreDati.mie.fonti StoreDati.mie.togliApp StoreDati.perRiquadro StoreDati.perTelefono StoreDati.perche ' +
     'StoreDati.ripristina StoreDati.servizio StoreDati.ufficiale.aggiorna StoreDati.ufficiale.catalogo StoreDati.ufficiale.disinstalla ' +
-    'StoreDati.ufficiale.installata StoreDati.ufficiale.installate')) return;
+    'StoreDati.ufficiale.installata StoreDati.ufficiale.installate StoreDati.ufficiale.voce')) return;
   function mancaUnPezzo(elenco) {
     var l = elenco.split(' '), i, j, o, p;
     for (i = 0; i < l.length; i++) {
@@ -45,7 +45,7 @@
 
   var $ = UI.$;
   var DEMO = UI.DEMO;
-  var VERSIONE = '1.3.2';
+  var VERSIONE = '1.3.3';
 
   /* ============================================================ dati */
 
@@ -1069,6 +1069,11 @@
   };
   var serviceState = DEMO ? 'Anteprima sul computer' : 'Controllo…';
 
+  // il nome di un'app ufficiale dal catalogo dello Store (l'app Video oggi si chiama Real4K); senza catalogo, la riserva
+  function nomeApp(id, riserva) {
+    var v = StoreDati.ufficiale.voce(id);
+    return v && v.nome ? v.nome : riserva;
+  }
   function settingsModel() {
     var nasc = (prefs.nascoste || []).length;
     return [
@@ -1084,9 +1089,11 @@
       { label: 'Decorazioni delle feste', bool: 'decorazioni', on: 'Accese', off: 'Spente' }, // spente: la home e' leggera come senza
       { label: 'Continua a guardare', value: Math.max(vistiTotale, visti.length) ? Math.max(vistiTotale, visti.length) + ' video (OK per svuotare)' : 'Vuoto',
         action: Math.max(vistiTotale, visti.length) ? svuotaContinua : null },
-      // spenta di base: "Eri a ..." e le schede restano del sito dove guardi; accesa, la stessa puntata o lo stesso film si
-      // riprende anche da un altro sito (con una scheda sola)
+      // spenta di base: le schede restano del sito dove guardi. Dalla revisione d'insieme della 1.3.0 vale solo per la home e
+      // l'app Video: accesa, un film iniziato su un sito e continuato nell'app Video resta una scheda sola; un sito vede e
+      // scrive sempre solo le schede del suo sito. La riga sotto lo dice in parole semplici
       { label: 'Riprendi anche su un altro sito', bool: 'riprendiAltroSito' },
+      { label: 'Vale solo per ' + nomeApp('video', 'l\'app Video') + ': i siti vedono solo le loro schede', info: ' ' },
       { group: 'Il mio sito' },
       { label: 'Nome', text: 'nomeSito', title: 'Nome del sito', placeholder: 'Il mio sito' },
       { label: 'Link', text: 'url', title: 'Link del sito', placeholder: 'https://…', url: true },

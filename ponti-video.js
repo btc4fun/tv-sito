@@ -218,8 +218,11 @@ var PontiVideo = (function () {
   }
   // il profilo del TV per Jellyfin (come quello provato col Jellyfin 12.4 vero, prove/jellyfin/profilo-samsung-2022.json):
   // cosa legge diretto, e in cosa convertire (HLS a pezzi MPEG-TS: HEVC copiato funziona, e il TV lo legge da sempre)
-  var GAMME = { h264: 'SDR', hevc: 'SDR|HDR10|HDR10Plus|HLG|DOVIWithHDR10|DOVIWithHLG|DOVIWithSDR', vp9: 'SDR|HDR10|HLG', av1: 'SDR|HDR10|HDR10Plus|HLG' };
-  function profilo(letti, q) {
+  // DOVIWithHDR10Plus: Dolby Vision 8.1 con l'HDR10+ dentro (per esempio Spider-Man: Brand New Day). Il TV legge la base
+  // HDR10 e l'HDR10+ (Samsung); senza questa voce Jellyfin ricodifica in SDR anche l'originale (VideoRangeTypeNotSupported)
+  var GAMME = { h264: 'SDR', hevc: 'SDR|HDR10|HDR10Plus|HLG|DOVIWithHDR10|DOVIWithHDR10Plus|DOVIWithHLG|DOVIWithSDR', vp9: 'SDR|HDR10|HLG', av1: 'SDR|HDR10|HDR10Plus|HLG' };
+  // gammaIn: un tipo di HDR in piu' per l'HEVC (il tipo esatto di un Dolby Vision che il profilo non elenca, vedi guarda)
+  function profilo(letti, q, gammaIn) {
     var v = [], a = [], k;
     for (k in JF_VIDEO) if (letti.video[k]) v.push(JF_VIDEO[k]);
     for (k in JF_AUDIO) if (letti.audio[k] === true) a.push(JF_AUDIO[k]);
@@ -231,7 +234,7 @@ var PontiVideo = (function () {
       { Type: 'Video', Codec: 'h264', Conditions: [c('EqualsAny', 'VideoProfile', 'high|main|baseline|constrained baseline'), c('LessThanEqual', 'VideoLevel', '52'),
         c('LessThanEqual', 'VideoBitDepth', '8'), c('EqualsAny', 'VideoRangeType', GAMME.h264)] },
       { Type: 'Video', Codec: 'hevc', Conditions: [c('EqualsAny', 'VideoProfile', 'main|main 10'), c('LessThanEqual', 'VideoLevel', '183'),
-        c('LessThanEqual', 'VideoBitDepth', '10'), c('EqualsAny', 'VideoRangeType', GAMME.hevc)] },
+        c('LessThanEqual', 'VideoBitDepth', '10'), c('EqualsAny', 'VideoRangeType', GAMME.hevc + (gammaIn ? '|' + gammaIn : ''))] },
       { Type: 'Video', Codec: 'vp9', Conditions: [c('EqualsAny', 'VideoRangeType', GAMME.vp9)] },
       { Type: 'Video', Codec: 'av1', Conditions: [c('LessThanEqual', 'VideoBitDepth', '10'), c('EqualsAny', 'VideoRangeType', GAMME.av1)] }
     ];
@@ -822,8 +825,13 @@ var PontiVideo = (function () {
     function guarda(id, q, cb) {
       if (!cfg.token || !cfg.utente) { cb(errore('accesso', 'serve l\'accesso a Jellyfin')); return; }
       var L = letti(), qual = q.q === 'auto' ? qualitaAuto(q.mbps) : Object.prototype.hasOwnProperty.call(QUALITA, q.q) ? QUALITA[q.q] : QUALITA.orig;
+      // l'originale da Jellyfin arriva gia' pronto dal server: HLS col video copiato bit per bit e l'audio scelto copiato o
+      // convertito li'. Sul TV i pezzi passano e basta. La strada diretta (il file dentro il servizio, con le tracce nascoste
+      // dalla Scansione) e' stata, sul TV vero, l'ultima cosa prima che il processo venisse chiuso, 2 volte su 2 (30/10/2026,
+      // Iron Man 4K). Resta per le chiavette, e qui solo se chiesta: q.via 'file' (prove) o o.direttoJf
+      var dalServer = !(q.via === 'file' || o.direttoJf === true);
       var corpo = { UserId: cfg.utente.id, DeviceProfile: profilo(L, qual), MaxStreamingBitrate: qual.mbps ? qual.mbps * 1e6 : 400e6,
-        StartTimeTicks: Math.max(0, Math.floor(+q.t || 0)) * 10000, EnableDirectPlay: true, EnableDirectStream: true, EnableTranscoding: true,
+        StartTimeTicks: Math.max(0, Math.floor(+q.t || 0)) * 10000, EnableDirectPlay: !dalServer, EnableDirectStream: true, EnableTranscoding: true,
         AllowVideoStreamCopy: true, AllowAudioStreamCopy: true, AutoOpenLiveStream: true, SubtitleStreamIndex: -1 };
       if (idBuono(String(q.ms || ''))) corpo.MediaSourceId = String(q.ms).toLowerCase();
       if (q.a !== undefined && q.a !== '' && isFinite(+q.a) && +q.a >= 0) corpo.AudioStreamIndex = +q.a;
@@ -837,7 +845,13 @@ var PontiVideo = (function () {
         });
         return;
       }
-      chiedi({ percorso: 'Items/' + id + '/PlaybackInfo', query: 'userId=' + cfg.utente.id, metodo: 'POST', corpo: corpo, tempo: 20000 }, function (err, st, j) {
+      var gammaIn = '';
+      chiediInfo();
+      function chiediInfo() {
+        corpo.DeviceProfile = profilo(L, qual, gammaIn);
+        chiedi({ percorso: 'Items/' + id + '/PlaybackInfo', query: 'userId=' + cfg.utente.id, metodo: 'POST', corpo: corpo, tempo: 20000 }, risposta);
+      }
+      function risposta(err, st, j) {
         if (err) { cb(err); return; }
         if (st !== 200 || !j || !Array.isArray(j.MediaSources) || !j.MediaSources.length) { cb(errore('assente', 'il server non da\' il film')); return; }
         var ms = j.MediaSources[0];
@@ -845,6 +859,20 @@ var PontiVideo = (function () {
         var msid = String(ms.Id || '').toLowerCase();
         if (!idBuono(msid)) { cb(errore('assente', 'file non trovato')); return; }
         var video = flussi(ms, 'Video')[0] || null, audio = flussi(ms, 'Audio'), sub = flussi(ms, 'Subtitle');
+        // un Dolby Vision che il profilo non elenca (cosi' il 30/10/2026 DOVIWithHDR10Plus: Spider-Man e Guardiani Vol. 2 sarebbero
+        // stati rifatti in SDR anche in originale). Se la base e' HDR10, HLG o SDR il TV la legge: si chiede di nuovo, una volta,
+        // col tipo esatto, e il video arriva com'e'. Mai per altri motivi
+        var gammaVera = video ? String(video.VideoRangeType || '') : '';
+        // DOVIInvalid: Jellyfin lo dice di un Dolby Vision 8.1 con le etichette dei colori fuori posto; con la curva PQ la base e'
+        // comunque HDR10. Mai il profilo 5 ("DOVI"): li' la base non e' HDR10 e il TV non la saprebbe mostrare
+        var baseNota = /^DOVIWith(HDR10|HLG|SDR|EL)[A-Za-z0-9]{0,20}$/.test(gammaVera) ||
+          (gammaVera === 'DOVIInvalid' && video && String(video.ColorTransfer || '').toLowerCase() === 'smpte2084');
+        if (!gammaIn && baseNota && motiviDi(ms).indexOf('VideoRangeTypeNotSupported') !== -1) {
+          log('Jellyfin: il tipo ' + gammaVera + ' non era nel profilo del TV, aggiunto');
+          gammaIn = gammaVera;
+          chiediInfo();
+          return;
+        }
         var fv = video ? famigliaJf(video.Codec) : '', audioLetti = audio.filter(function (s) { return L.audio[famigliaJf(s.Codec)]; });
         var mbps = (+ms.Bitrate || 0) / 1e6, larg = video ? +video.Width || 0 : 0, vl = videoLeggibile(video, L);
         // dentro la qualita' scelta (un bitrate sconosciuto non obbliga a convertire)
@@ -858,12 +886,13 @@ var PontiVideo = (function () {
           sotto: sub.map(function (s) { return { indice: s.Index, codec: famigliaJf(s.Codec), lingua: testo(s.Language, 8), nome: testo(s.DisplayTitle || s.Title, 120),
             forzata: !!s.IsForced, predefinita: !!s.IsDefault, esterno: !!s.IsExternal }; }),
           motivi: motiviDi(ms).slice(0, 10).map(function (x) { return testo(x, 60); }) };
+        if (gammaIn) out.gammaAggiunta = testo(gammaIn, 40);
         // l'audio che si sente (indice di Jellyfin): quello chiesto, o quello che Jellyfin sceglie da solo
         out.audioScelto = corpo.AudioStreamIndex !== undefined ? corpo.AudioStreamIndex : typeof ms.DefaultAudioStreamIndex === 'number' ?
           ms.DefaultAudioStreamIndex : audio[0] ? audio[0].Index : -1;
         // l'audio scelto (indice di Jellyfin): se il TV non lo legge, lo converte il server
         var scelto = corpo.AudioStreamIndex !== undefined ? audio.filter(function (s) { return s.Index === corpo.AudioStreamIndex; })[0] : null;
-        var diretto = estDi(ms) && vl && (audioLetti.length || !audio.length) && dentro &&
+        var diretto = !dalServer && estDi(ms) && vl && (audioLetti.length || !audio.length) && dentro &&
           (!scelto || L.audio[famigliaJf(scelto.Codec)] === true) && String(ms.Protocol || 'File') === 'File' && !ms.IsRemote;
         if (diretto) {
           out.modo = 'diretto';
@@ -888,14 +917,20 @@ var PontiVideo = (function () {
         // i sottotitoli dentro il file si leggono dal file vero, come nella strada diretta
         if (estDi(ms) === 'mkv' || estDi(ms) === 'webm') { sorgenteDaMs(id, msid, ms, function () { cb(null, out); }); return; }
         cb(null, out);
-      });
+      }
     }
 
     // quanti Mbps arrivano dal server (per la qualita' "Automatica"): 8 MB, e altri 16 se e' veloce. I byte si contano e si
-    // buttano: in memoria resta un pezzo alla volta
-    // quanti Mbps arrivano dal server (per la qualita' "Automatica"): 8 MB, e 16 se e' veloce. I byte si contano e si
-    // buttano: in memoria non resta niente
-    function veloce(cb) {
+    // buttano: in memoria non resta niente. La misura vale 20 minuti per lo stesso server: la rete di casa non cambia da un
+    // film all'altro, e prima ogni film ne scaricava 8-24 MB. "nuova" la rifa' (Automatica scelta dal pannello)
+    var VALE_VELOCITA = 20 * 60000, velocita = null;
+    function veloce(nuova, cb) {
+      var dove = cfg.indirizzo, eta = velocita ? Date.now() - velocita.quando : -1;
+      if (!nuova && velocita && velocita.dove === dove && eta >= 0 && eta < VALE_VELOCITA) { cb(null, { mbps: velocita.mbps }); return; }
+      function fatta(m) {
+        velocita = { dove: dove, mbps: Math.round(m), quando: Date.now() };
+        cb(null, { mbps: velocita.mbps });
+      }
       function prova(n, poi) {
         var t0 = Date.now(), tot = 0, fatto = false;
         function fine(e) { if (fatto) return; fatto = true; if (e) cb(e); else if (tot < n * 0.9) cb(errore('server', 'misura non riuscita')); else poi(tot * 8 / Math.max(1, Date.now() - t0) / 1000); }
@@ -909,8 +944,8 @@ var PontiVideo = (function () {
         });
       }
       prova(8 << 20, function (m) {
-        if (m < 200) { cb(null, { mbps: Math.round(m) }); return; }
-        prova(16 << 20, function (m2) { cb(null, { mbps: Math.round(m2) }); });
+        if (m < 200) { fatta(m); return; }
+        prova(16 << 20, fatta);
       });
     }
 
@@ -1007,7 +1042,7 @@ var PontiVideo = (function () {
         chiedi({ percorso: 'Sessions/Logout', metodo: 'POST', tempo: 4000 }, function () { dimentica(); rispondi(res, 200, statoPubblico()); });
         return;
       }
-      if (resto === 'veloce' && get) { veloce(function (e, r) { if (e) errore2(e); else rispondi(res, 200, r); }); return; }
+      if (resto === 'veloce' && get) { veloce(q.nuova === '1', function (e, r) { if (e) errore2(e); else rispondi(res, 200, r); }); return; }
       if ((m = /^guarda\/([0-9a-fA-F]{32})$/.exec(resto)) && get) {
         guarda(m[1].toLowerCase(), q, function (e, r) { if (e) errore2(e); else rispondi(res, 200, r); });
         return;
@@ -1428,6 +1463,9 @@ var PontiVideo = (function () {
           return c;
         });
       },
+      // l'app Video e' chiusa: via le sorgenti di Jellyfin ricordate (i film aperti li lascia la videoteca). La misura della
+      // rete resta: vale per i prossimi 20 minuti
+      riposa: function () { sorgenti = {}; misure = {}; },
       // per le prove
       _cfg: function () { return cfg; }, _sorgenti: function () { return sorgenti; }, _mac: function () { return mac; }
     };

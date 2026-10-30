@@ -18,7 +18,8 @@
  *                                       servizio del TV; null = fuori da Home TV; e.codice 'negato' (l'app non ce l'ha),
  *                                       'vecchio' (il servizio del TV non lo conosce: riavviare il TV o aggiornare Home TV)
  *                                       o 'servizio' (non risponde)
- *   HomeTV.video(function (c) {})       la barra del video sul telefono: c.azione 'vai' (c.secondi = il punto), 'salta'
+ *   HomeTV.video(function (c) {})       la barra del video sul telefono: c.azione 'vai' (c.secondi = il punto), 'scorri' (il dito
+ *                                       trascina la barra: c.secondi = il punto sotto il dito, si salta solo con 'vai'), 'salta'
  *                                       (c.secondi avanti, o indietro se negativi), 'play', 'pausa'
  * Aperta da Continua a guardare della home: l'indirizzo che l'app ha dato al servizio (con "#/..."), con in piu' "t=<secondi>"
  * (il punto della scheda) oppure "dacapo=1" (Ricomincia dall'inizio).
@@ -187,12 +188,14 @@ var HomeTV = (function () {
     } else if (d.tipo === 'puntatore') {
       puntatore(d);
     } else if (d.tipo === 'chiudi') {
+      // prima di sparire l'app salva quello che serve (Real4K: il punto del film), poi la pagina si svuota
+      try { window.dispatchEvent(new Event('hometvchiudi')); } catch (e) {}
       svuota();
     } else if (d.tipo === 'memoriaPiena') {
       try { window.dispatchEvent(new Event('hometvmemoriapiena')); } catch (e) {}
     } else if (d.tipo === 'video') {
       var az = String(d.azione || ''), sec = Number(d.secondi);
-      if (az === 'vai' || az === 'salta' || az === 'play' || az === 'pausa') chiedi(suVideo, { azione: az, secondi: isFinite(sec) ? sec : 0 });
+      if (az === 'vai' || az === 'scorri' || az === 'salta' || az === 'play' || az === 'pausa') chiedi(suVideo, { azione: az, secondi: isFinite(sec) ? sec : 0 });
     } else if (d.tipo === 'permesso') {
       var p = permessi[d.id];
       delete permessi[d.id];

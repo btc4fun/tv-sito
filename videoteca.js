@@ -103,17 +103,21 @@ var Videoteca = (function () {
 
   /* ============================================================ lettura del file */
 
-  function leggi(fs, fd, pos, n, cb) {
-    var b = nuovo(n), fatto = 0;
+  // n byte da "pos" in b, dall'inizio di b: cb(err, la parte letta di b)
+  function leggiIn(fs, fd, b, pos, n, cb) {
+    var fatto = 0;
     (function giro() {
       fs.read(fd, b, fatto, n - fatto, pos + fatto, function (err, letti) {
         if (err) { cb(err); return; }
         fatto += letti;
-        if (letti === 0 || fatto >= n) { cb(null, fatto === n ? b : b.slice(0, fatto)); return; }
+        if (letti === 0 || fatto >= n) { cb(null, fatto === b.length ? b : b.slice(0, fatto)); return; }
         giro();
       });
     })();
   }
+  function leggi(fs, fd, pos, n, cb) { leggiIn(fs, fd, nuovo(n), pos, n, cb); }
+  // la vista v sta nella memoria di b (un pezzo di un blocco che si riusa)
+  function nelBlocco(v, b) { return v.buffer === b.buffer && v.byteOffset >= b.byteOffset && v.byteOffset < b.byteOffset + b.length; }
 
   /* ============================================================ le tracce di un MKV */
 
@@ -1678,6 +1682,8 @@ var Videoteca = (function () {
   function crea(o) {
     o = o || {};
     var fs = o.fs, path = o.path, zlib = o.zlib || null;
+    // le letture dal file: 512 KB (le prove lo fanno piccolo, per avere tanti pezzi in viaggio sulla rete lenta)
+    var bloccoFile = o.blocco > 0 ? o.blocco : BLOCCO;
     // i codec che il TV legge: dal profilo del TV (profilo.js), che il servizio conosce strada facendo
     function lettiOra() { var x = typeof o.letti === 'function' ? o.letti() : o.letti; return x && x.audio && x.video ? x : LETTI; }
     // l'audio DTS e TrueHD convertito dal TV (tv-sito/audio-tv.js): se c'e' e il TV regge, per questo file quelle tracce
@@ -2222,7 +2228,7 @@ var Videoteca = (function () {
       f.usato = Date.now();
       if (pi && pi.converti) {
         // la traccia diventa AC3 mentre passa: legge, scansiona e manda audio-tv.js (stessa scansione, stessi confini)
-        audioTv.servi(req, res, f, pi, { a: a, z: z, fisse: fisse, blocco: BLOCCO, confinePrima: confinePrima,
+        audioTv.servi(req, res, f, pi, { a: a, z: z, fisse: fisse, blocco: bloccoFile, confinePrima: confinePrima,
           scansione: function () {
             return new Scansione(m, pi.nascoste, attiveDi(f), function (num, ev) { nuovoSotto(f, num, ev); }, function (pos) { nuovoConfine(m, pos); });
           } });
@@ -2244,6 +2250,24 @@ var Videoteca = (function () {
       }
       var fine = Math.min(dim, z + 1 + (scan ? 64 : 0)); // qualche byte in piu' per decidere l'ultimo blocco
       var lettura = inizio, sospeso = null, sospesoPos = 0, chiuso = false, fd = -1, nf = 0, inAttesa = false, fermataScan = false;
+      // i blocchi di questa risposta si riusano: prima ogni lettura ne faceva uno nuovo, e durante un film restavano
+      // +58-76 MB di Buffer morti finche' V8 non li raccoglieva. Un blocco torna libero solo quando la rete ha preso tutto
+      // quello che e' partito da lui (il callback di res.write: sulla rete lenta i byte aspettano nella coda del socket,
+      // senza copia) e nessun pezzo sospeso lo guarda. Di solito due; se sono tutti in viaggio uno in piu', fino a tre,
+      // poi uno a perdere come prima
+      var blocchi = [];
+      function bloccoLibero() {
+        for (var i = 0; i < blocchi.length; i++) {
+          if (!blocchi[i].attese && !(sospeso && nelBlocco(sospeso, blocchi[i].b))) return blocchi[i].b;
+        }
+        var b = nuovo(bloccoFile);
+        if (blocchi.length < 3) blocchi.push({ b: b, attese: 0 });
+        return b;
+      }
+      function bloccoDi(v) {
+        for (var i = 0; i < blocchi.length; i++) if (nelBlocco(v, blocchi[i].b)) return blocchi[i];
+        return null;
+      }
       // il lettore chiude mentre si aspetta "drain": nessuno richiamerebbe giro() e il file resterebbe aperto. Un file remoto
       // (Jellyfin) si chiude subito anche con una lettura in corso: la domanda verso il server si interrompe e la lettura si
       // sveglia con un errore (un server fermo a meta' non lascia domande aperte); quello della chiavetta quando la lettura finisce
@@ -2273,7 +2297,7 @@ var Videoteca = (function () {
         if (chiuso) { finisci(); return; }
         // la scansione e' rimasta indietro (fermata dopo 15 ms, o tanti blocchi minuscoli): prima si finisce cio' che
         // c'e', al giro dopo, senza leggere altro (la memoria non cresce) e senza mandare byte non controllati
-        if (sospeso && (sospeso.length >= BLOCCO || fermataScan)) {
+        if (sospeso && (sospeso.length >= bloccoFile || fermataScan)) {
           setImmediate(function () {
             if (chiuso) { finisci(); return; }
             var avanti;
@@ -2284,9 +2308,9 @@ var Videoteca = (function () {
           return;
         }
         if (lettura >= fine && !sospeso) { finisci(); return; }
-        var n = Math.min(BLOCCO, fine - lettura);
+        var n = Math.min(bloccoFile, fine - lettura);
         if (n <= 0) { manda(sospeso, sospesoPos, true); sospeso = null; finisci(); return; }
-        leggi(fs, fd, lettura, n, function (e3, b) {
+        leggiIn(fs, fd, bloccoLibero(), lettura, n, function (e3, b) {
           if (e3 || !b.length) { if (sospeso) manda(sospeso, sospesoPos, true); finisci(lettura <= z); return; }
           var avanti;
           try { avanti = pezzo(b); } catch (ex) { rotto(); return; }
@@ -2349,7 +2373,10 @@ var Videoteca = (function () {
         if (!dati || chiuso) return true;
         var da = Math.max(a, pos), al = Math.min(z + 1, pos + dati.length);
         if (al <= da) return true;
-        return res.write(dati.slice(da - pos, al - pos));
+        var x = bloccoDi(dati);
+        if (!x) return res.write(dati.slice(da - pos, al - pos));
+        x.attese++;
+        return res.write(dati.slice(da - pos, al - pos), function () { x.attese--; });
       }
     }
 
@@ -3303,9 +3330,28 @@ var Videoteca = (function () {
       });
     }
 
+    // l'app Video e' chiusa (nessun gettone valido): via i film aperti (strutture, sottotitoli, Cues), le schede, gli elenchi
+    // delle cartelle e le analisi dei dischi copiati, e il convertitore lascia i Cluster convertiti. Prima restava tutto fino
+    // a sera (25-30 MB). Alla prossima apertura si rifanno; una risposta ancora in corso tiene il suo file
+    function riposa() {
+      for (var k in aperti) if (Object.prototype.hasOwnProperty.call(aperti, k)) dimenticaSotto(aperti[k], -1);
+      aperti = {};
+      sottoTot = 0;
+      elenchi = {};
+      schede = {};
+      discoCache = {};
+      analisiCache = {};
+      if (audioTv && typeof audioTv.riposa === 'function') audioTv.riposa();
+    }
+
     return {
       dischi: dischi, cartella: cartella, info: info, servi: servi, sotto: sotto, sottoEsterni: sottoEsterni, prova: prova,
-      scheda: scheda, immagine: immagine,
+      scheda: scheda, immagine: immagine, riposa: riposa,
+      // quello che il servizio tiene adesso (8091/tv): film aperti, sottotitoli, schede e cartelle ricordate
+      quanti: function () {
+        return { film: Object.keys(aperti).length, sottotitoliKB: Math.round(sottoTot / 1024), schede: Object.keys(schede).length,
+          cartelle: Object.keys(elenchi).length };
+      },
       // un file che non sta sulla chiavetta (il ponte verso Jellyfin): x = { percorso (chiave unica), nome, dim, data, est,
       // fs (open, read, close come quelli di Node) }. Stesse regole, stesso "vuoto", stessi sottotitoli
       remoto: {
