@@ -585,12 +585,20 @@ var PontiVideo = (function () {
 
     /* ---------------------------------------------------------- server, accesso */
 
+    // quanta memoria usa il servizio, in MB. Sul TV vero (Tizen 6.5) leggere la memoria del processo e' vietato:
+    // process.memoryUsage() da' "EACCES: permission denied, uv_resident_set_memory". Con la 1.3.0 quell'errore faceva
+    // fallire lo stato di Jellyfin, e l'app nascondeva "Collega Jellyfin". Allora si prova l'heap di V8, che non legge
+    // /proc; se manca anche quello, null
+    function memoriaServizio() {
+      try { return Math.round(process.memoryUsage().rss / 1e6); } catch (e) { /* vietata sul TV */ }
+      try { return Math.round(require('v8').getHeapStatistics().total_heap_size / 1e6); } catch (e2) { return null; }
+    }
     function statoPubblico() {
       // letti: i codec che questo TV legge (l'app mostra prima di partire cosa passa diretto e cosa converte il server)
       return { server: cfg.indirizzo ? { indirizzo: cfg.indirizzo, nome: cfg.nome || '', versione: cfg.versione || '', id: cfg.id || '' } : null,
         utente: cfg.token && cfg.utente ? { id: cfg.utente.id, nome: cfg.utente.nome } : null, letti: letti(),
         // per le prove sul TV (pannello Info del lettore): quanta memoria usa il servizio, e da quanto e' acceso
-        servizio: { memoria: Math.round(process.memoryUsage().rss / 1e6), node: process.version, acceso: Math.round(process.uptime()) } };
+        servizio: { memoria: memoriaServizio(), node: process.version, acceso: Math.round(process.uptime()) } };
     }
     // i server Jellyfin nella rete di casa (rispondono al broadcast UDP 7359 con il loro indirizzo)
     var cercando = null;

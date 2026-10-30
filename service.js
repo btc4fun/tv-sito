@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.1';
+  var VERSION = '1.3.2';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -690,6 +690,12 @@
   if (typeof process !== 'undefined' && process.on) {
     process.on('uncaughtException', function (e) { annotaErrore('sfuggito', e); });
     process.on('unhandledRejection', function (r) { annotaErrore('promessa', r); });
+  }
+  // quanta memoria usa il servizio, in MB. Sul TV vero (Tizen 6.5) process.memoryUsage() e' vietato ("EACCES: permission
+  // denied, uv_resident_set_memory", letto da 8091/tv il 30/10/2026): si prova l'heap di V8, se no null
+  function memoriaProcessoMB() {
+    try { return Math.round(process.memoryUsage().rss / 1e6); } catch (e) { /* vietata sul TV */ }
+    try { return Math.round(require('v8').getHeapStatistics().total_heap_size / 1e6); } catch (e2) { return null; }
   }
 
   function leggiJson(file, def) {
@@ -14875,12 +14881,20 @@
 
       /* ---------------------------------------------------------- server, accesso */
 
+      // quanta memoria usa il servizio, in MB. Sul TV vero (Tizen 6.5) leggere la memoria del processo e' vietato:
+      // process.memoryUsage() da' "EACCES: permission denied, uv_resident_set_memory". Con la 1.3.0 quell'errore faceva
+      // fallire lo stato di Jellyfin, e l'app nascondeva "Collega Jellyfin". Allora si prova l'heap di V8, che non legge
+      // /proc; se manca anche quello, null
+      function memoriaServizio() {
+        try { return Math.round(process.memoryUsage().rss / 1e6); } catch (e) { /* vietata sul TV */ }
+        try { return Math.round(require('v8').getHeapStatistics().total_heap_size / 1e6); } catch (e2) { return null; }
+      }
       function statoPubblico() {
         // letti: i codec che questo TV legge (l'app mostra prima di partire cosa passa diretto e cosa converte il server)
         return { server: cfg.indirizzo ? { indirizzo: cfg.indirizzo, nome: cfg.nome || '', versione: cfg.versione || '', id: cfg.id || '' } : null,
           utente: cfg.token && cfg.utente ? { id: cfg.utente.id, nome: cfg.utente.nome } : null, letti: letti(),
           // per le prove sul TV (pannello Info del lettore): quanta memoria usa il servizio, e da quanto e' acceso
-          servizio: { memoria: Math.round(process.memoryUsage().rss / 1e6), node: process.version, acceso: Math.round(process.uptime()) } };
+          servizio: { memoria: memoriaServizio(), node: process.version, acceso: Math.round(process.uptime()) } };
       }
       // i server Jellyfin nella rete di casa (rispondono al broadcast UDP 7359 con il loro indirizzo)
       var cercando = null;
@@ -16107,7 +16121,7 @@
         try { p.tettoVideo = pontiVideo.tetto(); } catch (e) { annotaErrore('tv tetto', e); }
         // il peso del servizio: la memoria adesso, e il convertitore dell'audio (in uso, a riposo, mai usato, assente)
         try {
-          p.servizioVideo = { memoriaMB: Math.round(process.memoryUsage().rss / 1e6), codecAudio: !sc ? 'assente' : sc.es ? 'in uso' : sc.modulo ? 'a riposo' : 'mai usato',
+          p.servizioVideo = { memoriaMB: memoriaProcessoMB(), codecAudio: !sc ? 'assente' : sc.es ? 'in uso' : sc.modulo ? 'a riposo' : 'mai usato',
             codecLasciato: sc ? sc.lasciato : 0 };
         } catch (e) { annotaErrore('tv memoria', e); }
         p.errori = erroriRecenti.slice();
