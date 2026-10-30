@@ -281,7 +281,7 @@ var PontiVideo = (function () {
       // dal flusso aperto: la posizione giusta, o poco piu' avanti (si saltano i byte in mezzo)
       if (f && !f.err && pos >= f.pos && pos - f.pos <= (1 << 20)) { prendi(s, f, x); return; }
       chiudiFlusso(s);
-      if (n >= (128 << 10)) {
+      if (n >= (128 << 10) && !s.salti) {
         f = s.flusso = { pos: pos, parti: [], len: 0, fine: false, err: null, attesa: null, pausa: false, morto: false, req: null, res: null };
         f.req = chiedi(pos, dim - 1, function (err, res) {
           if (f.morto) { if (res) { try { res.destroy(); } catch (e) {} } return; }
@@ -301,7 +301,7 @@ var PontiVideo = (function () {
         prendi(s, f, x);
         return;
       }
-      var quanti = Math.min(dim - pos, Math.max(n, 64 << 10)), parti = [], tot = 0, fatto = false;
+      var quanti = Math.min(dim - pos, s.salti ? n : Math.max(n, 64 << 10)), parti = [], tot = 0, fatto = false;
       chiedi(pos, pos + quanti - 1, function (err, res) {
         if (err) { x.cb(err); return; }
         function fine() {
@@ -394,6 +394,7 @@ var PontiVideo = (function () {
         s.coda.push({ b: b, off: off, n: n, pos: pos, cb: cb });
         giro(s);
       },
+      aSalti: function (fd) { var s = aperti[fd]; if (s) s.salti = true; },
       close: function (fd, cb) {
         var s = aperti[fd];
         delete aperti[fd];

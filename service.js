@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.7';
+  var VERSION = '1.3.8';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -4532,6 +4532,14 @@
         var dati = !c ? ev.dati : c.algo === 3 && c.dati ? unisci(c.dati, ev.dati) : null;
         if (dati) aggiungiSotto(f, num, t, ev, dati);
       }
+      // i byte di un evento da soli: uno spezzone di un blocco letto piu' grande (4 KB per un "togli" PGS di 50 byte) lo terrebbe
+      // in memoria tutto, fuori dal conto di pesoEv
+      function soloSuoi(b) {
+        if (!b.buffer || b.buffer.byteLength <= b.length + 1024) return b;
+        var c = typeof Buffer.allocUnsafeSlow === 'function' ? Buffer.allocUnsafeSlow(b.length) : nuovo(b.length);
+        b.copy(c);
+        return c;
+      }
       function pesoEv(e) { return e.pgs ? e.pgs.length + 64 : e.x.length * 2 + 64; }
       // un evento in ordine di tempo, senza doppioni; i PGS restano byte (in base64 solo quando si mandano)
       function aggiungiSotto(f, num, t, ev, dati) {
@@ -4540,7 +4548,7 @@
         var chiave = ev.t + ':' + dati.length;
         if (s.chiavi[chiave]) return;
         var e;
-        if (fam === 'PGS') e = { t: ev.t, d: ev.d, pgs: dati };
+        if (fam === 'PGS') e = { t: ev.t, d: ev.d, pgs: soloSuoi(dati) };
         else if (fam === 'VOBSUB') { e = eventoVobsub(f, t, ev, dati); if (!e) return; }
         else {
           if (s.byte > MAX_TESTO_TRACCIA || s.eventi.length >= MAX_EVENTI) return; // un file fatto apposta: il resto si lascia stare
@@ -4621,6 +4629,7 @@
         var t = m.tracce.filter(function (x) { return x.num === num; })[0], fs = f.fs;
         fs.open(f.percorso, 'r', function (err, fd) {
           if (err) { cb(false); return; }
+          if (fs.aSalti) fs.aSalti(fd);
           var k = 0, inVolo = 0, testate = f.testate || (f.testate = {}), finito = false, letti = 0;
           function chiudi() { if (finito) return; finito = true; fs.close(fd, function () {}); quandoGonfiati(function () { cb(true); }); }
           function testa(cl, poi) {
@@ -4721,7 +4730,9 @@
         if (stato === true || stato === 'no') { cb(stato === true); return; }
         if (stato && stato.attese) { stato.attese.push(cb); return; }
         var x = f.cuesFatte[chiave] = { attese: [cb] };
-        daCues(f, num, Math.max(0, k * W - 60000), (k + 1) * W, function (fatto) {
+        // i 60 s prima (un PGS iniziato prima resta sullo schermo) solo se la finestra di prima non e' gia' letta
+        var prima = f.cuesFatte[num + ':' + (k - 1)] === true;
+        daCues(f, num, prima ? k * W : Math.max(0, k * W - 60000), (k + 1) * W, function (fatto) {
           if (f.cuesFatte && f.cuesFatte[chiave] === x) f.cuesFatte[chiave] = fatto ? true : 'no';
           for (var i = 0; i < x.attese.length; i++) { try { x.attese[i](fatto); } catch (e) {} }
         });
@@ -15095,7 +15106,7 @@
         // dal flusso aperto: la posizione giusta, o poco piu' avanti (si saltano i byte in mezzo)
         if (f && !f.err && pos >= f.pos && pos - f.pos <= (1 << 20)) { prendi(s, f, x); return; }
         chiudiFlusso(s);
-        if (n >= (128 << 10)) {
+        if (n >= (128 << 10) && !s.salti) {
           f = s.flusso = { pos: pos, parti: [], len: 0, fine: false, err: null, attesa: null, pausa: false, morto: false, req: null, res: null };
           f.req = chiedi(pos, dim - 1, function (err, res) {
             if (f.morto) { if (res) { try { res.destroy(); } catch (e) {} } return; }
@@ -15115,7 +15126,7 @@
           prendi(s, f, x);
           return;
         }
-        var quanti = Math.min(dim - pos, Math.max(n, 64 << 10)), parti = [], tot = 0, fatto = false;
+        var quanti = Math.min(dim - pos, s.salti ? n : Math.max(n, 64 << 10)), parti = [], tot = 0, fatto = false;
         chiedi(pos, pos + quanti - 1, function (err, res) {
           if (err) { x.cb(err); return; }
           function fine() {
@@ -15208,6 +15219,7 @@
           s.coda.push({ b: b, off: off, n: n, pos: pos, cb: cb });
           giro(s);
         },
+        aSalti: function (fd) { var s = aperti[fd]; if (s) s.salti = true; },
         close: function (fd, cb) {
           var s = aperti[fd];
           delete aperti[fd];

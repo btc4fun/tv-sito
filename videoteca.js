@@ -1962,6 +1962,14 @@ var Videoteca = (function () {
       var dati = !c ? ev.dati : c.algo === 3 && c.dati ? unisci(c.dati, ev.dati) : null;
       if (dati) aggiungiSotto(f, num, t, ev, dati);
     }
+    // i byte di un evento da soli: uno spezzone di un blocco letto piu' grande (4 KB per un "togli" PGS di 50 byte) lo terrebbe
+    // in memoria tutto, fuori dal conto di pesoEv
+    function soloSuoi(b) {
+      if (!b.buffer || b.buffer.byteLength <= b.length + 1024) return b;
+      var c = typeof Buffer.allocUnsafeSlow === 'function' ? Buffer.allocUnsafeSlow(b.length) : nuovo(b.length);
+      b.copy(c);
+      return c;
+    }
     function pesoEv(e) { return e.pgs ? e.pgs.length + 64 : e.x.length * 2 + 64; }
     // un evento in ordine di tempo, senza doppioni; i PGS restano byte (in base64 solo quando si mandano)
     function aggiungiSotto(f, num, t, ev, dati) {
@@ -1970,7 +1978,7 @@ var Videoteca = (function () {
       var chiave = ev.t + ':' + dati.length;
       if (s.chiavi[chiave]) return;
       var e;
-      if (fam === 'PGS') e = { t: ev.t, d: ev.d, pgs: dati };
+      if (fam === 'PGS') e = { t: ev.t, d: ev.d, pgs: soloSuoi(dati) };
       else if (fam === 'VOBSUB') { e = eventoVobsub(f, t, ev, dati); if (!e) return; }
       else {
         if (s.byte > MAX_TESTO_TRACCIA || s.eventi.length >= MAX_EVENTI) return; // un file fatto apposta: il resto si lascia stare
@@ -2051,6 +2059,7 @@ var Videoteca = (function () {
       var t = m.tracce.filter(function (x) { return x.num === num; })[0], fs = f.fs;
       fs.open(f.percorso, 'r', function (err, fd) {
         if (err) { cb(false); return; }
+        if (fs.aSalti) fs.aSalti(fd);
         var k = 0, inVolo = 0, testate = f.testate || (f.testate = {}), finito = false, letti = 0;
         function chiudi() { if (finito) return; finito = true; fs.close(fd, function () {}); quandoGonfiati(function () { cb(true); }); }
         function testa(cl, poi) {
@@ -2151,7 +2160,9 @@ var Videoteca = (function () {
       if (stato === true || stato === 'no') { cb(stato === true); return; }
       if (stato && stato.attese) { stato.attese.push(cb); return; }
       var x = f.cuesFatte[chiave] = { attese: [cb] };
-      daCues(f, num, Math.max(0, k * W - 60000), (k + 1) * W, function (fatto) {
+      // i 60 s prima (un PGS iniziato prima resta sullo schermo) solo se la finestra di prima non e' gia' letta
+      var prima = f.cuesFatte[num + ':' + (k - 1)] === true;
+      daCues(f, num, prima ? k * W : Math.max(0, k * W - 60000), (k + 1) * W, function (fatto) {
         if (f.cuesFatte && f.cuesFatte[chiave] === x) f.cuesFatte[chiave] = fatto ? true : 'no';
         for (var i = 0; i < x.attese.length; i++) { try { x.attese[i](fatto); } catch (e) {} }
       });
