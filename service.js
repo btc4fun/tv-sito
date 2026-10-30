@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.0';
+  var VERSION = '1.3.1';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -673,18 +673,23 @@
   }
   // l'ultima rete: un errore sfuggito da qualche parte non spegne il servizio, che sul TV resterebbe morto fino al
   // riavvio (niente home, telefono, blocco della pubblicita'). Si annota e si va avanti; le scritture dei file sono
-  // "tutto o niente" (scriviJson), quindi non restano dati a meta'. Se pero' gli errori sono tanti (20 in 10 minuti)
-  // qualcosa e' rotto a fondo, e girare a vuoto consuma il TV: allora il servizio si ferma davvero
-  var erroriSfuggiti = [];
+  // "tutto o niente" (scriviJson), quindi non restano dati a meta'. Non si ferma mai il processo: e' quello di
+  // TizenBrew, con dentro anche gli altri moduli (per esempio YouTube senza pubblicita'), e i loro errori arrivano qui.
+  // Fermarlo spegneva tutto, home e telefono compresi (1.3.0 sul TV vero, 30/10/2026).
+  // Gli ultimi 30 errori (dove, messaggio, prime righe della pila, senza dati di chi guarda) si leggono da 8091/tv.
+  var erroriRecenti = [];
+  function annotaErrore(dove, e) {
+    try {
+      var pila = String(e && e.stack || e || '').split('\n').slice(0, 4).join(' | ');
+      erroriRecenti.push({ t: Date.now(), dove: String(dove).slice(0, 40), msg: String(e && e.message || e || '').slice(0, 300),
+        pila: pila.slice(0, 600) });
+      if (erroriRecenti.length > 30) erroriRecenti.splice(0, erroriRecenti.length - 30);
+      log('errore (' + dove + '): ' + pila.slice(0, 1000));
+    } catch (e2) { /* niente */ }
+  }
   if (typeof process !== 'undefined' && process.on) {
-    process.on('uncaughtException', function (e) {
-      log('errore sfuggito: ' + String(e && e.stack || e).slice(0, 1000));
-      var ora = Date.now();
-      erroriSfuggiti = erroriSfuggiti.filter(function (t) { return ora - t < 600000; });
-      erroriSfuggiti.push(ora);
-      if (erroriSfuggiti.length > 20) { log('troppi errori: il servizio si ferma'); process.exit(1); }
-    });
-    process.on('unhandledRejection', function (r) { log('promessa rifiutata senza risposta: ' + String(r && r.stack || r).slice(0, 500)); });
+    process.on('uncaughtException', function (e) { annotaErrore('sfuggito', e); });
+    process.on('unhandledRejection', function (r) { annotaErrore('promessa', r); });
   }
 
   function leggiJson(file, def) {
@@ -1119,7 +1124,10 @@
     // profilo del TV (impostazioni "Questo TV" e autodiagnosi della home). Le chiavette si guardano solo con chiavette=1
     // ("Questo TV"): l'autodiagnosi, a ogni apertura della home, non sveglia il disco USB
     var chiediChiavette = url.query && url.query.chiavette === '1' ? conChiavette : function (poi) { poi(); };
-    if (route === 'GET /api/tv') { chiediChiavette(function () { sendJson(req, res, 200, profiloTv()); }); return; }
+    if (route === 'GET /api/tv') {
+      chiediChiavette(function () { try { sendJson(req, res, 200, profiloTv()); } catch (e) { annotaErrore('api/tv', e); fail(req, res, 500)(e); } });
+      return;
+    }
     if (route === 'POST /api/tv/pagina') {
       readBody(req).then(function (body) { salvaPagina(body || {}); chiediChiavette(function () { sendJson(req, res, 200, profiloTv()); }); })['catch'](fail(req, res));
       return;
@@ -16091,14 +16099,19 @@
     // il profilo del TV per l'installatore sul Mac (solo cose del TV, niente dati tuoi: come l'API della porta 8001)
     if (route === 'GET /tv') {
       // piu' il diario del lettore dell'app Video (solo numeri tecnici delle ultime visioni) per il giro di prove sul TV
+      // ogni pezzo per conto suo: se uno va in errore sul TV vero, gli altri arrivano lo stesso e l'errore si legge qui
       conChiavette(function () {
-        var p = profiloTv(), sc = codecAudio && codecAudio._stato;
-        p.diarioVideo = pontiVideo.diario();
-        p.tettoVideo = pontiVideo.tetto();
+        var p = profiloTv(), sc = null;
+        try { sc = codecAudio && codecAudio._stato; } catch (e) { annotaErrore('tv codec', e); }
+        try { p.diarioVideo = pontiVideo.diario(); } catch (e) { annotaErrore('tv diario', e); }
+        try { p.tettoVideo = pontiVideo.tetto(); } catch (e) { annotaErrore('tv tetto', e); }
         // il peso del servizio: la memoria adesso, e il convertitore dell'audio (in uso, a riposo, mai usato, assente)
-        p.servizioVideo = { memoriaMB: Math.round(process.memoryUsage().rss / 1e6), codecAudio: !sc ? 'assente' : sc.es ? 'in uso' : sc.modulo ? 'a riposo' : 'mai usato',
-          codecLasciato: sc ? sc.lasciato : 0 };
-        rispondiTel(res, 200, p);
+        try {
+          p.servizioVideo = { memoriaMB: Math.round(process.memoryUsage().rss / 1e6), codecAudio: !sc ? 'assente' : sc.es ? 'in uso' : sc.modulo ? 'a riposo' : 'mai usato',
+            codecLasciato: sc ? sc.lasciato : 0 };
+        } catch (e) { annotaErrore('tv memoria', e); }
+        p.errori = erroriRecenti.slice();
+        try { rispondiTel(res, 200, p); } catch (e) { annotaErrore('tv risposta', e); }
       });
       return;
     }
@@ -16162,7 +16175,10 @@
 
   function avviaServerTelefono() {
     var srv = http.createServer(function (req, res) {
-      try { gestisciTelefono(req, res); } catch (e) { try { rispondiTel(res, 500, { error: 'errore' }); } catch (e2) {} }
+      try { gestisciTelefono(req, res); } catch (e) {
+        annotaErrore('telefono ' + req.method + ' ' + String(req.url).split('?')[0].slice(0, 60), e);
+        try { rispondiTel(res, 500, { error: 'errore', dettaglio: String(e && e.message || e).slice(0, 200) }); } catch (e2) {}
+      }
     });
     srv.on('error', function (e) {
       tel.attivo = false;
@@ -17010,7 +17026,16 @@
     }
     return f;
   }
-  function profiloTv() { return ProfiloTV.componi(fattiTv()); }
+  // il profilo non deve mai far cadere chi lo chiede (la home, Questo TV, 8091/tv): se un fatto del TV vero manda in
+  // errore la raccolta o il profilo, l'errore si annota e si risponde col profilo minimo
+  function profiloTv() {
+    var f;
+    try { f = fattiTv(); } catch (e) { annotaErrore('fattiTv', e); f = { servizio: true, versioneServizio: VERSION, tizen: HAS_TIZEN }; }
+    try { return ProfiloTV.componi(f); } catch (e2) {
+      annotaErrore('profilo', e2);
+      return ProfiloTV.componi({ servizio: true, versioneServizio: VERSION, tizen: HAS_TIZEN });
+    }
+  }
   // i fatti della pagina della home (solo testi e numeri corti)
   function salvaPagina(b) {
     function t(v, n) { return String(v === undefined || v === null ? '' : v).slice(0, n); }
@@ -17023,7 +17048,7 @@
   /* ---------------------------------------------------------- avvio */
 
   var server = http.createServer(function (req, res) {
-    try { handle(req, res); } catch (e) { fail(req, res, 500)(e); }
+    try { handle(req, res); } catch (e) { annotaErrore('casa ' + req.method + ' ' + String(req.url).split('?')[0].slice(0, 60), e); fail(req, res, 500)(e); }
   });
   server.on('error', function (e) {
     log('server non avviato: ' + (e && e.code ? e.code : e));
