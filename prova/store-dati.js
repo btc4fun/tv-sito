@@ -19,6 +19,10 @@ var StoreDati = (function () {
   var CATEGORIE = ['film', 'video', 'sport', 'giochi', 'strumenti', 'altre']; // le file della home (home.js)
   // i permessi che un'app ufficiale puo' chiedere nel catalogo (store.js li da' con un gettone del servizio)
   var PERMESSI_NOTI = { video: true };
+  // le funzioni del servizio del TV che un'app puo' chiedere nel catalogo ("richiede": { video: 1 }): nome e versione
+  var FUNZIONE = /^[a-z][a-z0-9]{1,23}$/, MAX_RICHIEDE = 8;
+  // cambia quando cambia come si legge una voce: il catalogo gia' salvato si rilegge anche se il testo e' lo stesso
+  var LETTURA = 2;
   var TITOLI = { film: 'Film e serie', video: 'Video e musica', sport: 'Sport', giochi: 'Giochi', strumenti: 'Strumenti', altre: 'Altre app' };
   var MAX_APP = 200, MAX_MIE = 300, MAX_FONTI = 50, MAX_BYTE = 300000, TEMPO_MS = 8000;
   var VECCHIO_UFFICIALE = 10 * 60 * 1000;  // il catalogo ufficiale si riscarica dopo 10 minuti
@@ -64,7 +68,13 @@ var StoreDati = (function () {
     try { localStorage.removeItem(k); } catch (e) {}
   }
   // un'altra pagina ha cambiato la memoria: le copie non valgono piu'
-  try { window.addEventListener('storage', function (e) { if (e && e.key) delete gia[e.key]; else gia = {}; pesi = null; }); } catch (e) {}
+  try {
+    window.addEventListener('storage', function (e) {
+      if (e && e.key) delete gia[e.key]; else gia = {};
+      pesi = null;
+      if (!e || !e.key || e.key === K_SERVIZIO) funzioniOra = undefined;
+    });
+  } catch (e) {}
   function hash(s, seme) {
     var h = seme || 0;
     for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
@@ -146,13 +156,29 @@ var StoreDati = (function () {
         if (PERMESSI_NOTI[v.permessi[k]] === true && perm.indexOf(v.permessi[k]) === -1) perm.push(v.permessi[k]);
       }
     }
-    return {
+    // cosa deve saper fare il servizio del TV: le sue "funzioni" (GET /api/status, docs/contratto-servizio.md), per
+    // esempio { video: 1 }. Puo' solo spegnere l'app sui TV che non le hanno, mai dare qualcosa: vale anche per le private
+    var ric = null;
+    if (v.richiede !== undefined) {
+      if (!v.richiede || typeof v.richiede !== 'object' || Array.isArray(v.richiede)) return null;
+      ric = {};
+      var nr = 0;
+      for (var f in v.richiede) {
+        if (!Object.prototype.hasOwnProperty.call(v.richiede, f)) continue;
+        if (++nr > MAX_RICHIEDE || !FUNZIONE.test(f) || !versioneFunzione(v.richiede[f])) return null;
+        ric[f] = v.richiede[f];
+      }
+    }
+    var out = {
       id: id, nome: nome, descrizione: testo(v.descrizione, 400), novita: testo(v.novita, 200), autore: testo(v.autore, 40),
       versione: ver, categoria: CATEGORIE.indexOf(v.categoria) !== -1 ? v.categoria : 'altre', url: url,
       icona: indirizzo(v.icona, base, stessoSito), copertina: indirizzo(v.copertina, base, stessoSito), requisiti: req,
       ritirata: v.ritirata === true, evidenza: v.evidenza === true, permessi: perm
     };
+    if (ric) out.richiede = ric; // solo se c'e': le liste salvate (Le mie app) non crescono per niente
+    return out;
   }
+  function versioneFunzione(x) { return typeof x === 'number' && x >= 1 && x <= 999 && x % 1 === 0; }
   // il catalogo intero: { esito: 'ok' | 'nonValido' | 'formatoNuovo', nome, app, scartate }
   function catalogoDa(d, base, stessoSito) {
     if (!d || typeof d !== 'object' || Array.isArray(d)) return { esito: 'nonValido' };
@@ -175,17 +201,61 @@ var StoreDati = (function () {
     return catalogoDa(d, base, stessoSito);
   }
 
-  // l'app va su questo TV? requisiti = capacita' del motore (profilo.js), mai l'anno o il modello
-  var capacita = null;
-  function adatta(v) {
-    if (!v) return false;
-    if (!v.requisiti || !v.requisiti.length) return true;
-    if (!capacita) {
-      try { capacita = typeof ProfiloTV !== 'undefined' ? ProfiloTV.motore(window) : {}; } catch (e) { capacita = {}; }
+  /* ------------------------------------------------------------ cosa sa fare il servizio di questo TV
+   * GET /api/status dice le "funzioni" del servizio, con la loro versione (docs/contratto-servizio.md): { video: 1 } sui
+   * Samsung, niente dove l'app Video non c'e' ancora (Android, Fire TV, LG). La pagina passa qui la risposta (servizio) e
+   * la si ricorda per la prossima volta. Finche' non si sa (anteprima sul computer, prima volta, servizio che non
+   * risponde) le app si mostrano come sempre: "richiede" spegne un'app solo quando il servizio ha detto che non c'e' */
+  var K_SERVIZIO = 'tvh-servizio', funzioniOra; // undefined = da leggere dalla memoria; null = non si sa
+  function funzioniDa(s) {
+    // senza api: un servizio di prima del contratto (o una risposta strana), non si sa
+    if (!s || typeof s !== 'object' || typeof s.api !== 'number') return null;
+    var out = {}, f = s.funzioni;
+    if (f && typeof f === 'object' && !Array.isArray(f)) {
+      for (var k in f) if (Object.prototype.hasOwnProperty.call(f, k) && FUNZIONE.test(k) && versioneFunzione(f[k])) out[k] = f[k];
+    } else if (f === undefined && s.piattaforma === 'tizen' && s.api >= 3) out.video = 1; // api 3 senza "funzioni" (30/10/2026)
+    if (versioneFunzione(s.api)) out.api = s.api; // la versione del contratto vale come una funzione: "richiede": { api: 3 }
+    return out;
+  }
+  function funzioni() {
+    if (funzioniOra === undefined) {
+      var m = leggi(K_SERVIZIO);
+      funzioniOra = m && m.v === 1 && m.funzioni && typeof m.funzioni === 'object' && !Array.isArray(m.funzioni) ? m.funzioni : null;
     }
-    for (var i = 0; i < v.requisiti.length; i++) if (capacita[v.requisiti[i]] !== true) return false;
+    return funzioniOra;
+  }
+  // la risposta di GET /api/status: true = e' cambiato cosa va su questo TV (la pagina ridisegna)
+  function servizio(s) {
+    var f = funzioniDa(s);
+    if (!f || JSON.stringify(f) === JSON.stringify(funzioni())) return false;
+    funzioniOra = f;
+    scrivi(K_SERVIZIO, { v: 1, funzioni: f });
     return true;
   }
+
+  // l'app va su questo TV? '' = si'. Se no, perche': 'motore' = il motore web non ha quello che chiede ("requisiti":
+  // capacita' del motore, profilo.js; mai l'anno o il modello; non cambiera'), 'servizio' = il servizio del TV non ha una
+  // funzione che chiede ("richiede": su questo TV non c'e' ancora), 'vecchio' = ce l'ha, ma di una versione di prima (sui
+  // Samsung il servizio nuovo parte riavviando il TV)
+  var capacita = null;
+  function perche(v) {
+    if (!v) return 'motore';
+    if (v.requisiti && v.requisiti.length) {
+      if (!capacita) {
+        try { capacita = typeof ProfiloTV !== 'undefined' ? ProfiloTV.motore(window) : {}; } catch (e) { capacita = {}; }
+      }
+      for (var i = 0; i < v.requisiti.length; i++) if (capacita[v.requisiti[i]] !== true) return 'motore';
+    }
+    var r = v.richiede, f = r ? funzioni() : null, vecchia = false;
+    if (!f) return '';
+    for (var k in r) {
+      if (!Object.prototype.hasOwnProperty.call(r, k)) continue;
+      if (!Object.prototype.hasOwnProperty.call(f, k)) return 'servizio';
+      if (f[k] < r[k]) vecchia = true;
+    }
+    return vecchia ? 'vecchio' : '';
+  }
+  function adatta(v) { return !perche(v); }
 
   /* ------------------------------------------------------------ cercare nello Store */
 
@@ -274,8 +344,9 @@ var StoreDati = (function () {
     var d = Date.now() - ((c && c.provato) || 0);
     return !!(c && c.provato) && d >= 0 && d < RIPROVA_MS;
   }
-  // l'impronta di un testo scaricato: se e' la stessa, il catalogo non e' cambiato (niente da ricontrollare e riscrivere)
-  function impronta(t) { return 'h' + hash(t).toString(36) + hash(t, 7).toString(36) + '.' + t.length; }
+  // l'impronta di un testo scaricato: se e' la stessa, il catalogo non e' cambiato (niente da ricontrollare e riscrivere).
+  // Con dentro LETTURA: una home che legge le voci in un modo nuovo rilegge anche il catalogo salvato da quella di prima
+  function impronta(t) { return 'h' + LETTURA + '.' + hash(t).toString(36) + hash(t, 7).toString(36) + '.' + t.length; }
 
   /* ------------------------------------------------------------ lista ufficiale */
 
@@ -668,23 +739,25 @@ var StoreDati = (function () {
   }
 
   // un riquadro della home -> cosa aprire. null = non installata. stato: 'ok', 'ritirata' (tolta dallo store o spenta
-  // con "ritirata"), 'attesa' (catalogo non ancora scaricato), 'nonAdatta'
+  // con "ritirata"), 'attesa' (catalogo non ancora scaricato), 'nonAdatta' (e perche': vedi perche())
   function perRiquadro(riquadro) {
-    var m = RE_WS.exec(riquadro || ''), v;
+    var m = RE_WS.exec(riquadro || ''), v, no;
     if (m) {
       if (!ufficiale.installata(m[1])) return null;
       v = ufficiale.voce(m[1]);
+      no = v && !v.ritirata ? perche(v) : '';
       var c = ufficiale.catalogo();
       return { riquadro: riquadro, tipo: 'ws', id: m[1], privata: false, voce: v, nuova: ufficiale.nuovaVersione(m[1]),
-        stato: v ? (v.ritirata ? 'ritirata' : adatta(v) ? 'ok' : 'nonAdatta') : (c && c.scaricato ? 'ritirata' : 'attesa') };
+        stato: v ? (v.ritirata ? 'ritirata' : no ? 'nonAdatta' : 'ok') : (c && c.scaricato ? 'ritirata' : 'attesa'), perche: no };
     }
     m = RE_MIA.exec(riquadro || '');
     if (!m) return null;
     var a = mie.appDi(m[1], m[2]);
     if (!a) return null;
     v = a.voce;
+    no = v.ritirata ? '' : perche(v);
     return { riquadro: riquadro, tipo: 'mia', id: m[2], fonte: m[1], nomeFonte: a.nomeFonte, sito: a.sito, privata: true, voce: v,
-      nuova: mie.nuovaVersione(m[1], m[2]), stato: v.ritirata ? 'ritirata' : adatta(v) ? 'ok' : 'nonAdatta' };
+      nuova: mie.nuovaVersione(m[1], m[2]), stato: v.ritirata ? 'ritirata' : no ? 'nonAdatta' : 'ok', perche: no };
   }
   function segnaVista(riquadro) {
     var r = perRiquadro(riquadro);
@@ -721,8 +794,9 @@ var StoreDati = (function () {
       var st = statoUfficiale(v);
       if (!st) return;
       visti[v.id] = 1;
+      // in evidenza, come sul TV, solo le app che vanno su questo TV
       app.push({ id: v.id, nome: v.nome, descrizione: v.descrizione, novita: v.novita, autore: v.autore, categoria: v.categoria,
-        versione: v.versione, icona: v.icona, copertina: v.copertina, evidenza: v.evidenza, stato: st,
+        versione: v.versione, icona: v.icona, copertina: v.copertina, evidenza: v.evidenza && !v.ritirata && st !== 'nonAdatta', stato: st,
         colore: col('ws:' + v.id, v.nome, (v.copertina || v.icona || '') + '|' + v.versione) });
     });
     // installate ma tolte dallo store: si possono solo disinstallare
@@ -745,7 +819,8 @@ var StoreDati = (function () {
     if (e.azione === 'installa') {
       if (!v) return Promise.resolve({ ok: false, testo: 'Quest\'app non e\' nello Store' });
       if (ufficiale.installata(e.id)) return Promise.resolve({ ok: true, testo: nome + ' e\' gia\' installata' });
-      if (v.ritirata || !adatta(v)) return Promise.resolve({ ok: false, testo: nome + ' non va su questo TV' });
+      var no = v.ritirata ? 'motore' : perche(v);
+      if (no) return Promise.resolve({ ok: false, testo: nome + (no === 'motore' ? ' non va su questo TV' : ': su questo TV non funziona ancora') });
       return Promise.resolve(ufficiale.installa(e.id) ? { ok: true, testo: nome + ' installata dal telefono' } :
         { ok: false, testo: 'Non sono riuscito a installarla: la memoria del TV potrebbe essere piena' });
     }
@@ -781,7 +856,8 @@ var StoreDati = (function () {
 
   return {
     FORMATO: FORMATO, CATEGORIE: CATEGORIE, TITOLI: TITOLI, imposta: imposta, confronta: confronta, leggiCatalogo: leggiCatalogo,
-    catalogoDa: catalogoDa, adatta: adatta, scarica: scarica, urlUfficiale: urlUfficiale, cercaApp: cercaApp, piano: piano,
+    catalogoDa: catalogoDa, adatta: adatta, perche: perche, servizio: servizio, funzioni: funzioni,
+    scarica: scarica, urlUfficiale: urlUfficiale, cercaApp: cercaApp, piano: piano,
     ufficiale: ufficiale, mie: mie, perRiquadro: perRiquadro, segnaVista: segnaVista, chiaveDati: chiaveDati,
     datiApp: datiApp, scriviDatiApp: scriviDatiApp, copia: copia, ripristina: ripristina, perTelefono: perTelefono, azioneTelefono: azioneTelefono
   };

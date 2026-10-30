@@ -401,6 +401,9 @@ var Videoteca = (function () {
         if (m.cluster1 > 0) c.push(m.cluster1);
         for (i = 0; i < m.tracce.length; i++) if (m.tracce[i].tipo === 17) sott[m.tracce[i].num] = true;
         if (m.cues) {
+          for (i = 0; i < m.tracce.length && !m.ritmo; i++) {
+            if (m.tracce[i].tipo === 1 && m.cues[m.tracce[i].num]) m.ritmo = ritmoDaCues(m.cues[m.tracce[i].num], m.scala, m.durata);
+          }
           for (var tr in m.cues) {
             if (!Object.prototype.hasOwnProperty.call(m.cues, tr)) continue;
             var l = m.cues[tr];
@@ -417,6 +420,117 @@ var Videoteca = (function () {
 
       prossimo();
     }));
+  }
+
+  /* ============================================================ i picchi stimati dal TV
+   * Quanti Mbps chiede il film secondo per secondo, senza leggerlo tutto: dalle Cues dell'MKV (dove sta ogni fotogramma
+   * chiave e quando) o dalle tabelle dell'MP4 (misura e durata di ogni fotogramma). Serve per avvisare prima: i momenti
+   * in cui il film supera quello che il TV (o la rete) regge, il tetto. Il Mac (limitatore) misura meglio, pacchetto per
+   * pacchetto; questa e' la stima che il TV fa da solo, subito. */
+
+  var MAX_SECONDI_RITMO = 6 * 3600;
+  // dalle Cues di una traccia video: [{ t (in unita' della scala), cl, rel }] -> Mbps per secondo (interpolati nel GOP)
+  function ritmoDaCues(l, scala, durata) {
+    if (!l || l.length < 2 || !(durata > 1)) return null;
+    var p = [], i, ultimo = -1;
+    var q = l.slice().sort(function (x, y) { return x.t - y.t; });
+    for (i = 0; i < q.length; i++) {
+      var t = q[i].t * scala / 1e9, pos = q[i].cl + (q[i].rel > 0 ? q[i].rel : 0);
+      if (pos <= ultimo || (p.length && t <= p[p.length - 1].t)) continue;
+      p.push({ t: t, pos: pos });
+      ultimo = pos;
+    }
+    if (p.length < 2) return null;
+    var n = Math.min(MAX_SECONDI_RITMO, Math.ceil(Math.min(durata, p[p.length - 1].t))), out = [], k = 0;
+    function posA(t) {
+      while (k + 1 < p.length - 1 && p[k + 1].t <= t) k++;
+      var a = p[k], b = p[k + 1];
+      if (t <= a.t) return a.pos;
+      if (t >= b.t) return b.pos;
+      return a.pos + (b.pos - a.pos) * (t - a.t) / (b.t - a.t);
+    }
+    for (i = 0; i < n; i++) {
+      var x = posA(i), y = posA(i + 1);
+      out.push(Math.round(Math.max(0, y - x) * 8 / 1e5) / 10);
+    }
+    return { mbps: out, da: 'cues' };
+  }
+  // dalle tabelle dell'MP4: i fotogrammi del video secondo per secondo, piu' le altre tracce in media. I numeri scritti nel
+  // file non si credono: i giri si fermano alla fine dei riquadri, con la misura fissa non si gira per fotogramma, e dopo
+  // 50 ms di lavoro si rinuncia (niente stima: un MP4 fatto apposta non ferma il servizio)
+  var MAX_FOTOGRAMMI_RITMO = MAX_SECONDI_RITMO * 240;
+  function ritmoDaMp4(b, tracce, durata) {
+    if (!(durata > 1)) return null;
+    var fino = Date.now() + 50, v = null, altri = 0, i;
+    for (i = 0; i < tracce.length; i++) {
+      var t = tracce[i];
+      if (!t._stsz) continue;
+      if (t.tipo === 1 && !v) v = t;
+      else { var x = totaleStsz(b, t._stsz, fino); if (x < 0) return null; altri += x; }
+    }
+    if (!v || !v._stts || !v.scala) return null;
+    var n = Math.min(MAX_SECONDI_RITMO, Math.ceil(durata)), sec = [], s0 = v._stsz, t0 = v._stts;
+    for (i = 0; i < n; i++) sec.push(0);
+    var fisso = b.readUInt32BE(s0[0] + 4), quanti = b.readUInt32BE(s0[0] + 8);
+    if (!fisso) quanti = Math.min(quanti, Math.floor((s0[1] - s0[0] - 12) / 4));
+    quanti = Math.min(quanti, MAX_FOTOGRAMMI_RITMO);
+    var voci = Math.min(b.readUInt32BE(t0[0] + 4), Math.floor((t0[1] - t0[0] - 8) / 8)), c = 0, tempo = 0;
+    for (var e = 0; e < voci && c < quanti; e++) {
+      var cnt = Math.min(b.readUInt32BE(t0[0] + 8 + e * 8), quanti - c), delta = b.readUInt32BE(t0[0] + 12 + e * 8);
+      if (fisso) {
+        // misura fissa: fisso x cnt sparso sui secondi di questa voce
+        spargi(sec, tempo / v.scala, (tempo + cnt * delta) / v.scala, fisso * cnt);
+        tempo += cnt * delta;
+        c += cnt;
+      } else {
+        for (var k = 0; k < cnt; k++, c++) {
+          var j = Math.floor(tempo / v.scala);
+          if (j < n) sec[j] += b.readUInt32BE(s0[0] + 12 + c * 4);
+          tempo += delta;
+          if ((c & 0xffff) === 0xffff && Date.now() > fino) return null;
+        }
+      }
+      if ((e & 0xff) === 0xff && Date.now() > fino) return null;
+    }
+    var resto = altri / durata;
+    for (i = 0; i < n; i++) sec[i] = Math.round((sec[i] + resto) * 8 / 1e5) / 10;
+    return { mbps: sec, da: 'mp4' };
+  }
+  // byte sparsi in modo uniforme sui secondi tra da e a
+  function spargi(sec, da, a, byte) {
+    if (!(a > da)) { var j0 = Math.floor(da); if (j0 >= 0 && j0 < sec.length) sec[j0] += byte; return; }
+    var per = byte / (a - da), s1 = Math.max(0, Math.floor(da)), fine = Math.min(sec.length, Math.ceil(a));
+    for (var s2 = s1; s2 < fine; s2++) {
+      var x = Math.max(da, s2), y = Math.min(a, s2 + 1);
+      if (y > x) sec[s2] += per * (y - x);
+    }
+  }
+  // tutti i byte di una traccia (le altre, in media); -1 se ci vuole troppo
+  function totaleStsz(b, s0, fino) {
+    var fisso = b.readUInt32BE(s0[0] + 4), quanti = b.readUInt32BE(s0[0] + 8), tot = 0;
+    if (fisso) return fisso * Math.min(quanti, MAX_FOTOGRAMMI_RITMO);
+    quanti = Math.min(quanti, Math.floor((s0[1] - s0[0] - 12) / 4));
+    for (var c = 0; c < quanti; c++) {
+      tot += b.readUInt32BE(s0[0] + 12 + c * 4);
+      if ((c & 0xffff) === 0xffff && Date.now() > fino) return -1;
+    }
+    return tot;
+  }
+  // i momenti oltre il tetto: tratti vicini (meno di 3 s tra l'uno e l'altro) uniti
+  function picchiDi(r, tetto) {
+    if (!r || !r.mbps || !r.mbps.length) return null;
+    var l = r.mbps, mx = 0, al = 0, tot = 0, lista = [], cur = null, secondi = 0, i;
+    for (i = 0; i < l.length; i++) {
+      tot += l[i];
+      if (l[i] > mx) { mx = l[i]; al = i; }
+      if (l[i] > tetto) {
+        secondi++;
+        if (cur && i - cur.a <= 3) { cur.a = i + 1; if (l[i] > cur.mbps) cur.mbps = l[i]; }
+        else { cur = { da: i, a: i + 1, mbps: l[i] }; lista.push(cur); }
+      }
+    }
+    return { da: r.da, tetto: tetto, media: Math.round(tot / l.length * 10) / 10, massimo: mx, al: al, secondi: secondi,
+      momenti: lista.length, lista: lista.slice(0, 40) };
   }
 
   /* ============================================================ MP4 e MOV */
@@ -464,6 +578,8 @@ var Videoteca = (function () {
           }
         });
       } catch (e) { cb(errore('formato', 'MP4 rovinato')); return; } // un file fatto male non ferma il servizio
+      try { m.ritmo = ritmoDaMp4(moov, m.tracce, m.durata); } catch (e2) { m.ritmo = null; }
+      for (var k = 0; k < m.tracce.length; k++) { delete m.tracce[k]._stsz; delete m.tracce[k]._stts; }
       cb(null, m);
     }
   }
@@ -515,6 +631,7 @@ var Videoteca = (function () {
         riquadri(b, a, z, function (t2, a2, z2) {
           if (t2 === 'mdhd' && z2 - a2 >= (b[a2] === 1 ? 34 : 22)) {
             var v2 = b[a2], l = b.readUInt16BE(a2 + (v2 === 1 ? 32 : 20));
+            t.scala = b.readUInt32BE(a2 + (v2 === 1 ? 20 : 12));
             t.lingua = String.fromCharCode(((l >> 10) & 31) + 96, ((l >> 5) & 31) + 96, (l & 31) + 96);
           } else if (t2 === 'hdlr' && z2 - a2 >= 12) {
             t.tipo = MP4_TIPO[b.toString('binary', a2 + 8, a2 + 12)] || 0;
@@ -529,6 +646,9 @@ var Videoteca = (function () {
   function trovaStsd(b, s, f, t) {
     riquadri(b, s, f, function (tipo, a, z) {
       if (tipo === 'stbl') { trovaStsd(b, a, z, t); return; }
+      // per la stima dei picchi: dove stanno le misure (stsz) e le durate (stts) dei fotogrammi, nel moov
+      if (tipo === 'stsz' && z - a >= 12) { t._stsz = [a, z]; return; }
+      if (tipo === 'stts' && z - a >= 8) { t._stts = [a, z]; return; }
       if (tipo !== 'stsd' || z - a < 16) return;
       var e = a + 8; // versione, flag, numero di voci
       if (e + 8 > z) return;
@@ -1177,6 +1297,7 @@ var Videoteca = (function () {
               out.cartelle.sort(function (a, b) { return confrontaNomi(a.nome, b.nome); });
               out.video.sort(function (a, b) { return confrontaNomi(a.nome, b.nome); });
               out.sotto.sort(function (a, b) { return confrontaNomi(a.nome, b.nome); });
+              unisciVersioniTv(out);
               cb(null, out);
               return;
             }
@@ -1192,6 +1313,22 @@ var Videoteca = (function () {
           })();
         });
       });
+    }
+
+    // la "versione TV" che il limitatore del Mac scrive accanto al film ("<nome> [TV 80].mkv", senza i picchi oltre il
+    // tetto): non e' un film in piu', e' un modo di guardare lo stesso. Va dentro la voce del film (l'app la sceglie da
+    // sola); se il film vero non c'e', resta un video come gli altri
+    var VERSIONE_TV = /^(.+) \[TV (\d{1,4})(?: [0-9a-f]{6})?\]\.mkv$/i;
+    function unisciVersioniTv(out) {
+      var per = Object.create(null), i, m, resto = []; // senza prototipo: un file "__proto__.mkv" e' un nome come gli altri
+      for (i = 0; i < out.video.length; i++) per[out.video[i].nome.replace(/\.[^.]+$/, '').toLowerCase()] = out.video[i];
+      for (i = 0; i < out.video.length; i++) {
+        var v = out.video[i], o = (m = VERSIONE_TV.exec(v.nome)) ? per[m[1].toLowerCase()] : null;
+        if (o && typeof o === 'object' && o !== v && !VERSIONE_TV.test(o.nome)) {
+          if (!o.tv || +m[2] < o.tv.tetto) o.tv = { nome: v.nome, dim: v.dim, data: v.data, tetto: +m[2] };
+        } else resto.push(v);
+      }
+      out.video = resto;
     }
 
     // un file della chiavetta: la struttura si legge una volta sola (finche' dimensione e data non cambiano)
@@ -1280,6 +1417,7 @@ var Videoteca = (function () {
       if (pi.senzaAudio) out.avvisi.push('audio');
       if (out.video && !out.video.letto) out.avvisi.push('video');
       if (out.durata > 0) out.mbps = Math.round(f.dim * 8 / out.durata / 1e5) / 10;
+      out.picchi = picchiDi(m.ritmo, scelte && scelte.tetto >= 1 && scelte.tetto <= 1000 ? scelte.tetto : 80);
       cb(null, out);
     }
 
@@ -2178,7 +2316,7 @@ var Videoteca = (function () {
       vt.cartella(d, p, function (e, r) { if (e) errore(e); else rispondi(res, 200, r); });
     } else if (cosa === 'info' && get) {
       var lingue = String(q.lingue || '').split(',').filter(function (x) { return /^[a-z]{2,3}$/.test(x); }).slice(0, 6);
-      vt.info(d, p, { lingue: lingue.length ? lingue : null }, function (e, r) { if (e) errore(e); else rispondi(res, 200, r); });
+      vt.info(d, p, { lingue: lingue.length ? lingue : null, tetto: +q.tetto || 0 }, function (e, r) { if (e) errore(e); else rispondi(res, 200, r); });
     } else if (cosa.indexOf('file/') === 0 && (get || req.method === 'HEAD')) {
       vt.servi(req, res, d, p, { audio: +q.a || 0 });
     } else if (cosa === 'scheda' && get) {

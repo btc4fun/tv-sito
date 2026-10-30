@@ -997,7 +997,7 @@ var PontiVideo = (function () {
           if (cosa === 'file') { vt.remoto.servi(req, res, s.x, { audio: +q.a || 0 }); return; }
           if (cosa === 'info') {
             var lingue = String(q.lingue || '').split(',').filter(function (x) { return /^[a-z]{2,3}$/.test(x); }).slice(0, 6);
-            vt.remoto.info(s.x, { lingue: lingue.length ? lingue : null }, function (e2, r) { if (e2) errore2(e2); else rispondi(res, 200, r); });
+            vt.remoto.info(s.x, { lingue: lingue.length ? lingue : null, tetto: +q.tetto || 0 }, function (e2, r) { if (e2) errore2(e2); else rispondi(res, 200, r); });
             return;
           }
           vt.remoto.sotto(s.x, +q.t, +q.da || 0, function (e2, r) { if (e2) errore2(e2); else rispondi(res, 200, r); }, q.dopo);
@@ -1016,7 +1016,8 @@ var PontiVideo = (function () {
         var msl = String(q.ms || '').toLowerCase(), tetto = +q.tetto || 0;
         if (!idBuono(msl)) { rispondi(res, 400, { error: 'manca il file', codice: 'corpo' }); return; }
         if (!mac.indirizzo || !mac.chiave) { rispondi(res, 409, { error: 'collega il limitatore del Mac', codice: 'mac' }); return; }
-        limita(m[1].toLowerCase(), msl, tetto >= 1 && tetto <= 1000 ? Math.round(tetto) : 0, function (e, r) {
+        var aJf = q.a !== undefined && q.a !== '' && isFinite(+q.a) ? Math.floor(+q.a) : -1;
+        limita(m[1].toLowerCase(), msl, tetto >= 1 && tetto <= 1000 ? Math.round(tetto) : tettoTv(), aJf, function (e, r) {
           if (!e) { rispondi(res, 200, r); return; }
           if (e.codice === 'mac') rispondi(res, 409, { error: e.message, codice: 'mac' }); else errore2(e);
         });
@@ -1036,6 +1037,24 @@ var PontiVideo = (function () {
      * Come per Jellyfin: un solo limitatore salvato, la chiave resta qui (limitatore.json, 600) e va solo nell'intestazione
      * X-Chiave; all'app arriva "collegato". Il collegamento: il Mac mostra un codice di 6 cifre (Terminale e notifica),
      * chi guarda lo scrive sul TV, il limitatore da' la chiave al ponte. */
+
+    // il tetto del TV: quanti Mbps regge senza scatti (150; 80; o misurato dal TV col video a scalini del Mac). Lo usano la
+    // stima dei picchi della chiavetta e il limitatore. Di partenza 150 sui TV dal 2020 (Node 12: il Q80B ha retto 194 Mbps
+    // senza fermate, prova del 30/10), 80 sui 2017-2019 (Node 4)
+    var TETTO_PARTENZA = o.tettoPartenza || (+String(process.versions && process.versions.node || '0').split('.')[0] >= 12 ? '150' : '80');
+    var FILE_IMP = path.join(o.cartella, 'video-impostazioni.json'), imp = caricaImp();
+    function caricaImp() {
+      var c = null;
+      try { c = JSON.parse(fs.readFileSync(FILE_IMP, 'utf8')); } catch (e) { c = null; }
+      if (!c || typeof c !== 'object') c = {};
+      var prova = c.prova && +c.prova.mbps >= 10 && +c.prova.mbps <= 1000 ? { mbps: Math.round(+c.prova.mbps), quando: +c.prova.quando || 0 } : null;
+      var scelta = c.scelta === '150' || c.scelta === '80' || (c.scelta === 'prova' && prova) ? c.scelta : TETTO_PARTENZA;
+      // quanto si uniscono i tratti da ricodificare (secondi): piu' si uniscono, meno giunture (se il TV scatta li')
+      var unione = c.unione === 30 || c.unione === 60 ? c.unione : 10;
+      return { scelta: scelta, prova: prova, unione: unione };
+    }
+    function tettoTv() { return imp.scelta === '150' ? 150 : imp.scelta === 'prova' && imp.prova ? imp.prova.mbps : 80; }
+    function statoTetto() { return { scelta: imp.scelta, mbps: tettoTv(), prova: imp.prova, unione: imp.unione }; }
 
     var FILE_MAC = path.join(o.cartella, 'limitatore.json');
     var mac = caricaMac(), abbinando = null, proveMac = [];
@@ -1185,7 +1204,7 @@ var PontiVideo = (function () {
       return { id: testo(l.id, 40), stato: testo(l.stato, 20), fase: testo(a.fase, 60), percentuale: +a.percentuale || 0, stima: +a.stimaSecondi || 0,
         errore: l.errore ? testo(l.errore, 200) : '' };
     }
-    function limita(id, msid, tetto, cb) {
+    function limita(id, msid, tetto, aJf, cb) {
       function daMac(e) { return e.codice === 'accesso' ? errore('mac', 'il Mac non riconosce piu\' questo TV: ricollegalo') : e; }
       if (!cfg.token || !cfg.utente) { cb(errore('accesso', 'serve l\'accesso a Jellyfin')); return; }
       chiedi({ percorso: 'Items/' + id, query: 'userId=' + cfg.utente.id }, function (err, st, j) {
@@ -1195,8 +1214,14 @@ var PontiVideo = (function () {
         if (st !== 200 || !ms) { cb(errore('assente', 'film non trovato')); return; }
         var file = String(ms.Path || '');
         if (file.charAt(0) !== '/' || file.length > 4096 || /[\u0000-\u001f]/.test(file)) { cb(errore('cartella', 'il limitatore del Mac non vede questo file')); return; }
-        var corpo = { file: file };
+        var corpo = { file: file, unione: imp.unione };
         if (tetto) corpo.tetto = tetto;
+        // l'audio scelto: Jellyfin conta tutte le tracce del file, il limitatore solo quelle audio (da 0)
+        if (aJf >= 0) {
+          var au = (Array.isArray(ms.MediaStreams) ? ms.MediaStreams : []).filter(function (x) { return x && x.Type === 'Audio'; })
+            .sort(function (x, y) { return x.Index - y.Index; });
+          for (var k = 0; k < au.length; k++) if (au[k].Index === aJf) corpo.audio = k;
+        }
         chiedi({ mac: true, percorso: 'analisi', metodo: 'POST', corpo: corpo, tempo: 15000, max: 1 << 20 }, function (e2, st2, j2) {
           if (e2) { cb(daMac(e2)); return; }
           if (st2 === 403 || st2 === 404 || st2 === 415) { cb(errore('cartella', 'il limitatore del Mac non vede questo file: aggiungi la sua cartella sul Mac')); return; }
@@ -1275,6 +1300,20 @@ var PontiVideo = (function () {
           return;
         }
         if (cosa.indexOf('mac/') === 0) { trattaMac(req, res, cosa.slice(4), q || {}, u); return; }
+        if (cosa === 'tv/tetto' && req.method === 'GET') { rispondi(res, 200, statoTetto()); return; }
+        if (cosa === 'tv/tetto' && req.method === 'POST') {
+          corpoJson(req, function (b) {
+            var sc = b && b.scelta !== undefined ? String(b.scelta) : '', mb = b ? Math.round(+b.mbps) : 0, un = b ? +b.unione : 0;
+            if (!b || (sc && sc !== '80' && sc !== '150' && !(sc === 'prova' && mb >= 10 && mb <= 1000)) || (b.unione !== undefined && un !== 10 && un !== 30 && un !== 60) ||
+                (!sc && b.unione === undefined)) { rispondi(res, 400, { error: 'scelta non valida', codice: 'corpo' }); return; }
+            if (sc) imp.scelta = sc;
+            if (sc === 'prova') imp.prova = { mbps: mb, quando: Date.now() };
+            if (b.unione !== undefined) imp.unione = un;
+            scriviPrivato(FILE_IMP, imp, 'Tetto');
+            rispondi(res, 200, statoTetto());
+          });
+          return;
+        }
         rispondi(res, 404, { error: 'domanda sconosciuta', codice: 'assente' });
       },
       stato: statoPubblico,

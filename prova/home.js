@@ -247,7 +247,16 @@
     // tag: da quale immagine (e versione) vengono i colori salvati del riquadro; cambia l'immagine, si rileggono
     return { key: p.riquadro, kind: kind, id: p.riquadro, name: v.nome || p.id || 'App', icona: v.icona || '', copertina: v.copertina || '',
       tag: (v.copertina || v.icona || '') + '|' + (v.versione || ''), cat: v.categoria || 'altre',
-      descr: v.descrizione || '', stato: p.stato || '', nuova: !!p.nuova, versione: v.versione || '', nomeFonte: p.nomeFonte || '', sito: p.sito || '' };
+      descr: v.descrizione || '', stato: p.stato || '', perche: p.perche || '', nuova: !!p.nuova, versione: v.versione || '',
+      nomeFonte: p.nomeFonte || '', sito: p.sito || '' };
+  }
+  // un'app dello Store che su questo TV non va (StoreDati.perche): il motore web, oppure il servizio del TV che non ha
+  // ancora quello che chiede (l'app Video dove chiavette e ponti non ci sono); un servizio di prima, sui Samsung, si
+  // aggiorna riavviando il TV. lungo = per il titolo grande
+  function nonVa(perche, lungo) {
+    if (perche === 'vecchio' && !ALTRA_TV) return lungo ? 'Riavvia il TV: Home TV si aggiorna' : 'Riavvia il TV';
+    if (perche === 'servizio' || perche === 'vecchio') return lungo ? 'Su questo TV non funziona ancora' : 'Non ancora su questo TV';
+    return 'Non va su questo TV';
   }
   function appStore() {
     var out = [];
@@ -431,7 +440,7 @@
     } else if (item.kind === 'ws' || item.kind === 'mia') {
       cls += ' appweb';
       style = ' style="background:' + cardBg(item) + '"';
-      var sottoWeb = item.stato === 'ritirata' ? 'Non più disponibile' : item.stato === 'nonAdatta' ? 'Non va su questo TV' :
+      var sottoWeb = item.stato === 'ritirata' ? 'Non più disponibile' : item.stato === 'nonAdatta' ? nonVa(item.perche) :
         item.nuova ? 'Versione nuova' : item.kind === 'mia' ? 'Non verificata' : (TITOLI[item.cat] || 'Dallo Store');
       // la copertina (disegnata per il riquadro) copre icona e nome; l'icona si carica solo se la copertina non arriva.
       // Il colore del riquadro e della luce si legge dall'immagine che si vede (data-colore)
@@ -658,7 +667,7 @@
       return ['App per Home TV', 'Store', it.nuova ? 'Ci sono app con una versione nuova' : 'Installa le app, aprile e aggiornale; e aggiungi le tue', chips];
     }
     if (it.kind === 'ws' || it.kind === 'mia') {
-      var nota = it.stato === 'ritirata' ? 'Non è più disponibile: tieni premuto OK per toglierla' : it.stato === 'nonAdatta' ? 'Non va su questo TV' :
+      var nota = it.stato === 'ritirata' ? 'Non è più disponibile: tieni premuto OK per toglierla' : it.stato === 'nonAdatta' ? nonVa(it.perche, true) :
         it.stato === 'attesa' ? 'Aspetto il catalogo dello Store' : it.nuova ? 'Versione nuova ' + it.versione + ': aprila per le novità' :
         it.kind === 'mia' ? 'Non verificata · da ' + (it.sito || 'una fonte privata') : (primaFrase(it.descr) || 'Dallo Store');
       return [it.kind === 'mia' ? 'Le mie app' : (TITOLI[it.cat] || 'App'), it.name, nota, chips];
@@ -1378,7 +1387,15 @@
     if (storeInCorso) return Promise.resolve();
     storeInCorso = true;
     function fine() { storeInCorso = false; render(); if (settingsOpen) drawSettings(); }
+    funzioniServizio();
     return Promise.all([StoreDati.ufficiale.aggiorna(forza), StoreDati.mie.aggiornaTutte(false)]).then(fine, fine);
+  }
+  // cosa sa fare il servizio di questo TV ("funzioni" di GET /api/status): le app dello Store che chiedono altro restano
+  // spente (l'app Video dove chiavette e ponti non ci sono). Lo ricorda StoreDati: alla prossima accensione si sa subito.
+  // Fuori dall'attesa dello Store: un servizio che non risponde non deve fermare l'aggiornamento delle app
+  function funzioniServizio() {
+    if (DEMO) return;
+    UI.service('/api/status').then(function (s) { if (StoreDati.servizio(s)) render(); }, function () {});
   }
   function statoStore() {
     var c = StoreDati.ufficiale.catalogo();
@@ -1432,6 +1449,7 @@
     if (DEMO) return;
     UI.service('/api/status').then(function (s) {
       serviceState = 'Collegate (' + s.apps + ' app)';
+      if (StoreDati.servizio(s)) render();
       if (settingsOpen) drawSettings();
     }, function (e) {
       serviceState = msgServizio(e, 'Non collegate: ' + RIAPRI);

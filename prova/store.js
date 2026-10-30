@@ -147,7 +147,8 @@
           e === 'formatoNuovo' ? 'Aggiorna Home TV' : 'Lo Store ha un problema', testoStato() + (controllo ? '' : '. OK per riprovare')];
       })] });
     }
-    var evidenza = app.filter(function (v) { return v.evidenza && !v.ritirata; });
+    // in evidenza solo le app che su questo TV vanno (le altre restano, spente, nella fila della loro categoria)
+    var evidenza = app.filter(function (v) { return v.evidenza && !v.ritirata && StoreDati.adatta(v); });
     if (evidenza.length) out.push({ id: 'evidenza', titolo: 'In evidenza', voci: evidenza.map(elemWs) });
     var agg = tue.filter(function (e) { return e.tipo === 'ws' && Uff.nuovaVersione(e.voce.id); });
     mie.forEach(function (a) { if (Mie.nuovaVersione(a.fonte, a.voce.id)) agg.push(elemMia(a)); });
@@ -165,6 +166,17 @@
     return out;
   }
 
+  // un'app che su questo TV non va, e perche' (StoreDati.perche): il motore web (non cambiera'), oppure il servizio del TV
+  // che non ha ancora quello che l'app chiede (l'app Video dove chiavette e ponti non ci sono). Un servizio di prima: sui
+  // Samsung il nuovo parte riavviando il TV; sulle altre TV arriva con l'installatore, quindi per chi guarda e' "non ancora"
+  var SAMSUNG = ProfiloTV.piattaforma(window, UI.ON_TV) === 'tizen';
+  function nonVa(perche, ins) {
+    if (perche === 'vecchio' && SAMSUNG) return { breve: 'Riavvia il TV', chip: 'Riavvia il TV: Home TV si aggiorna', frase: 'riavvia il TV: Home TV si aggiorna', inst: ins, spenta: true };
+    if (perche === 'servizio' || perche === 'vecchio') {
+      return { breve: 'Non ancora su questo TV', chip: 'Su questo TV non funziona ancora', frase: 'su questo TV non funziona ancora', inst: ins, spenta: true };
+    }
+    return { breve: 'Non va su questo TV', chip: 'Non adatta a questo TV', frase: 'non va su questo TV', inst: ins, spenta: true };
+  }
   // lo stato di un'app per i riquadri, il titolo grande e la sua pagina
   function stato(e) {
     if (e.tipo === 'orfana') return { breve: 'Non più disponibile', chip: 'Non più disponibile', inst: true, spenta: true };
@@ -172,13 +184,14 @@
     if (e.tipo === 'mia') {
       var p = StoreDati.perRiquadro(e.riquadro);
       if (!p) return { breve: '', chip: '' };
-      if (p.stato === 'nonAdatta') return { breve: 'Non va su questo TV', chip: 'Non adatta a questo TV', spenta: true };
+      if (p.stato === 'nonAdatta') return nonVa(p.perche);
       if (p.stato === 'ritirata') return { breve: 'Non più disponibile', chip: 'Non più disponibile', spenta: true };
       return p.nuova ? { breve: 'Versione nuova', chip: 'Aggiornamento pronto', nuova: true, apri: true } : { breve: 'Non verificata', chip: 'Non verificata', apri: true };
     }
     var ins = !!Uff.installata(v.id);
     if (v.ritirata) return { breve: 'Non più disponibile', chip: 'Non più disponibile', inst: ins, spenta: true };
-    if (!StoreDati.adatta(v)) return { breve: 'Non va su questo TV', chip: 'Non adatta a questo TV', inst: ins, spenta: true };
+    var no = StoreDati.perche(v);
+    if (no) return nonVa(no, ins);
     if (ins) {
       return Uff.nuovaVersione(v.id) ? { breve: 'Versione nuova', chip: 'Aggiornamento pronto', nuova: true, apri: true, inst: true } :
         { breve: 'Installata', chip: 'Installata', apri: true, inst: true };
@@ -830,7 +843,7 @@
     }
     if (p.stato !== 'ok') {
       senzaApp((p.voce ? p.voce.nome + ': ' : '') + (p.stato === 'ritirata' ? 'non è più disponibile' : p.stato === 'nonAdatta' ?
-        'non va su questo TV' : 'senza il catalogo dello Store non si apre'), da);
+        nonVa(p.perche).frase : 'senza il catalogo dello Store non si apre'), da);
       return;
     }
     if (app) chiudiApp(true);
@@ -1099,6 +1112,10 @@
     misura();
     if (cur && cur.area === 'rows') { var c = cur; cur = null; c.el.classList.remove('f'); focus(c.r, c.i, true); }
   });
+
+  // cosa sa fare il servizio di questo TV ("funzioni" di GET /api/status): le app che chiedono altro restano spente. Si
+  // chiede a ogni apertura (risponde il TV stesso, costa poco); intanto vale quello che si sapeva
+  if (!DEMO) UI.service('/api/status').then(function (s) { if (StoreDati.servizio(s) && listaFatta) rinfresca(); }, function () {});
 
   var daAprire = parametro('apri'), daVedere = parametro('app');
   if (daAprire) {
