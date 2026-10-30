@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.4';
+  var VERSION = '1.3.5';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -721,7 +721,7 @@
    * "fine" (le ultime 5 si leggono da 8091/tv): quando, da quanto era acceso, memoria, richieste in corso e ultime
    * richieste (solo il tipo: niente gettoni, id o nomi di film), ultimi errori. */
   var TRACCIA = pathLib.join(CACHE_DIR, 'hometv-traccia.json');
-  var traccia = { avvio: Date.now(), richieste: [], inVolo: 0, video: 0, ultimoVideo: 0, fini: [], scritta: 0 };
+  var traccia = { avvio: Date.now(), richieste: [], eventi: [], inVolo: 0, video: 0, ultimoVideo: 0, fini: [], scritta: 0 };
   (function () {
     var prec = leggiJsonSubito(TRACCIA);
     if (!prec || typeof prec !== 'object') return;
@@ -730,9 +730,56 @@
     if (typeof prec.t === 'number' && !(ultima && ultima.fine === prec.t)) {
       traccia.fini.push({ fine: prec.t, minuti: Math.round((prec.t - (+prec.avvio || prec.t)) / 60000), versione: String(prec.versione || '').slice(0, 12),
         memoria: prec.memoria || null, inVolo: +prec.inVolo || 0, video: +prec.video || 0,
-        richieste: Array.isArray(prec.richieste) ? prec.richieste.slice(-8) : [], errori: Array.isArray(prec.errori) ? prec.errori.slice(-3) : [] });
+        richieste: Array.isArray(prec.richieste) ? prec.richieste.slice(-8) : [], errori: Array.isArray(prec.errori) ? prec.errori.slice(-3) : [],
+        eventi: Array.isArray(prec.eventi) ? prec.eventi.slice(-8) : [] });
     }
   })();
+  // un fatto da ricordare (chi chiude il processo, un lavoro pesante che parte): nella traccia entro 300 ms
+  function segna(cosa) {
+    try {
+      traccia.eventi.push({ t: Date.now(), e: String(cosa).slice(0, 300) });
+      if (traccia.eventi.length > 15) traccia.eventi.shift();
+      presto();
+    } catch (e) { /* niente */ }
+  }
+  var timerPresto = null;
+  function presto() {
+    if (timerPresto) return;
+    timerPresto = setTimeout(function () { timerPresto = null; scriviTraccia(); }, 300);
+    if (timerPresto.unref) timerPresto.unref();
+  }
+  // chi chiude il processo (diagnosi 1.3.5, 30/10/2026: il servizio sparisce all'apertura di Real4K senza errori). Il processo
+  // e' quello di TizenBrew: se qualcuno chiama process.exit (anche TizenBrew) si scrive da dove, poi esce come prima; un
+  // segnale (il sistema che lo chiude) si scrive e poi fa quello che avrebbe fatto. Una chiusura di forza (SIGKILL) non si
+  // puo' vedere: se la traccia finisce senza niente di questo, e' stata quella
+  if (typeof process === 'object' && process && !process.__hometvTraccia) {
+    try {
+      process.__hometvTraccia = true;
+      var exitVero = process.exit, abortVero = process.abort;
+      process.exit = function (codice) {
+        segna('process.exit(' + codice + ') da: ' + String(new Error().stack || '').split('\n').slice(2, 6).join(' | '));
+        scriviTraccia();
+        return exitVero.apply(process, arguments);
+      };
+      if (typeof abortVero === 'function') {
+        process.abort = function () {
+          segna('process.abort() da: ' + String(new Error().stack || '').split('\n').slice(2, 6).join(' | '));
+          scriviTraccia();
+          return abortVero.apply(process, arguments);
+        };
+      }
+      process.on('exit', function (codice) { segna('uscita del processo, codice ' + codice); scriviTraccia(); });
+      ['SIGTERM', 'SIGINT', 'SIGHUP', 'SIGQUIT'].forEach(function (s) {
+        var h = function () {
+          segna('segnale ' + s);
+          scriviTraccia();
+          process.removeListener(s, h);
+          try { process.kill(process.pid, s); } catch (e) { exitVero.call(process, 128); }
+        };
+        try { process.on(s, h); } catch (e) { /* segnale non disponibile qui */ }
+      });
+    } catch (e) { /* senza diagnosi, il resto va avanti */ }
+  }
   function leggiJsonSubito(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return null; } }
   // il tipo della richiesta, senza niente di personale: /api/video/g/<gettone>/jf/file/<id>/<nome> -> /api/video/g/*/jf/file
   function tipoRichiesta(url) {
@@ -748,6 +795,8 @@
       var p = tipoRichiesta(req.url), video = p.indexOf('/api/video/') === 0, fatto = false;
       traccia.richieste.push({ t: Date.now(), c: chi, m: String(req.method).slice(0, 7), p: p });
       if (traccia.richieste.length > 20) traccia.richieste.shift();
+      // ogni richiesta arriva nella traccia entro 300 ms: se il processo viene chiuso subito dopo, si sa cosa stava facendo
+      presto();
       traccia.inVolo++;
       if (video) { traccia.video++; traccia.ultimoVideo = Date.now(); }
       var fine = function () { if (fatto) return; fatto = true; traccia.inVolo--; if (video) traccia.video--; };
@@ -758,7 +807,7 @@
   function scriviTraccia() {
     try {
       var dati = { v: 1, t: Date.now(), avvio: traccia.avvio, versione: VERSION, memoria: memoriaVera(), inVolo: traccia.inVolo,
-        video: traccia.video, richieste: traccia.richieste.slice(-12), errori: erroriRecenti.slice(-5), fini: traccia.fini };
+        video: traccia.video, richieste: traccia.richieste.slice(-12), eventi: traccia.eventi.slice(-10), errori: erroriRecenti.slice(-5), fini: traccia.fini };
       // sincrona e piccola (un paio di KB): se il processo viene chiuso subito dopo, il file c'e' gia'
       fs.writeFileSync(TRACCIA + '.tmp', JSON.stringify(dati));
       fs.renameSync(TRACCIA + '.tmp', TRACCIA);
@@ -14704,13 +14753,14 @@
   // dopo 3 minuti senza conversioni si lascia andare l'istanza con la sua memoria. La velocita' del TV (misurata una volta,
   // o dall'app) sta in hometv-audio-tv.json
   var codecAudio = AudioTv.codecWasm(function () {
+    segna('audio del TV: decodifico il convertitore (WebAssembly)');
     var w = AUDIO_TV_WASM(), s = w.base64.join(''), b = typeof Buffer.from === 'function' && Buffer.from !== Uint8Array.from ? Buffer.from(s, 'base64') : new Buffer(s, 'base64');
     if (b.length !== w.byte || require('crypto').createHash('sha256').update(b).digest('hex') !== w.sha256) throw new Error('codec rovinato');
     return b;
   });
   var audioTv = AudioTv.crea({
     codec: codecAudio,
-    misura: function (cb) { PontiVideo._interni.misuraCpu(cb); },
+    misura: function (cb) { segna('audio del TV: misuro la velocita\' del TV'); PontiVideo._interni.misuraCpu(function (r) { segna('audio del TV: misura finita'); cb(r); }); },
     fs: fs, file: pathLib.join(CACHE_DIR, 'hometv-audio-tv.json'), log: log
   });
   // le domande dell'app Video in "isole" con un async hook acceso solo finche' servono; i domini di Node solo dove
