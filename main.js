@@ -504,7 +504,7 @@
   ProfiloTV.ripara(window);
   var MOTORE = ProfiloTV.motore(window);
 
-  var VERSIONE = '1.3.14';
+  var VERSIONE = '1.3.15';
   var SERVIZIO = 'http://127.0.0.1:8090';
   var IN_FRAME = false;
   try { IN_FRAME = window.top !== window.self; } catch (e) { IN_FRAME = true; }
@@ -1853,14 +1853,41 @@
     if (BASE) location.href = BASE + 'browser.html#' + (nuova ? 'nuova' : 'schede');
     else vaiHome();
   }
+  // dalla prima pagina di un sito: indietro nella cronologia solo se si e' arrivati da una pagina della home (la home o il suo
+  // browser aprono i siti con location.href: dietro c'e' quella pagina). Se no (arrivati da fuori, o da niente) dietro puo'
+  // esserci la pagina di TizenBrew, e Indietro chiuderebbe TizenBrew (31/10, dal browser della home): si va alla home con
+  // location. (Il referrer di un altro sito e' solo l'origine: dice da dove, non la pagina.) Se la home non e' nota (il
+  // servizio fermo, un sito mai visto), come prima
+  function tornaDaNoi() {
+    var r = document.referrer;
+    if (r && LAUNCHER_HOST && hostOf(r) === LAUNCHER_HOST && history.length > 1) { history.back(); return; }
+    if (BASE) { location.replace(BASE); return; }
+    if (history.length > 1) history.back(); else vaiHome();
+  }
   function vaiHome() {
     if (IN_FRAME) {
       // dentro un lettore incorporato: e' la pagina intera che torna alla home
       try { window.top.postMessage({ hometv: 'home' }, '*'); } catch (e) {}
       return;
     }
-    // se l'indirizzo non e' ancora noto, il servizio del TV fa da ponte
-    location.href = BASE || SERVIZIO + '/casa';
+    if (BASE) { location.href = BASE; return; }
+    // l'indirizzo della home non si sa ancora (un sito mai visto, col servizio del TV fermo o non ancora sentito): lo si chiede
+    // al servizio, al massimo 1,5 s. Fermo, la sua strada (/casa) sarebbe una pagina d'errore, dove Indietro chiude TizenBrew
+    // (31/10): indietro nella cronologia, che di solito e' la home o il suo browser; senza niente dietro si resta qui e lo si dice
+    var fatto = false, t = setTimeout(function () { fine(''); }, 1500);
+    function fine(u) {
+      if (fatto) return;
+      fatto = true;
+      clearTimeout(t);
+      if (u) impostaCasa(u);
+      if (BASE) location.href = BASE;
+      else if (history.length > 1) history.back();
+      else toast('Il servizio del TV non risponde: Home TV si riapre da TizenBrew', 4000);
+    }
+    try {
+      fetch(SERVIZIO + '/api/prefs', { cache: 'no-store' }).then(function (r) { return r.json(); })
+        .then(function (p) { fine(p && typeof p.casa === 'string' ? p.casa : ''); }, function () { fine(''); });
+    } catch (e) { fine(''); }
   }
 
   /* ================================================================ stili */
@@ -7829,7 +7856,7 @@
       } },
       </solo-pubblica> */
       YT_TV ? null : { testo: 'Schermo intero', valore: '', fai: function () { chiudiPannello(); entraSchermoIntero(null, true); } },
-      { testo: 'Pagina precedente', valore: '', fai: function () { chiudiPannello(); history.back(); } },
+      { testo: 'Pagina precedente', valore: '', fai: function () { chiudiPannello(); if (allaPrimaPagina()) tornaDaNoi(); else history.back(); } },
       { testo: 'Pagina successiva', valore: '', fai: function () { chiudiPannello(); history.forward(); } },
       { testo: 'Ricarica la pagina', valore: '', fai: function () { location.reload(); } },
       YT ? { testo: 'YouTube', valore: YT_TV ? 'Per la TV' : 'Per computer', fai: function () { cambiaYoutube(); } } : null,
@@ -7973,7 +8000,8 @@
           try { window.parent.postMessage({ hometv: 'esci' }, '*'); window.parent.focus(); } catch (e) {}
           break;
         }
-        if (allaPrimaPagina()) {
+        var radice = allaPrimaPagina();
+        if (radice) {
           if (Date.now() - ultimoIndietroRadice > 2500) {
             ultimoIndietroRadice = Date.now();
             toast('Premi di nuovo Indietro per uscire dal sito', 2500);
@@ -7981,7 +8009,8 @@
           }
         }
         if (passiNelSito > 0) passiNelSito--;
-        if (history.length > 1) history.back();
+        if (radice) tornaDaNoi();
+        else if (history.length > 1) history.back();
         else vaiHome();
         break;
       case 'playpausa': case 'play': case 'pausa':

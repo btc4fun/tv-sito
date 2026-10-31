@@ -953,11 +953,15 @@
   // segreto). Se no, la strada di prima: il servizio apre la sessione (al massimo 5 s), poi il riquadro
   var MAC_FRESCO = 15 * 60000;
   // si va al Mac: un segno per il guardiano della pagina che si apre al ritorno (UI.guardiano: il servizio del TV quasi
-  // certamente e' stato chiuso, si riavvia subito e senza contarlo)
-  function vaiAlMac(url) {
+  // certamente e' stato chiuso, si riavvia subito e senza contarlo). Con una voce nuova della cronologia (non sostituendo la
+  // Store): dietro la pagina del Mac resta la Store, ma senza l'app da aprire (dalMac=1, vedi in fondo): un Indietro che
+  // torna qui (la pagina del Mac non ancora pronta, o che non va) porta a casa, non di nuovo al Mac. (Con la Store che si
+  // sta ancora caricando il browser ne fa una sostituzione: va bene lo stesso, dietro c'e' la home)
+  function vaiAlMac(x, url) {
     try { sessionStorage.setItem('tvh-da-mac', String(Date.now())); } catch (e) {}
+    try { history.replaceState(null, '', '#' + (x.da === 'home' ? 'da=home&' : '') + 'dalMac=1'); } catch (e) {}
     passo('verso-mac');
-    location.replace(url);
+    location.href = url;
   }
   // un passo dell'apertura di un'app al servizio del TV, che lo scrive nella sua traccia (dopo una caduta si vede l'ultimo
   // arrivato): solo il nome, a fuoco e dimentica, anche se la pagina se ne sta andando
@@ -969,15 +973,33 @@
   }
   function dalMac(x, poi) {
     var noto = StoreDati.macReal4k ? StoreDati.macReal4k() : null, eta = noto ? Date.now() - noto.quando : -1;
-    if (noto && eta >= 0 && eta < MAC_FRESCO) { passo('mac-memoria'); vaiAlMac(indirizzoMac(x, noto.url, '', '')); return; }
+    // prima di andare: il Mac risponde? Lo chiede il servizio del TV (una connessione, al massimo 0,4 s). Una pagina che non arriva
+    // e' la pagina d'errore del browser del TV, dove Indietro chiude TizenBrew (31/10, sonda): mai. Il Mac che non risponde, o
+    // nessuna risposta (il servizio fermo): il riquadro
+    if (noto && eta >= 0 && eta < MAC_FRESCO) {
+      passo('mac-memoria');
+      var deciso = false, attesaMac = setTimeout(function () { decidi(false, false); }, 800);
+      var decidi = function (risponde, sentito) {
+        if (deciso) return;
+        deciso = true;
+        clearTimeout(attesaMac);
+        if (app !== x) return;
+        if (risponde) { vaiAlMac(x, indirizzoMac(x, noto.url, '', '')); return; }
+        passo('mac-no');
+        if (sentito) StoreDati.scriviMacReal4k('');
+        poi();
+      };
+      UI.service('/api/raggiungibile?url=' + encodeURIComponent(noto.url) + '&tempo=400').then(function (r) { decidi(!!(r && r.ok === true), true); },
+        function () { decidi(false, false); });
+      return;
+    }
     var finito = false, gTv = '', t = setTimeout(function () { fine(''); }, 5000);
     function fine(url) {
       if (finito) return;
       finito = true;
       clearTimeout(t);
       if (app !== x) return;
-      // (replace: andare e tornare dal Mac non allunga la cronologia della finestra)
-      if (url) vaiAlMac(url); else poi();
+      if (url) vaiAlMac(x, url); else poi();
     }
     passo('permesso');
     UI.service(PERMESSI.video, {}).then(function (r) {
@@ -1282,8 +1304,23 @@
     } catch (e) {}
   }
 
+  // tornata con Indietro dalla pagina del Mac (vaiAlMac): l'app non si riapre. Aperta dalla home si va alla home, se no lo
+  // Store da capo. Prima una voce nuova (pushState): la pagina del Mac, rimasta "avanti" nella cronologia, sparisce, se no il
+  // ritorno del guardiano, che conta dalla fine, finirebbe una voce troppo indietro (un location.href mentre la pagina si
+  // carica, senza un tasto premuto, il browser lo fa diventare una sostituzione: per questo pushState e poi replace). Anche
+  // quando il browser la rimostra dalla sua memoria, senza ripartire (pageshow)
+  function tornataDalMac(dallaMemoria) {
+    var home = ha('da=home');
+    try { history.pushState(null, '', home ? '#da=home' : location.href.split('#')[0]); } catch (e) {}
+    if (home) location.replace('./');
+    else if (dallaMemoria) location.reload();
+    else fattaLista(null);
+  }
+  window.addEventListener('pageshow', function (ev) { if (ev && ev.persisted && ha('dalMac=1')) tornataDalMac(true); });
+
   var daAprire = parametro('apri'), daVedere = parametro('app');
-  if (daAprire) {
+  if (ha('dalMac=1')) tornataDalMac(false);
+  else if (daAprire) {
     // aperta dalla home: niente file (e niente lavoro dietro l'app) finche' non si torna nello Store
     apriApp(daAprire, DA_HOME ? 'home' : 'store', false, parametro('ancora'));
   } else {

@@ -312,11 +312,20 @@
 
   /* ============================================================ azioni */
 
+  // cosa si e' scritto: un indirizzo (anche senza http://) o una ricerca. Gli apparecchi di casa (IP della rete di casa,
+  // localhost, nomi .local o senza punto con la porta, come 192.168.1.233:8099 o nas:5000) con http://; un IP qualsiasi o un
+  // nome con il dominio (anche con la porta) con https:// (31/10: "192.168.1.233:8099" diventava una ricerca)
   function toSite(t) {
     t = String(t || '').replace(/^\s+|\s+$/g, '');
     if (!t) return null;
     if (/^https?:\/\//i.test(t)) return { url: t, titolo: UI.hostOf(t) };
-    if (/^[^\s\/]+\.[a-z]{2,}(\/\S*)?$/i.test(t)) return { url: 'https://' + t, titolo: UI.hostOf('https://' + t) };
+    var ip = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}(:\d{1,5})?(\/\S*)?$/.exec(t);
+    if (ip) {
+      var a = +ip[1], b = +ip[2], casa = a === 10 || a === 127 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254);
+      return { url: (casa ? 'http://' : 'https://') + t, titolo: UI.hostOf((casa ? 'http://' : 'https://') + t) };
+    }
+    if (/^(localhost|[a-z0-9-]{1,63}\.local|[a-z0-9-]{1,63}:\d{1,5})(:\d{1,5})?(\/\S*)?$/i.test(t)) return { url: 'http://' + t, titolo: UI.hostOf('http://' + t) };
+    if (/^[^\s\/:]+\.[a-z]{2,}(:\d{1,5})?(\/\S*)?$/i.test(t)) return { url: 'https://' + t, titolo: UI.hostOf('https://' + t) };
     return { url: motore() + encodeURIComponent(t), titolo: 'Ricerca: ' + t };
   }
 
@@ -391,11 +400,18 @@
     else if (a === 'back') chiudiGalleria();
     else if (a === 'green') goHome();
   }
+  // prima di aprire: il sito risponde? Lo chiede il servizio del TV (una connessione, al massimo 2,5 s). Una pagina che non
+  // arriva e' la pagina d'errore del browser del TV, dove Indietro chiude TizenBrew (31/10): si resta qui e lo si dice. Senza
+  // risposta dal servizio (fermo) si apre come prima
   function apri(corpo, url, titolo) {
     UI.toast('Apro ' + (UI.hostOf(url) || url) + '\u2026');
-    cambiaScheda(corpo).then(function () { return registraVisita(url, titolo || UI.hostOf(url)); }).then(function () {
-      if (IN_ANTEPRIMA) { UI.toast('Anteprima: sul TV qui si apre ' + UI.hostOf(url), 3500); carica(false); return; }
-      location.href = url;
+    var controllo = IN_ANTEPRIMA ? Promise.resolve({ ok: true }) : UI.service('/api/raggiungibile?url=' + encodeURIComponent(url) + '&tempo=2500').then(null, function () { return { ok: true }; });
+    controllo.then(function (r) {
+      if (!r || r.ok !== true) { UI.toast((UI.hostOf(url) || url) + ' non risponde: controlla l\'indirizzo, o che l\'apparecchio sia acceso', 5000); return; }
+      cambiaScheda(corpo).then(function () { return registraVisita(url, titolo || UI.hostOf(url)); }).then(function () {
+        if (IN_ANTEPRIMA) { UI.toast('Anteprima: sul TV qui si apre ' + UI.hostOf(url), 3500); carica(false); return; }
+        location.href = url;
+      });
     });
   }
   function opzioniScheda(i) {
@@ -420,7 +436,10 @@
     UI.openSheet({ title: s.titolo || UI.hostOf(s.url), subtitle: UI.hostOf(s.url), items: voci });
   }
 
-  function goHome() { location.replace('./'); }
+  // alla home con una voce nuova della cronologia, non sostituendo questa: tornati qui da un sito con Indietro, il sito resta
+  // "avanti" nella cronologia, e una sostituzione lo lascerebbe li'. Il guardiano (ui.js) conta dalla fine della cronologia
+  // per tornare alla pagina di TizenBrew: con una voce in avanti sbaglierebbe di una (31/10)
+  function goHome() { location.href = './'; }
 
   var closing = false;
   function closeInput() { closing = true; input.blur(); closing = false; }

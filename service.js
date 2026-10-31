@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.14';
+  var VERSION = '1.3.15';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -737,6 +737,29 @@
         eventi: Array.isArray(prec.eventi) ? prec.eventi.slice(-24) : [], campioni: Array.isArray(prec.campioni) ? prec.campioni.slice(-30) : [] });
     }
   })();
+  // risponde quell'indirizzo (http o https)? Solo la connessione (TCP) all'host e alla porta, al massimo tempo ms (100-3000):
+  // { ok }. Niente dati letti o mandati; il nome si risolve come per qualsiasi domanda del servizio
+  function raggiungibile(req, res, q) {
+    var u = null;
+    try { u = urlLib.parse(String(q.url || '')); } catch (e) { u = null; }
+    var tempo = Math.max(100, Math.min(3000, Math.round(+q.tempo) || 1500));
+    var host = u && u.hostname ? String(u.hostname).replace(/^\[|\]$/g, '') : '';
+    if (!u || (u.protocol !== 'http:' && u.protocol !== 'https:') || !host || host.length > 253) { sendJson(req, res, 400, { error: 'indirizzo non valido' }); return; }
+    var porta = +u.port || (u.protocol === 'https:' ? 443 : 80), fatto = false, s;
+    function fine(ok) {
+      if (fatto) return;
+      fatto = true;
+      clearTimeout(timer);
+      try { s.destroy(); } catch (e) {}
+      sendJson(req, res, 200, { ok: ok });
+    }
+    var timer = setTimeout(function () { fine(false); }, tempo);
+    try {
+      s = require('net').connect({ host: host, port: porta });
+      s.on('connect', function () { fine(true); });
+      s.on('error', function () { fine(false); });
+    } catch (e) { fine(false); }
+  }
   // i passi dell'apertura di un'app che le pagine segnano (GET o POST /api/passo?da=&p=): solo questi nomi
   var PASSI_APERTURA = { apri: 1, 'apri-video': 1, attesa: 1, permesso: 1, 'permesso-ok': 1, 'permesso-no': 1, 'mac-memoria': 1, 'mac-chiesto': 1,
     'mac-ok': 1, 'mac-no': 1, 'verso-mac': 1, iframe: 1, 'iframe-caricato': 1, 'app-pronta': 1, 'r4k-avvio': 1, 'r4k-permesso': 1, 'r4k-dati': 1,
@@ -758,6 +781,9 @@
       presto();
     } catch (e) { /* niente */ }
   }
+  // un fatto che puo' essere l'ultimo prima di una chiusura di forza (l'apertura di Real4K, richiesta del 31/10): su file
+  // subito, non entro 300 ms. Solo per fatti rari (il gettone, la sessione sul Mac): le domande a Jellyfin passano da segna
+  function segnaSubito(cosa) { segna(cosa); scriviTraccia(); }
   var timerPresto = null;
   function presto() {
     if (timerPresto) return;
@@ -824,7 +850,7 @@
   function scriviTraccia() {
     try {
       var dati = { v: 1, t: Date.now(), avvio: traccia.avvio, versione: VERSION, memoria: memoriaVera(), inVolo: traccia.inVolo,
-        video: traccia.video, richieste: traccia.richieste.slice(-12), eventi: traccia.eventi.slice(-10), errori: erroriRecenti.slice(-5), fini: traccia.fini,
+        video: traccia.video, richieste: traccia.richieste.slice(-12), eventi: traccia.eventi.slice(-24), errori: erroriRecenti.slice(-5), fini: traccia.fini,
         film: traccia.film, campioni: diagnosi ? diagnosi.campioni.slice(-30) : [] };
       // sincrona e piccola (un paio di KB): se il processo viene chiuso subito dopo, il file c'e' gia'
       fs.writeFileSync(TRACCIA + '.tmp', JSON.stringify(dati));
@@ -1365,6 +1391,9 @@
     }
 
     if (route === 'GET /api/icon') { serveIcon(req, res, url.query.path); return; }
+    // un indirizzo risponde? La Store prima di andare al Mac, il browser prima di aprire un sito: sul TV una pagina che non arriva
+    // e' la pagina d'errore del browser, dove nessuno prende Indietro e TizenBrew si chiude (31/10, sonda e browser della home)
+    if (route === 'GET /api/raggiungibile') { raggiungibile(req, res, url.query); return; }
 
     if (route === 'GET /api/status') {
       // il guardiano della home (ui.js) dice anche se la pagina si vede: il custode delle app chiude solo con la home davanti
@@ -1494,7 +1523,13 @@
     if (route === 'GET /api/adblock/stato') { sendJson(req, res, 200, statoAdblock()); return; }
     // l'app Video: il gettone per l'app ufficiale che la home apre (lo Store controlla il permesso nel catalogo), e via
     // quando la chiude
-    if (route === 'POST /api/video/gettone') { custodeReal4K(); sendJson(req, res, 200, gettoniVideo.nuovo()); return; }
+    if (route === 'POST /api/video/gettone') {
+      segnaSubito('servizio: gettone chiesto');
+      custodeReal4K();
+      sendJson(req, res, 200, gettoniVideo.nuovo());
+      segna('servizio: gettone dato');
+      return;
+    }
     if (route === 'POST /api/video/gettone/via') {
       readBody(req).then(function (b) {
         gettoniVideo.togli(b.gettone);
@@ -1623,11 +1658,35 @@
   // stato: 'mai' (mai provato), 'attesa' (il TV sta chiedendo il permesso), 'ok', 'negato', 'assente'
   var rem = { stato: remoto.stato === 'ok' || remoto.stato === 'negato' ? remoto.stato : 'mai', token: remoto.token || '',
     sock: null, pronto: false, coda: [], tentativo: 0, ultimoErrore: '', indicePorta: 0, buffer: null, frammenti: null,
-    tentativi: 0 };
+    tentativi: 0, muti: 0, risposto: false, provando: null, provate: {}, giro: 0, ripreso: false,
+    // dove il TV ha detto si' (ci si ricollega li', col suo token) e le ultime prove con la risposta del TV: restano nel
+    // file, cosi' dopo una caduta del servizio si sa ancora cosa ha risposto il TV
+    // (un si' salvato prima che si annotasse la strada e' di 127.0.0.1:8002, la sola provata per prima fino alla 1.3.13)
+    dove: typeof remoto.dove === 'string' ? remoto.dove.slice(0, 60) : remoto.stato === 'ok' ? '127.0.0.1:' + PORTE_REMOTO[0].porta : '',
+    storia: Array.isArray(remoto.storia) ? remoto.storia.filter(function (x) { return x && typeof x === 'object'; }).slice(-8) : [] };
   // le altre TV (LG) non hanno l'ingresso dei telecomandi di Samsung: niente tasti veri, il telefono comanda le pagine
   if (ALTRA) rem.stato = 'assente';
+  // dopo una caduta del servizio "Questo TV" dice ancora com'e' andata l'ultima richiesta senza un si'
+  (function () {
+    var u = rem.storia[rem.storia.length - 1];
+    if (!u || u.c === 'si' || rem.stato !== 'mai') return;
+    rem.ultimoErrore = String(u.d || '') + ': ' + String(u.e || '');
+    rem.tentativi = rem.storia.filter(function (x) { return x.c !== 'si'; }).length;
+  })();
 
-  function salvaRemoto() { scriviJson(FILE_REMOTO, { stato: rem.stato, token: rem.token }); }
+  // un si' o un no si scrivono subito: il TV puo' chiudere il servizio in ogni momento, e il codice del si' non va perso
+  function salvaRemoto(subito) {
+    scriviJson(FILE_REMOTO, { stato: rem.stato, token: rem.token, dove: rem.dove, storia: rem.storia }, subito);
+  }
+
+  // una prova finita: dove si e' bussato e cosa ha risposto il TV (le ultime 8, senza il token). c: 'si', 'no', 'senza'
+  // (canale aperto, nessuna scelta), 'muto' (nessun canale)
+  function annotaRemoto(dove, c, esito) {
+    rem.storia.push({ a: Date.now(), d: String(dove || ''), c: c, e: String(esito || '').slice(0, 80) });
+    if (rem.storia.length > 8) rem.storia.splice(0, rem.storia.length - 8);
+    salvaRemoto(c === 'si' || c === 'no');
+    cambiaStato(); // il telefono lo sa subito (si', no, o la richiesta rimasta senza scelta)
+  }
 
   function frameWs(testo) {
     var dati = new Buffer(testo, 'utf8');
@@ -1650,26 +1709,31 @@
   function messaggioRemoto(testo) {
     var j;
     try { j = JSON.parse(testo); } catch (e) { return; }
-    var ev = j && j.event;
+    var ev = j && j.event, dove = rem.provando ? rem.provando.dove : '';
     if (ev === 'ms.channel.connect') {
+      // ricollegarsi dove il TV aveva gia' detto si' non e' una novita': si annota solo un si' nuovo
+      var gia = rem.stato === 'ok' && rem.dove === dove, prima = rem.token;
       if (j.data && j.data.token) rem.token = String(j.data.token);
       rem.pronto = true;
       rem.stato = 'ok';
       rem.tentativo = 0;
-      salvaRemoto();
+      rem.giro = 0;
+      rem.dove = dove || rem.dove;
+      if (!gia) annotaRemoto(dove, 'si', 'consentito'); else if (rem.token !== prima) salvaRemoto(true);
       // tasti premuti mentre ci si collegava: solo quelli di pochi secondi fa
       var coda = rem.coda, ora = Date.now(); rem.coda = [];
       for (var i = 0; i < coda.length; i++) if (ora - coda[i].at < 4000) inviaRemoto(coda[i].msg);
     } else if (ev === 'ms.channel.unauthorized') {
       rem.stato = 'negato';
       rem.coda = [];
-      salvaRemoto();
+      rem.giro = 0;
+      annotaRemoto(dove, 'no', 'negato');
       chiudiRemoto();
       log('il TV non ha dato il permesso ai tasti dal telefono');
     } else if (ev === 'ms.channel.timeOut') {
-      rem.stato = rem.token ? 'ok' : 'mai';
-      rem.coda = [];
-      chiudiRemoto();
+      if (rem.pronto) { chiudiRemoto(); return; } // canale gia' aperto: non e' una risposta al permesso
+      // il TV ha aspettato la scelta (30 s) e nessuno ha risposto: la richiesta forse non e' comparsa sullo schermo
+      senzaScelta('il TV ha aspettato 30 s, nessuna scelta');
     }
   }
 
@@ -1687,7 +1751,8 @@
       var dati = b.slice(pos, pos + lung);
       if (m) for (var i = 0; i < dati.length; i++) dati[i] = dati[i] ^ m[i % 4];
       rem.buffer = b.length > pos + lung ? b.slice(pos + lung) : null;
-      if (op === 0x8) { chiudiRemoto(); return; }
+      // il TV chiude il canale: prima di un si' o un no e' una richiesta rimasta senza scelta
+      if (op === 0x8) { if (!rem.pronto && rem.stato === 'attesa') senzaScelta('chiuso dal TV senza una scelta'); else chiudiRemoto(); return; }
       if (op === 0x9) { // ping -> pong
         try {
           var pong = frameWs(dati.toString('utf8'));
@@ -1703,33 +1768,88 @@
     }
   }
 
-  // dove bussare: prima l'indirizzo interno, poi quello di rete del TV (alcuni TV chiedono il permesso solo a chi
-  // arriva dalla rete di casa, come i telefoni). Nelle prove solo 127.0.0.1, dove ascolta il TV finto.
+  // dove bussare: prima l'indirizzo di rete del TV, poi quello interno. Il TV mostra la richiesta solo a chi arriva dalla
+  // sua rete di casa: da 127.0.0.1 apre il canale, aspetta 30 s e manda ms.channel.timeOut senza mostrare niente (TV del
+  // 2022 provato il 31/10; lo stesso su un Tizen 9 nel forum degli sviluppatori Samsung, e chi arriva da un'altra rete
+  // per Home Assistant e homebridge). Nelle prove solo 127.0.0.1, dove ascolta il TV finto.
   function indirizziRemoto() {
-    var h = ['127.0.0.1'];
+    var h = [];
     if (HAS_TIZEN && !PROVE) { var ip = indirizziRete()[0]; if (ip) h.push(ip); }
+    h.push('127.0.0.1');
     return h;
+  }
+
+  // le strade possibili, porta per porta (prima la sicura, 8002) e su ogni porta gli indirizzi di indirizziRemoto
+  function combinazioniRemoto() {
+    var h = indirizziRemoto(), l = [];
+    for (var i = 0; i < PORTE_REMOTO.length; i++) {
+      for (var j = 0; j < h.length; j++) {
+        l.push({ host: h[j], porta: PORTE_REMOTO[i].porta, sicura: !!PORTE_REMOTO[i].sicura, dove: h[j] + ':' + PORTE_REMOTO[i].porta });
+      }
+    }
+    return l;
+  }
+  // la strada dopo la i-esima che usa lo stesso tipo di porta (sicura o no)
+  function stessoTipoDopo(l, i) {
+    for (var x = 1; x < l.length; x++) { var y = (i + x) % l.length; if (l[y].sicura === l[i].sicura) return y; }
+    return i;
+  }
+
+  // un giro voluto da chi e' davanti al TV (telefono appena collegato, "Chiedi il permesso"): finche' il TV non dice si' o
+  // no, si bussa subito alla strada dopo, ognuna una volta sola
+  function giroRemoto() {
+    var l = combinazioniRemoto(), c = l[rem.indicePorta % l.length];
+    if (rem.giro <= 0 || !c || rem.provate[c.dove]) { rem.giro = 0; return; }
+    rem.giro--;
+    setTimeout(function () { if (!rem.sock && rem.stato === 'mai') apriRemoto(); }, 300);
+  }
+
+  // il TV ha aperto il canale ma non ha detto ne' si' ne' no (ha aspettato 30 s, o l'ha chiuso): forse la richiesta non e'
+  // comparsa sullo schermo, perche' un TV puo' non mostrarla a chi bussa da dentro. La prossima volta (nel giro, subito)
+  // si bussa all'indirizzo dopo, sullo stesso tipo di porta
+  function senzaScelta(perche) {
+    var p = rem.provando || { i: rem.indicePorta, dove: '' };
+    rem.stato = 'mai';
+    rem.coda = [];
+    rem.ultimoErrore = p.dove + ': ' + perche;
+    annotaRemoto(p.dove, 'senza', perche);
+    chiudiRemoto();
+    var l = combinazioniRemoto();
+    if (l.length) rem.indicePorta = stessoTipoDopo(l, p.i % l.length);
+    giroRemoto();
   }
 
   function apriRemoto() {
     if (rem.sock || !HAS_TIZEN && !PROVE) return;
-    var host = indirizziRemoto(), combinazioni = PORTE_REMOTO.length * host.length;
-    var p = PORTE_REMOTO[rem.indicePorta % PORTE_REMOTO.length];
-    host = host[Math.floor(rem.indicePorta / PORTE_REMOTO.length) % host.length];
-    var dove = host + ':' + p.porta;
+    var l = combinazioniRemoto();
+    // gia' consentito: ci si ricollega dove il TV ha detto si' (una volta per avvio; se li' non risponde, si va avanti)
+    if (rem.stato === 'ok' && rem.dove && !rem.ripreso) {
+      rem.ripreso = true;
+      for (var q = 0; q < l.length; q++) if (l[q].dove === rem.dove) rem.indicePorta = q;
+    }
+    var i = rem.indicePorta % l.length, p = l[i], host = p.host, dove = p.dove;
+    rem.provando = { i: i, dove: dove };
+    rem.provate[dove] = true;
     var nome = new Buffer(NOME_REMOTO, 'utf8').toString('base64');
     var percorso = '/api/v2/channels/samsung.remote.control?name=' + encodeURIComponent(nome) +
       (rem.token ? '&token=' + encodeURIComponent(rem.token) : '');
     var chiave = crypto.randomBytes(16).toString('base64');
-    var intestazioneLetta = false, testa = '', errore = false;
+    var intestazioneLetta = false, testa = '', errore = false, aperto = false;
     var sock;
-    if (rem.stato !== 'ok') rem.stato = 'attesa';
+    if (rem.stato !== 'ok' && rem.stato !== 'attesa') { rem.stato = 'attesa'; cambiaStato(); }
     rem.tentativi++;
-    // il TV non ha risposto come un ingresso per telecomandi: la prossima volta un'altra porta o un altro indirizzo;
-    // se nessuna combinazione risponde (due giri), il TV non lo offre
-    function prossimo() {
-      rem.indicePorta++;
-      if (rem.indicePorta >= combinazioni * 2 && rem.stato !== 'ok') rem.stato = 'assente';
+    // il TV non ha risposto come un ingresso per telecomandi: la prossima volta (nel giro, subito) la strada dopo; se
+    // nessuna ha mai aperto il canale (due giri), il TV non lo offre
+    function muto(testo) {
+      errore = true;
+      rem.ultimoErrore = dove + ': ' + testo;
+      rem.indicePorta = i + 1;
+      rem.muti++;
+      if (rem.stato === 'attesa') rem.stato = 'mai';
+      if (!rem.risposto && rem.muti >= l.length * 2 && rem.stato !== 'ok') rem.stato = 'assente';
+      annotaRemoto(dove, 'muto', testo);
+      chiudiRemoto();
+      giroRemoto();
     }
     function avvia() {
       sock.write('GET ' + percorso + ' HTTP/1.1\r\nHost: ' + dove + '\r\nUpgrade: websocket\r\n' +
@@ -1738,13 +1858,13 @@
     try {
       sock = p.sicura ? tls.connect({ host: host, port: p.porta, rejectUnauthorized: false }, avvia)
         : net.connect({ host: host, port: p.porta }, avvia);
-    } catch (e) { rem.ultimoErrore = dove + ': ' + e.message; prossimo(); return; }
+    } catch (e) { muto(e.message); return; }
     rem.sock = sock;
     rem.buffer = null;
     sock.setTimeout(45000); // il TV aspetta fino a 30 s la risposta sullo schermo
     sock.on('timeout', function () {
       // prima della risposta 101: il TV non ha neanche aperto il canale (la richiesta sullo schermo arriva dopo)
-      if (!rem.pronto) { errore = true; rem.ultimoErrore = dove + ': nessuna risposta in 45 s'; prossimo(); chiudiRemoto(); }
+      if (rem.sock === sock && !intestazioneLetta) muto('nessuna risposta in 45 s');
     });
     sock.on('data', function (d) {
       if (rem.sock !== sock) return;
@@ -1752,10 +1872,9 @@
         testa += d.toString('binary');
         var fine = testa.indexOf('\r\n\r\n');
         if (fine === -1) return;
-        if (!/^HTTP\/1\.1 101/.test(testa)) {
-          errore = true; rem.ultimoErrore = dove + ': ' + testa.split('\r\n')[0].slice(0, 80); prossimo(); chiudiRemoto(); return;
-        }
+        if (!/^HTTP\/1\.1 101/.test(testa)) { muto(testa.split('\r\n')[0].slice(0, 80)); return; }
         intestazioneLetta = true;
+        rem.risposto = true;
         sock.setTimeout(0);
         var resto = new Buffer(testa.slice(fine + 4), 'binary');
         if (resto.length) datiRemoto(resto);
@@ -1765,19 +1884,22 @@
     });
     sock.on('error', function (e) {
       if (rem.sock !== sock) return;
+      // porta chiusa o rete giu' prima della risposta: si prova la strada dopo; a canale aperto si chiude e basta
+      if (!intestazioneLetta) { muto(e.code || e.message); return; }
       errore = true;
       rem.ultimoErrore = dove + ': ' + (e.code || e.message);
-      // porta chiusa: si prova l'altra la prossima volta; se nessuna risponde, il TV non lo offre
-      if (!rem.pronto) prossimo();
+      if (!rem.pronto && rem.stato === 'attesa') { senzaScelta('canale interrotto (' + (e.code || e.message) + ')'); return; }
       chiudiRemoto();
     });
     sock.on('close', function () {
       if (rem.sock !== sock) return;
+      aperto = rem.pronto;
       rem.sock = null;
       rem.pronto = false;
-      // chiuso dal TV prima ancora di rispondere: come una porta chiusa (si prova la combinazione dopo)
-      if (!intestazioneLetta && !errore) { rem.ultimoErrore = dove + ': chiuso dal TV senza risposta'; prossimo(); }
-      if (rem.stato === 'attesa') rem.stato = rem.token ? 'ok' : 'mai';
+      // chiuso dal TV prima ancora di rispondere: come una porta chiusa (si prova la strada dopo)
+      if (!intestazioneLetta && !errore) { muto('chiuso dal TV senza risposta'); return; }
+      // aperto ma chiuso senza un si' o un no
+      if (intestazioneLetta && !aperto && rem.stato === 'attesa') senzaScelta('chiuso dal TV senza una scelta');
     });
   }
 
@@ -1795,6 +1917,17 @@
   // tasti veri disponibili? (permesso dato e ingresso del TV raggiungibile)
   function remotoUsabile() { return rem.stato === 'ok'; }
 
+  // per il telefono: l'ultima richiesta e' rimasta senza un si' o un no (forse la richiesta non e' comparsa sul TV)
+  function notaRemoto() {
+    var u = rem.storia[rem.storia.length - 1];
+    return rem.stato === 'mai' && u && u.c === 'senza' && Date.now() - u.a < 3600000 ? 'senza-scelta' : '';
+  }
+
+  // per 8091/tv (il Mac e l'installatore): i tasti veri e le ultime prove, senza il token
+  function statoRemoto() {
+    return { stato: rem.stato, dove: rem.dove, codice: !!rem.token, tentativi: rem.tentativi, prove: rem.storia.slice() };
+  }
+
   function tastoVero(nome) {
     var codice = TASTI_TV[nome];
     if (!codice) return false;
@@ -1809,11 +1942,16 @@
     return inviaRemoto({ method: 'ms.remote.control', params: { TypeOfRemote: 'SendInputEnd' } });
   }
 
-  // chiedere il permesso sul TV (prima volta, o di nuovo dopo un "no")
+  // chiedere il permesso sul TV (prima volta, o di nuovo dopo un "no"): un giro su tutte le strade, finche' il TV risponde
   function chiediPermessoRemoto() {
     if (ALTRA) { rem.stato = 'assente'; return; }
     if (rem.stato === 'negato' || rem.stato === 'assente') rem.stato = 'mai';
+    // sempre da capo, dalla prima strada (l'indirizzo di rete del TV, dove la richiesta compare). Un no che il TV ricorda
+    // torna subito, e il telefono dice dove toglierlo
     rem.indicePorta = 0;
+    rem.muti = 0;
+    rem.provate = {};
+    rem.giro = combinazioniRemoto().length - 1;
     chiudiRemoto();
     apriRemoto();
   }
@@ -1941,8 +2079,8 @@
   // la home o lo Store sono aperti sul TV (le azioni dello Store le fanno solo loro)
   function storeInAscolto() { return inAscolto() && (tel.dove === 'Home' || tel.dove === 'Store'); }
   function statoPerTelefono() {
-    return { ok: true, ascolta: inAscolto(), dove: tel.dove, tasti: rem.stato, campo: campoAttivo(), video: videoAttuale(), sotto: sottoAttuale(),
-      ver: tel.ver, storeVer: tel.storeVer };
+    return { ok: true, ascolta: inAscolto(), dove: tel.dove, tasti: rem.stato, tastiNota: notaRemoto(), campo: campoAttivo(), video: videoAttuale(),
+      sotto: sottoAttuale(), ver: tel.ver, storeVer: tel.storeVer };
   }
 
   // Continua a guardare dalle pagine (revisione d'insieme, punto 1): la home con la chiave (e le pagine delle prove) come
@@ -14952,7 +15090,7 @@
    *   (locale: solo nelle prove sul computer, un server su 127.0.0.1; dns: ogni nome si controlla prima di collegarsi;
    *   tempoLettura: quanto aspettare un server fermo a meta' film, 30 s se non c'e'; portaMac: dove cercare il limitatore
    *   del Mac accanto a Jellyfin, 8097 se non c'e'; radiceLE: una funzione che da' la radice di Let's Encrypt, per i server
-   *   https sui TV col Node vecchio)
+   *   https sui TV col Node vecchio; passo: fn(testo, subito), i passi nella traccia del servizio, vedi sotto)
    *   Videoteca.gestisci(vt, g, req, res, u, { punto: fn, ponti: p.tratta })
    *
    * Solo ES5 e solo ASCII; va da Node 4.4.3 (TV 2017-2019) in su.
@@ -15413,6 +15551,10 @@
     function crea(o) {
       var http = o.http, https = o.https, urlLib = o.url, fs = o.fs, path = o.path, vt = o.videoteca;
       var log = typeof o.log === 'function' ? o.log : function () {};
+      // i passi nella traccia del servizio del TV (richiesta del 31/10: il TV chiude il servizio di forza all'apertura di Real4K,
+      // e la sonda sul TV ha mostrato che la pagina non c'entra): subito = da scrivere su file adesso, puo' essere l'ultimo
+      function passo(testo, subito) { if (typeof o.passo === 'function') { try { o.passo(String(testo), !!subito); } catch (e) { /* niente */ } } }
+      var passoJf = 0; // le domande a Jellyfin sono tante: un passo ogni 2 s al massimo
       // dalMac: questo codice gira nel ponte del Mac per Real4K a pagina intera (mac/video-diretto/ponte.js), con la sessione
       // data dal servizio del TV: niente video diretto (il video arriva gia' dal Mac), niente cambio di server o di accesso
       var dalMac = o.dalMac === true;
@@ -16004,17 +16146,22 @@
       }
       // la sessione per la home: pronto (il ponte l'ha aperta), acceso (la scelta di questo TV), app (la pagina e tutti i suoi file
       // sono pronti sul Mac), e l'indirizzo della pagina col gettone del Mac. motivo: jellyfin, mac, versione, sessione
-      function sessioneReal4k(app, cb) {
+      function sessioneReal4k(app, cb0) {
         var dove = dovePonte();
+        function cb(r) { passo('real4k-mac: rispondo (' + (r.pronto ? 'pronto' : String(r.motivo || '')) + ')', true); cb0(r); }
+        passo('real4k-mac: inizio', true);
         if (dalMac || !cfg.token || !cfg.utente || !cfg.id) { cb({ pronto: false, motivo: 'jellyfin' }); return; }
         if (!dove) { cb({ pronto: false, motivo: 'mac' }); return; }
-        ponteReal4k(dove, function (noto) { if (noto) chiediSessione(); else cb({ pronto: false, motivo: 'mac' }); });
+        passo('real4k-mac: controllo il ponte', true);
+        ponteReal4k(dove, function (noto) { passo('real4k-mac: ponte ' + (noto ? 'buono' : 'no'), true); if (noto) chiediSessione(); else cb({ pronto: false, motivo: 'mac' }); });
         function chiediSessione() {
+          passo('real4k-mac: chiedo la sessione', true);
           chiedi({ dove: dove, percorso: 'sessioni', metodo: 'POST', diretto: true, tempo: REAL4K_TEMPO, max: 8192,
             corpo: { server: cfg.id, nome: cfg.nome || '', versione: cfg.versione || '', utente: cfg.utente, dispositivo: cfg.dispositivo, letti: letti(),
               tetto: partenza(), imp: imp, nomeTv: nomeDelTv(), impronta: String(o.impronta || ''),
               app: /^https:\/\/[a-z0-9-]{1,39}\.github\.io\/[A-Za-z0-9._-]{1,100}\/$/.test(app) ? app : '' } },
             function (err, st, j) {
+              passo('real4k-mac: risposta del ponte ' + (err ? 'errore' : st), true);
               if (!err && st === 200 && j && j.acceso === false) { cb({ pronto: true, acceso: false, app: false }); return; }
               var g = !err && st === 200 && j && typeof j.gettone === 'string' && /^[0-9a-f]{64}$/.test(j.gettone) ? j.gettone : '';
               // il Mac che non risponde piu' (spento, addormentato, lento): la prossima apertura va subito nel riquadro, e intanto
@@ -16063,12 +16210,17 @@
         if (!cfg.token || !cfg.utente) { rispondi(res, 401, { error: 'serve l\'accesso a Jellyfin', codice: 'accesso' }); return; }
         var query = senzaChiavi('?' + (String(u.search || '').replace(/^\?/, ''))).replace(/^\?/, '');
         if (/^Videos\/ActiveEncodings$/i.test(percorso)) query = query.replace(/(^|&)DeviceId=[^&]*/ig, '') + (query ? '&' : '') + 'DeviceId=' + cfg.dispositivo;
+        // un passo ogni 2 s al massimo: solo il tipo della domanda, mai id o nomi
+        var ora0 = Date.now(), segnata = ora0 - passoJf >= 2000, tipoJf = /\/Images\/|\/Trickplay\//i.test(percorso) ? 'immagine' :
+          /^Videos\//i.test(percorso) ? 'video' : /^Sessions\//i.test(percorso) ? 'avanzamento' : 'dati';
+        if (segnata) { passoJf = ora0; passo('jf/p: ' + metodo + ' ' + tipoJf); }
         function vai(corpo) {
           var lungo = /^Videos\/[^\/]+\/(stream|hls1\/)/i.test(percorso);
           var img = /\/Images\/|\/Trickplay\//i.test(percorso), acc = String(req.headers.accept || '');
           var dr = apriDomanda({ percorso: percorso, query: query.replace(/^&/, ''), metodo: metodo, corpo: corpo,
             accetta: img && /^[\w\/*+.,;=\s-]{1,200}$/.test(acc) ? acc : '*/*',
             range: req.headers.range, tempo: lungo || /\.m3u8$/i.test(percorso) ? 60000 : 15000, lungo: lungo }, function (err, r) {
+            if (segnata) passo('jf/p: ' + tipoJf + ' ' + (err ? 'errore' : r.statusCode));
             if (err) { rispondi(res, 502, { error: err.message, codice: 'rete' }); return; }
             if (r.statusCode === 401 && cfg.token) { r.resume(); dimentica(); rispondi(res, 401, { error: 'accesso scaduto', codice: 'accesso' }); return; }
             var tipo = String(r.headers['content-type'] || '');
@@ -16623,12 +16775,14 @@
   })();
   /* </ponti:generato> */
   /* <impronta:generato> l'impronta di videoteca.js e ponti-video.js (prove/incorpora_videoteca.py): non modificare qui */
-  var IMPRONTA_MAC = 'a11260853b80f9ca';
+  var IMPRONTA_MAC = '9263be137e04dbe9';
   /* </impronta:generato> */
   var pontiVideo = PontiVideo.crea({ http: http, https: require('https'), dgram: require('dgram'), url: urlLib, crypto: require('crypto'),
     // Real4K dal Mac: il ponte del Mac apre una sessione solo se ha lo stesso codice del servizio
     impronta: IMPRONTA_MAC,
     dns: require('dns'), fs: fs, path: pathLib, cartella: CACHE_DIR, videoteca: videoteca, letti: lettiTv, log: log,
+    // i passi nella traccia (la sessione di Real4K sul Mac, le domande a Jellyfin): dopo una chiusura di forza si vede l'ultimo
+    passo: function (cosa, subito) { if (subito) segnaSubito(cosa); else segna(cosa); },
     // il tetto di partenza dell'app Video lo dice il profilo del TV (150 dai TV del 2020, 80 prima)
     tettoPartenza: function () { return ProfiloTV.tettoVideo(fattiTv()); },
     // Jellyfin in https con Let's Encrypt sui TV col Node vecchio: la stessa radice delle liste dei filtri e dello Store
@@ -17027,6 +17181,7 @@
         try { p.memoria = memoriaVera(); p.acceso = { minuti: Math.round((Date.now() - traccia.avvio) / 60000), inVolo: traccia.inVolo, video: traccia.video };
           p.ultimeFini = traccia.fini.slice(); } catch (e) { annotaErrore('tv traccia', e); }
         try { p.custode = statoCustode(); } catch (e) { annotaErrore('tv custode', e); }
+        try { p.telecomando = statoRemoto(); } catch (e) { annotaErrore('tv telecomando', e); }
         try { p.scatolaNera = statoDiagnosi(); } catch (e) { annotaErrore('tv scatola nera', e); }
         try { rispondiTel(res, 200, p); } catch (e) { annotaErrore('tv risposta', e); }
       });
@@ -17082,8 +17237,8 @@
         if (!telefonoValido(body.t)) { rispondiTel(res, 401, { error: 'non collegato' }); return; }
         var ascoltava = inAscolto();
         var errore = comandoDalTelefono(body);
-        if (errore) { rispondiTel(res, 400, { error: errore, tasti: rem.stato }); return; }
-        rispondiTel(res, 200, { ok: true, ascolta: ascoltava, dove: tel.dove, tasti: rem.stato, coda: tel.inCoda });
+        if (errore) { rispondiTel(res, 400, { error: errore, tasti: rem.stato, tastiNota: notaRemoto() }); return; }
+        rispondiTel(res, 200, { ok: true, ascolta: ascoltava, dove: tel.dove, tasti: rem.stato, tastiNota: notaRemoto(), coda: tel.inCoda });
       });
       return;
     }
@@ -18875,9 +19030,10 @@
     '  }',
     '',
     '  function api(percorso, corpo, segnale) {',
-    '    // anteprima: "?demo&tasti=mai" fa vedere il telecomando senza il permesso del TV',
+    '    // anteprima: "?demo&tasti=mai" fa vedere il telecomando senza il permesso del TV ("&nota=senza-scelta": la richiesta',
+    '    // rimasta senza una scelta)',
     '    if (DEMO) return Promise.resolve({ ok: true, ascolta: true, dove: \'Anteprima\', t: \'demo\',',
-    '      tasti: (/[?&]tasti=([a-z]+)/.exec(location.search) || [])[1] || \'ok\' });',
+    '      tasti: (/[?&]tasti=([a-z]+)/.exec(location.search) || [])[1] || \'ok\', tastiNota: (/[?&]nota=([a-z-]+)/.exec(location.search) || [])[1] || \'\' });',
     '    var opz = { cache: \'no-store\' };',
     '    if (segnale) opz.signal = segnale;',
     '    if (corpo) { opz.method = \'POST\'; opz.headers = { \'Content-Type\': \'text/plain\' }; opz.body = JSON.stringify(corpo); }',
@@ -18935,7 +19091,7 @@
     '      if (j.__stato === 401) { perso(); return j; }',
     '      if (j.error === \'non-disponibile\') {',
     '        avviso(SENZA_PERMESSO, 5000);',
-    '        mostraPermesso(j.tasti);',
+    '        mostraPermesso(j.tasti, j.tastiNota);',
     '        if (foglioAperto && foglioAperto.id === \'foglio-altro\') foglioAperto.scrollTop = 0;',
     '        return j;',
     '      }',
@@ -18974,20 +19130,23 @@
     '    dot.className = \'dot \' + (j.ascolta || j.tasti === \'ok\' ? \'ok\' : \'no\');',
     '    n.textContent = \'Sul TV\';',
     '    s.textContent = j.ascolta ? (j.dove || \'Home\') : \'Un\\u2019altra app\';',
-    '    if (j.tasti) mostraPermesso(j.tasti);',
+    '    if (j.tasti) mostraPermesso(j.tasti, j.tastiNota);',
     '  }',
     '  // i tasti veri del TV (volume, canali, numeri...) vogliono il permesso del TV: finche\' manca, il telecomando dice come darlo',
-    '  function mostraPermesso(t) {',
+    '  // nota \'senza-scelta\': il TV ha aperto la richiesta ma nessuno ha scelto (forse sullo schermo non e\' comparsa)',
+    '  function mostraPermesso(t, nota) {',
     '    var box = $(\'permesso\'), p = $(\'permesso-testo\'), b = $(\'chiedi-permesso\');',
     '    if (!box || !t) return;',
+    '    var senza = t === \'mai\' && nota === \'senza-scelta\';',
     '    box.hidden = t === \'ok\';',
     '    b.hidden = t === \'attesa\';',
-    '    $(\'permesso-aiuto\').hidden = t !== \'negato\';',
-    '    p.textContent = t === \'attesa\' ? \'Sul TV \\u00e8 comparsa la richiesta di Home TV: scegli Consenti col telecomando del TV.\' :',
+    '    $(\'permesso-aiuto\').hidden = t !== \'negato\' && !senza;',
+    '    p.textContent = t === \'attesa\' ? \'Guarda il TV: dovrebbe comparire la richiesta di Home TV. Scegli Consenti col telecomando del TV (hai 30 secondi).\' :',
+    '      senza ? \'Il TV ha aspettato la tua scelta ma non l\\u2019ha avuta. Tocca Chiedi di nuovo e guarda il TV.\' :',
     '      t === \'negato\' ? \'Il TV ha negato il permesso ai tasti dal telefono.\' :',
     '      t === \'assente\' ? \'Il TV non risponde ai tasti dal telefono.\' :',
     '      \'Volume, canali, numeri e i tasti del televisore funzionano dopo il permesso del TV (una volta sola).\';',
-    '    b.textContent = t === \'mai\' ? \'Chiedi il permesso al TV\' : \'Chiedi di nuovo\';',
+    '    b.textContent = t === \'mai\' && !senza ? \'Chiedi il permesso al TV\' : \'Chiedi di nuovo\';',
     '  }',
     '  $(\'chiedi-permesso\').addEventListener(\'click\', function () {',
     '    invia({ tipo: \'permesso\' }).then(function (j) {',

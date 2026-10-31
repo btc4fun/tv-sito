@@ -19,7 +19,7 @@
  *   (locale: solo nelle prove sul computer, un server su 127.0.0.1; dns: ogni nome si controlla prima di collegarsi;
  *   tempoLettura: quanto aspettare un server fermo a meta' film, 30 s se non c'e'; portaMac: dove cercare il limitatore
  *   del Mac accanto a Jellyfin, 8097 se non c'e'; radiceLE: una funzione che da' la radice di Let's Encrypt, per i server
- *   https sui TV col Node vecchio)
+ *   https sui TV col Node vecchio; passo: fn(testo, subito), i passi nella traccia del servizio, vedi sotto)
  *   Videoteca.gestisci(vt, g, req, res, u, { punto: fn, ponti: p.tratta })
  *
  * Solo ES5 e solo ASCII; va da Node 4.4.3 (TV 2017-2019) in su.
@@ -480,6 +480,10 @@ var PontiVideo = (function () {
   function crea(o) {
     var http = o.http, https = o.https, urlLib = o.url, fs = o.fs, path = o.path, vt = o.videoteca;
     var log = typeof o.log === 'function' ? o.log : function () {};
+    // i passi nella traccia del servizio del TV (richiesta del 31/10: il TV chiude il servizio di forza all'apertura di Real4K,
+    // e la sonda sul TV ha mostrato che la pagina non c'entra): subito = da scrivere su file adesso, puo' essere l'ultimo
+    function passo(testo, subito) { if (typeof o.passo === 'function') { try { o.passo(String(testo), !!subito); } catch (e) { /* niente */ } } }
+    var passoJf = 0; // le domande a Jellyfin sono tante: un passo ogni 2 s al massimo
     // dalMac: questo codice gira nel ponte del Mac per Real4K a pagina intera (mac/video-diretto/ponte.js), con la sessione
     // data dal servizio del TV: niente video diretto (il video arriva gia' dal Mac), niente cambio di server o di accesso
     var dalMac = o.dalMac === true;
@@ -1071,17 +1075,22 @@ var PontiVideo = (function () {
     }
     // la sessione per la home: pronto (il ponte l'ha aperta), acceso (la scelta di questo TV), app (la pagina e tutti i suoi file
     // sono pronti sul Mac), e l'indirizzo della pagina col gettone del Mac. motivo: jellyfin, mac, versione, sessione
-    function sessioneReal4k(app, cb) {
+    function sessioneReal4k(app, cb0) {
       var dove = dovePonte();
+      function cb(r) { passo('real4k-mac: rispondo (' + (r.pronto ? 'pronto' : String(r.motivo || '')) + ')', true); cb0(r); }
+      passo('real4k-mac: inizio', true);
       if (dalMac || !cfg.token || !cfg.utente || !cfg.id) { cb({ pronto: false, motivo: 'jellyfin' }); return; }
       if (!dove) { cb({ pronto: false, motivo: 'mac' }); return; }
-      ponteReal4k(dove, function (noto) { if (noto) chiediSessione(); else cb({ pronto: false, motivo: 'mac' }); });
+      passo('real4k-mac: controllo il ponte', true);
+      ponteReal4k(dove, function (noto) { passo('real4k-mac: ponte ' + (noto ? 'buono' : 'no'), true); if (noto) chiediSessione(); else cb({ pronto: false, motivo: 'mac' }); });
       function chiediSessione() {
+        passo('real4k-mac: chiedo la sessione', true);
         chiedi({ dove: dove, percorso: 'sessioni', metodo: 'POST', diretto: true, tempo: REAL4K_TEMPO, max: 8192,
           corpo: { server: cfg.id, nome: cfg.nome || '', versione: cfg.versione || '', utente: cfg.utente, dispositivo: cfg.dispositivo, letti: letti(),
             tetto: partenza(), imp: imp, nomeTv: nomeDelTv(), impronta: String(o.impronta || ''),
             app: /^https:\/\/[a-z0-9-]{1,39}\.github\.io\/[A-Za-z0-9._-]{1,100}\/$/.test(app) ? app : '' } },
           function (err, st, j) {
+            passo('real4k-mac: risposta del ponte ' + (err ? 'errore' : st), true);
             if (!err && st === 200 && j && j.acceso === false) { cb({ pronto: true, acceso: false, app: false }); return; }
             var g = !err && st === 200 && j && typeof j.gettone === 'string' && /^[0-9a-f]{64}$/.test(j.gettone) ? j.gettone : '';
             // il Mac che non risponde piu' (spento, addormentato, lento): la prossima apertura va subito nel riquadro, e intanto
@@ -1130,12 +1139,17 @@ var PontiVideo = (function () {
       if (!cfg.token || !cfg.utente) { rispondi(res, 401, { error: 'serve l\'accesso a Jellyfin', codice: 'accesso' }); return; }
       var query = senzaChiavi('?' + (String(u.search || '').replace(/^\?/, ''))).replace(/^\?/, '');
       if (/^Videos\/ActiveEncodings$/i.test(percorso)) query = query.replace(/(^|&)DeviceId=[^&]*/ig, '') + (query ? '&' : '') + 'DeviceId=' + cfg.dispositivo;
+      // un passo ogni 2 s al massimo: solo il tipo della domanda, mai id o nomi
+      var ora0 = Date.now(), segnata = ora0 - passoJf >= 2000, tipoJf = /\/Images\/|\/Trickplay\//i.test(percorso) ? 'immagine' :
+        /^Videos\//i.test(percorso) ? 'video' : /^Sessions\//i.test(percorso) ? 'avanzamento' : 'dati';
+      if (segnata) { passoJf = ora0; passo('jf/p: ' + metodo + ' ' + tipoJf); }
       function vai(corpo) {
         var lungo = /^Videos\/[^\/]+\/(stream|hls1\/)/i.test(percorso);
         var img = /\/Images\/|\/Trickplay\//i.test(percorso), acc = String(req.headers.accept || '');
         var dr = apriDomanda({ percorso: percorso, query: query.replace(/^&/, ''), metodo: metodo, corpo: corpo,
           accetta: img && /^[\w\/*+.,;=\s-]{1,200}$/.test(acc) ? acc : '*/*',
           range: req.headers.range, tempo: lungo || /\.m3u8$/i.test(percorso) ? 60000 : 15000, lungo: lungo }, function (err, r) {
+          if (segnata) passo('jf/p: ' + tipoJf + ' ' + (err ? 'errore' : r.statusCode));
           if (err) { rispondi(res, 502, { error: err.message, codice: 'rete' }); return; }
           if (r.statusCode === 401 && cfg.token) { r.resume(); dimentica(); rispondi(res, 401, { error: 'accesso scaduto', codice: 'accesso' }); return; }
           var tipo = String(r.headers['content-type'] || '');

@@ -706,7 +706,9 @@ var StoreDati = (function () {
   function macReal4k() {
     var v = null;
     try { var t = localStorage.getItem(K_MAC); v = t ? JSON.parse(t) : null; } catch (e) { v = null; }
-    return v && typeof v === 'object' && typeof v.url === 'string' && /^http:\/\/[0-9a-fA-F.:\[\]]{3,47}:8098\/real4k\/$/.test(v.url) && v.quando > 0 ? v : null;
+    // (solo un IP della rete di casa: li' sta il ponte, accanto al Jellyfin di casa)
+    return v && typeof v === 'object' && typeof v.url === 'string' && v.quando > 0 &&
+      /^http:\/\/((10|127)\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3}|\[(::1|f[cd][0-9a-f:]{1,40}|fe[89ab][0-9a-f:]{1,40})\]):8098\/real4k\/$/i.test(v.url) ? v : null;
   }
   function scriviMacReal4k(url) {
     if (url) scrivi(K_MAC, { url: url, quando: Date.now() }); else togli(K_MAC);
