@@ -15,6 +15,7 @@
  *                            senza (la home con la chiave, l'app Video col gettone) tutto come sempre
  *   v.perHome()              GET /api/visti: { visti, totale }
  *   v.cambia(azione, corpo)  POST /api/visti/riprendi | togli | rinomina | visto | svuota
+ *   v.daJellyfin(l, app)     POST /api/visti/jellyfin: i punti che sa Jellyfin (vince il piu' recente); v.jellyfin() i suoi id
  *   v.riproduci(url)         "Riproduci sul TV" dal telefono: la pagina fa partire il suo video
  *   v.intento(origine)       per le scelte delle pagine (prefs.continua), oppure null (a una pagina solo del suo sito)
  */
@@ -65,6 +66,28 @@ var VistiTV = (function () {
     function riprendiAltrove() { var p = o.prefs ? o.prefs() : null; return !!p && p.riprendiAltroSito === true; }
     function sitoBuono(e, p) { return (!daPagina && riprendiAltrove()) || stessoSito(hostLink(e.url), hostLink(p.url)); }
     var visti = Array.isArray(o.dati) ? o.dati : [];
+    // le schede tolte a mano e l'ora di "Svuota" (richiesta del 31/10): un punto di Jellyfin che non e' piu' recente non le rifa'.
+    // { schede: { <id di Jellyfin>: ora }, chiavi: { <chiave dell'opera>: ora }, svuotato: ora }, salvate a parte (o.salvaTolte)
+    var tolte = o.tolte && typeof o.tolte === 'object' && !Array.isArray(o.tolte) ? o.tolte : {};
+    if (!tolte.schede || typeof tolte.schede !== 'object') tolte.schede = {};
+    if (!tolte.chiavi || typeof tolte.chiavi !== 'object') tolte.chiavi = {};
+    if (typeof tolte.svuotato !== 'number') tolte.svuotato = 0;
+    function salvaTolte() { if (o.salvaTolte) o.salvaTolte(tolte); }
+    // al massimo 40 per elenco: via le piu' vecchie
+    function tieniPoche(m) {
+      var k = Object.keys(m);
+      if (k.length <= 40) return;
+      k.sort(function (a, b) { return m[a] - m[b]; });
+      for (var i = 0; i < k.length - 40; i++) delete m[k[i]];
+    }
+    function segnaTolta(e) {
+      var ora = Date.now(), m = /^jellyfin:([0-9a-f]{32})$/.exec(e.video || '');
+      if (m) tolte.schede[m[1]] = ora;
+      if (e.chiave) tolte.chiavi[e.chiave] = ora;
+      tieniPoche(tolte.schede);
+      tieniPoche(tolte.chiavi);
+      salvaTolte();
+    }
     var intentoContinua = null;
 
     /* ---------------------------------------------------------- le pagine (revisione d'insieme, punto 1)
@@ -458,6 +481,8 @@ var VistiTV = (function () {
       var id = identita(p, dur);
       if (!id.chiave) return;
       var finito = pos >= dur - Math.max(90, dur * 0.05);
+      // l'ora del punto: adesso, o quella che dice Jellyfin (daJellyfin: un punto di prima va al suo posto fra le schede)
+      var ora = Date.now(), quando = !daPagina && typeof b.quando === 'number' && b.quando > 0 && b.quando < ora ? b.quando : ora;
       // quanto e' stato guardato davvero (lo dicono le pagine): un sito che riprende da solo dal suo punto non e' "visto"
       var poco = typeof b.guardato === 'number' && b.guardato < MIN_VISTO && b.scelto !== true;
       var e = trovaVisto(id, p);
@@ -503,7 +528,9 @@ var VistiTV = (function () {
       e.posizione = Math.round(pos);
       e.durata = Math.round(dur);
       e.finito = finito;
-      e.quando = Date.now();
+      e.quando = quando;
+      // il punto di Jellyfin applicato (la sua ora, gia' in quella del TV): lo stesso punto non si applica due volte
+      if (!daPagina && typeof b.daJf === 'number') e.daJf = b.daJf;
       if (p.immagine) e.immagine = p.immagine;
       // il titolo della pagina senza il nome del sito: un riferimento scritto sulla scheda quando stagione e puntata non si
       // riconoscono (cambiando sito si sa almeno cosa cercare)
@@ -511,8 +538,67 @@ var VistiTV = (function () {
       // la puntata dopo (solo per le serie): se questa volta il sito non la mostra, vale quella saputa prima
       var prossimo = id.episodio != null && p.prossimo && urlNorm(p.prossimo) !== urlNorm(p.url) ? p.prossimo : '';
       if (prossimo || !stessaDiPrima) { e.prossimo = prossimo; e.prossimoSito = prossimo ? nomeSito(p) : ''; }
+      // un punto di prima: dopo le schede piu' recenti (in cima resta l'ultimo video guardato)
+      if (quando < ora) {
+        for (var k = visti.indexOf(e); k + 1 < visti.length && (visti[k + 1].quando || 0) > quando; k++) { visti[k] = visti[k + 1]; visti[k + 1] = e; }
+      }
       if (visti.length > MAX_VISTI) visti.length = MAX_VISTI;
       salva(false);
+    }
+    /* ---------------------------------------------------------- i punti di Jellyfin (richiesta del 31/10)
+     * Real4K manda il punto anche a Jellyfin, e da li' arriva anche quando il servizio del TV e' giu' (Real4K aperta dal Mac):
+     * il servizio lo chiede quando si apre la home e lo passa qui. Entra come il punto dell'app Video, ma solo se e' piu'
+     * recente della scheda che c'e' (vince il piu' recente, con un minuto di margine: gli orologi del TV e del server non
+     * sono uguali). Un video finito su Jellyfin finisce anche qui; uno che qui non c'e' diventa una scheda solo se e' a meta'.
+     * Una scheda tolta a mano, "Svuota" e "Segna come visto" valgono finche' Jellyfin non ha un punto piu' recente.
+     * l: [{ jf, titolo, anno, stagione, episodio, posizione, durata, quando, finito }] (titolo: della serie, per le puntate;
+     * quando: gia' nell'ora del TV, vedi ponti-video.js); app: l'indirizzo dell'app Video dello Store, gia' controllato dal
+     * servizio ('' = solo le schede che ci sono gia') */
+    var MARGINE_JF = 60000;
+    function daJellyfin(l, app) {
+      if (!Array.isArray(l)) return 0;
+      var ora = Date.now(), n = 0, i, k;
+      l = l.filter(function (x) {
+        return !!x && typeof x === 'object' && /^[0-9a-f]{32}$/.test(String(x.jf)) && typeof x.quando === 'number' && x.quando > 0 &&
+          typeof x.durata === 'number' && typeof x.posizione === 'number';
+      }).slice(0, 20);
+      // dal piu' vecchio al piu' recente: in cima resta l'ultimo guardato
+      l.sort(function (a, b) { return a.quando - b.quando; });
+      for (i = 0; i < l.length; i++) {
+        var x = l[i], ep = x.episodio > 0, url = typeof app === 'string' && app ? app + '#/jf/' + x.jf : '', q = Math.min(x.quando, ora);
+        // tolta a mano, o "Svuota": solo un punto piu' recente la rifa'
+        if (q <= tolte.svuotato + MARGINE_JF || (tolte.schede[x.jf] && q <= tolte.schede[x.jf] + MARGINE_JF)) continue;
+        for (k = 0; k < visti.length; k++) if (visti[k].video === 'jellyfin:' + x.jf) { url = visti[k].url; break; }
+        if (!url) continue;
+        var titolo = testo(x.titolo, 120);
+        // (le puntate senza anno, come le manda Real4K: le stagioni di anni diversi sono la stessa serie)
+        var raw = { url: url, titolo: titolo + (ep ? ' \u00b7 S' + (Number(x.stagione) || 0) + ' E' + x.episodio : x.anno ? ' (' + x.anno + ')' : ''),
+          video: 'jellyfin:' + x.jf, ld: { nome: ep ? '' : titolo, serie: ep ? titolo : '', stagione: ep ? Number(x.stagione) || 0 : 0,
+            episodio: ep ? Number(x.episodio) : 0, anno: ep ? 0 : Number(x.anno) || 0 } };
+        var p = paginaPulita(raw), dur = x.durata;
+        if (!p || !(dur >= MIN_DURATA) || dur > 1e6) continue;
+        var id = identita(p, dur), e = id.chiave ? trovaVisto(id, p) : null;
+        if (id.chiave && tolte.chiavi[id.chiave] && q <= tolte.chiavi[id.chiave] + MARGINE_JF) continue;
+        // lo stesso punto di Jellyfin (o uno di prima) e' gia' applicato; se no, la scheda del TV e' recente quanto lui o di piu'
+        // (anche "Segna come visto")
+        if (e && e.daJf && x.quando <= e.daJf) continue;
+        if (e && Math.max(e.quando || 0, e.deciso || 0) + MARGINE_JF >= q) continue;
+        if (!e && (x.finito || !(x.posizione >= MIN_VISTO))) continue; // niente schede nuove per un video finito o appena aperto
+        // (con l'elenco pieno, una scheda nuova piu' vecchia di tutte verrebbe tagliata subito)
+        if (!e && visti.length >= MAX_VISTI && q <= (visti[visti.length - 1].quando || 0)) continue;
+        registraVisto({ pagina: raw, durata: dur, posizione: x.finito ? dur : x.posizione, scelto: true, quando: q, daJf: x.quando });
+        n++;
+      }
+      return n;
+    }
+    // gli id di Jellyfin delle schede in corso (il servizio chiede a Jellyfin anche di loro: finite altrove?)
+    function idJellyfin() {
+      var out = [];
+      for (var i = 0; i < visti.length && out.length < MAX_SCHEDE; i++) {
+        var m = /^jellyfin:([0-9a-f]{32})$/.exec(visti[i].video || '');
+        if (m && !visti[i].finito) out.push(m[1]);
+      }
+      return out;
     }
     // quando parte un video: riprendere? (stesso video: da solo; stessa opera su un'altra pagina dello stesso sito, o di un
     // altro sito con l'opzione: si propone)
@@ -603,7 +689,7 @@ var VistiTV = (function () {
       return out;
     }
     function cambiaVisti(azione, b) {
-      if (azione === 'svuota') { visti = []; intentoContinua = null; salva(true); return { ok: true }; }
+      if (azione === 'svuota') { visti = []; intentoContinua = null; tolte.svuotato = Date.now(); salvaTolte(); salva(true); return { ok: true }; }
       var e = null, i;
       for (i = 0; i < visti.length; i++) if (visti[i].id === b.id) { e = visti[i]; break; }
       if (!e) return { ok: false, error: 'non trovato' };
@@ -613,9 +699,9 @@ var VistiTV = (function () {
           video: e.video || '', prossima: !!(e.finito && e.prossimo), creato: Date.now(), scade: Date.now() + 120000 };
         return { ok: true, url: url };
       }
-      if (azione === 'togli') visti.splice(i, 1);
+      if (azione === 'togli') { visti.splice(i, 1); segnaTolta(e); }
       else if (azione === 'rinomina') e.titoloMio = testo(b.titolo, 80).replace(/^\s+|\s+$/g, '');
-      else if (azione === 'visto') e.finito = true;
+      else if (azione === 'visto') { e.finito = true; e.deciso = Date.now(); }
       salva(true);
       return { ok: true };
     }
@@ -625,6 +711,8 @@ var VistiTV = (function () {
       cerca: function (b, origine) { return comePagina(origine, function () { return cercaVisto(b); }); },
       perHome: function () { return { visti: vistiPerHome(), totale: visti.length }; },
       cambia: cambiaVisti,
+      daJellyfin: daJellyfin,
+      jellyfin: idJellyfin,
       riproduci: function (url) {
         intentoContinua = { url: url, posizione: 0, id: '', durata: 0, video: '', prossima: false, riproduci: true,
           creato: Date.now(), scade: Date.now() + 120000 };

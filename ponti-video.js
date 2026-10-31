@@ -21,6 +21,7 @@
  *   del Mac accanto a Jellyfin, 8097 se non c'e'; radiceLE: una funzione che da' la radice di Let's Encrypt, per i server
  *   https sui TV col Node vecchio; passo: fn(testo, subito), i passi nella traccia del servizio, vedi sotto)
  *   Videoteca.gestisci(vt, g, req, res, u, { punto: fn, ponti: p.tratta })
+ *   p.riprendi(id, cb), p.fotoRiprendi(id, ms, cb)   Continua a guardare della home (POST /api/visti/jellyfin), vedi sotto
  *
  * Solo ES5 e solo ASCII; va da Node 4.4.3 (TV 2017-2019) in su.
  */
@@ -235,14 +236,21 @@ var PontiVideo = (function () {
   // DOVIWithHDR10Plus: Dolby Vision 8.1 con l'HDR10+ dentro (per esempio Spider-Man: Brand New Day). Il TV legge la base
   // HDR10 e l'HDR10+ (Samsung); senza questa voce Jellyfin ricodifica in SDR anche l'originale (VideoRangeTypeNotSupported)
   var GAMME = { h264: 'SDR', hevc: 'SDR|HDR10|HDR10Plus|HLG|DOVIWithHDR10|DOVIWithHDR10Plus|DOVIWithHLG|DOVIWithSDR', vp9: 'SDR|HDR10|HLG', av1: 'SDR|HDR10|HDR10Plus|HLG' };
-  // gammaIn: un tipo di HDR in piu' per l'HEVC (il tipo esatto di un Dolby Vision che il profilo non elenca, vedi guarda)
-  function profilo(letti, q, gammaIn) {
+  // gammaIn: un tipo di HDR in piu' per l'HEVC (il tipo esatto di un Dolby Vision che il profilo non elenca, vedi guarda).
+  // pezziMp4: Real4K dal Mac (ponte del Mac). Dalla pagina http del Mac l'HLS nativo del TV non parte (sonda del 31/10/2026), e
+  // l'app legge i pezzi da se' con MSE, che sul TV vuole fMP4 (i TS no): pezzi fMP4 da almeno 3 s (con il video copiato si
+  // taglia sui fotogrammi chiave), cosi' ognuno resta piccolo anche in 4K e un salto riparte presto
+  function profilo(letti, q, gammaIn, pezziMp4) {
     var v = [], a = [], k;
     for (k in JF_VIDEO) if (letti.video[k]) v.push(JF_VIDEO[k]);
     for (k in JF_AUDIO) if (letti.audio[k] === true) a.push(JF_AUDIO[k]);
     var bps = q.mbps ? q.mbps * 1e6 : 400e6, cond = [];
     if (q.larg) cond.push({ Condition: 'LessThanEqual', Property: 'Width', Value: String(q.larg), IsRequired: true });
     var conv = ['eac3', 'ac3', 'aac'].filter(function (x) { return a.indexOf(x) >= 0; });
+    var hls = { Container: 'ts', Type: 'Video', Protocol: 'hls', Context: 'Streaming',
+      VideoCodec: v.filter(function (x) { return x === 'hevc' || x === 'h264'; }).join(',') || 'h264',
+      AudioCodec: conv.join(',') || 'aac', MaxAudioChannels: '6', MinSegments: 1, BreakOnNonKeyFrames: false };
+    if (pezziMp4) { hls.Container = 'mp4'; hls.SegmentLength = 3; }
     function c(cond0, prop, val) { return { Condition: cond0, Property: prop, Value: val, IsRequired: false }; }
     var codec = [
       { Type: 'Video', Codec: 'h264', Conditions: [c('EqualsAny', 'VideoProfile', 'high|main|baseline|constrained baseline'), c('LessThanEqual', 'VideoLevel', '52'),
@@ -256,9 +264,7 @@ var PontiVideo = (function () {
     return {
       Name: 'Home TV', MaxStreamingBitrate: bps, MaxStaticBitrate: bps, MusicStreamingTranscodingBitrate: 384000,
       DirectPlayProfiles: [{ Container: 'mkv,webm,mp4,m4v,mov,ts,m2ts', Type: 'Video', VideoCodec: v.join(','), AudioCodec: a.join(',') }],
-      TranscodingProfiles: [{ Container: 'ts', Type: 'Video', Protocol: 'hls', Context: 'Streaming',
-        VideoCodec: v.filter(function (x) { return x === 'hevc' || x === 'h264'; }).join(',') || 'h264',
-        AudioCodec: conv.join(',') || 'aac', MaxAudioChannels: '6', MinSegments: 1, BreakOnNonKeyFrames: false }],
+      TranscodingProfiles: [hls],
       ContainerProfiles: [], CodecProfiles: codec,
       // i sottotitoli li disegna l'app: Jellyfin non li brucia mai nel video
       SubtitleProfiles: ['srt', 'subrip', 'ass', 'ssa', 'vtt', 'webvtt', 'pgssub', 'dvdsub', 'mov_text'].map(function (f) { return { Format: f, Method: 'External' }; })
@@ -600,7 +606,9 @@ var PontiVideo = (function () {
           if (rotto) return;
           if (r.statusCode === 401 && x.mac && x.mac !== 'senza' && mac.chiave) { dimenticaMac(); cb(errore('accesso', 'il Mac non riconosce piu\' questo TV')); return; }
           // (un 401 del ponte del video diretto non dice niente del token: l'accesso a Jellyfin resta)
-          if (r.statusCode === 401 && !x.mac && !x.diretto && x.token !== false && cfg.token) { dimentica(); cb(errore('accesso', 'accesso scaduto')); return; }
+          // (x.restaCollegato: un 401 su un'immagine di Continua a guardare non dice abbastanza; un accesso revocato lo dicono le
+          // domande di dati)
+          if (r.statusCode === 401 && !x.mac && !x.diretto && !x.restaCollegato && x.token !== false && cfg.token) { dimentica(); cb(errore('accesso', 'accesso scaduto')); return; }
           var b = Buffer.concat(parti, n), v = null;
           if (x.byte) { cb(null, r.statusCode, b, r); return; }
           if (b.length) { try { v = JSON.parse(b.toString('utf8')); } catch (e) { v = null; } }
@@ -609,6 +617,128 @@ var PontiVideo = (function () {
         r.on('aborted', function () { if (!rotto) { rotto = true; cb(erroreRete('interrotto')); } });
         r.on('error', function (e) { if (!rotto) { rotto = true; cb(erroreDa(e)); } });
       });
+    }
+
+    /* ---------------------------------------------------------- Continua a guardare della home (richiesta del 31/10)
+     * I video da riprendere secondo Jellyfin (Real4K gli manda il punto anche quando il servizio del TV e' giu', aperta dal
+     * Mac) e quelli delle schede che la home ha gia' (gia': i loro id), per sapere se sono finiti altrove. L'ora di ogni punto
+     * passa all'orologio del TV con l'ora del server (l'intestazione Date): i due orologi possono non essere uguali. Poi, per le
+     * schede che la home mostra, un'immagine piccola orizzontale in data:, tenuta qui finche' non cambia: la home fa una
+     * domanda sola e non parla mai con Jellyfin.
+     *   riprendi(gia, cb)             cb({ voci }), o cb(null) se Jellyfin non e' collegato o non risponde: al massimo 7 s
+     *   fotoRiprendi(id, ms, cb)      cb({ id: 'data:...' }) entro ms, con le immagini che ci sono */
+    var FOTO_MAX = 65536, FOTO_TUTTE = 1 << 20; // un'immagine al massimo 64 KB, tutte insieme al massimo 1 MB
+    // di: server e utente delle immagini; l: id -> { k: quale immagine, d: data: }; ordine: per lasciare le piu' vecchie;
+    // im: id -> l'immagine da chiedere (dall'ultima risposta di Jellyfin)
+    var foto = { di: '', l: {}, ordine: [], peso: 0, im: {} };
+    function idJf(x) { var s = typeof x === 'string' ? x.replace(/-/g, '').toLowerCase() : ''; return /^[0-9a-f]{32}$/.test(s) ? s : ''; }
+    // le immagini sono di questo server e di questo utente: cambiati, o scollegato Jellyfin, si buttano
+    function fotoDelServer() {
+      var di = (cfg.id || '') + '/' + (cfg.token && cfg.utente ? cfg.utente.id : '');
+      if (foto.di !== di) foto = { di: di, l: {}, ordine: [], peso: 0, im: {} };
+    }
+    // lo scarto fra l'orologio del TV e quello del server (l'intestazione Date della risposta); 0 se non si sa
+    function scartoDi(r) {
+      var d = r && r.headers && typeof r.headers.date === 'string' ? Date.parse(r.headers.date) : NaN, sc = Date.now() - d;
+      return isFinite(sc) && Math.abs(sc) < 366 * 86400000 ? sc : 0;
+    }
+    function voceRiprendi(it, scarto) {
+      var id = idJf(it.Id), ud = it.UserData && typeof it.UserData === 'object' ? it.UserData : {}, ep = it.Type === 'Episode';
+      if (!id) return null;
+      var t = typeof ud.LastPlayedDate === 'string' ? Date.parse(ud.LastPlayedDate) || 0 : 0;
+      return { jf: id, titolo: testo(ep ? it.SeriesName || it.Name : it.Name, 120), anno: +it.ProductionYear || 0,
+        stagione: ep ? +it.ParentIndexNumber || 0 : 0, episodio: ep ? +it.IndexNumber || 0 : 0,
+        posizione: Math.round((+ud.PlaybackPositionTicks || 0) / 1e7), durata: Math.round((+it.RunTimeTicks || 0) / 1e7),
+        quando: t ? t + scarto : 0, finito: ud.Played === true };
+    }
+    // l'immagine orizzontale, come la sceglie Real4K (jf.js): il fotogramma della puntata, la Thumb, lo sfondo, la locandina
+    function immagineRiprendi(it) {
+      var t = it.ImageTags && typeof it.ImageTags === 'object' ? it.ImageTags : {}, l = [];
+      var sf = Array.isArray(it.BackdropImageTags) ? it.BackdropImageTags[0] : '', sfp = Array.isArray(it.ParentBackdropImageTags) ? it.ParentBackdropImageTags[0] : '';
+      if (it.Type === 'Episode') l.push([it.Id, 'Primary', t.Primary]);
+      l.push([it.Id, 'Thumb', t.Thumb], [it.ParentThumbItemId, 'Thumb', it.ParentThumbImageTag], [it.Id, 'Backdrop', sf],
+        [it.ParentBackdropItemId, 'Backdrop', sfp], [it.Id, 'Primary', t.Primary]);
+      for (var i = 0; i < l.length; i++) {
+        var id = idJf(l[i][0]), tag = typeof l[i][2] === 'string' ? l[i][2] : '';
+        if (id && /^[0-9a-zA-Z]{1,64}$/.test(tag)) return { id: id, tipo: l[i][1], tag: tag };
+      }
+      return null;
+    }
+    function riprendi(gia, cb0) {
+      var fatto = false, entro = Date.now() + 7000, voci = [];
+      function cb(r) { if (!fatto) { fatto = true; cb0(r); } }
+      fotoDelServer();
+      var uid = cfg.token && cfg.utente ? idJf(cfg.utente.id) : '';
+      if (!cfg.indirizzo || !uid) { cb(null); return; }
+      var campi = '&enableImageTypes=Primary,Backdrop,Thumb&imageTypeLimit=1&enableUserData=true';
+      // (un Jellyfin rotto, con tipi strani nel JSON, non deve far scappare un'eccezione: si salta la voce)
+      function prendi(l, scarto) {
+        for (var i = 0; i < l.length; i++) {
+          try {
+            if (!l[i] || typeof l[i] !== 'object') continue;
+            var v = voceRiprendi(l[i], scarto), im = v ? immagineRiprendi(l[i]) : null;
+            if (!v) continue;
+            voci.push(v);
+            if (im) foto.im[v.jf] = im;
+          } catch (e) {}
+        }
+      }
+      chiedi({ percorso: 'UserItems/Resume', query: 'userId=' + uid + '&limit=8&mediaTypes=Video&enableTotalRecordCount=false' + campi, tempo: 5000,
+        max: 1 << 20 }, function (err, st, j, r) {
+        if (err || st !== 200 || !j || !Array.isArray(j.Items)) { cb(null); return; }
+        prendi(j.Items.slice(0, 8), scartoDi(r));
+        var ci = {}, i, altri = [], resta = entro - Date.now();
+        for (i = 0; i < voci.length; i++) ci[voci[i].jf] = 1;
+        if (Array.isArray(gia)) for (i = 0; i < gia.length && altri.length < 10; i++) { var id = idJf(gia[i]); if (id && !ci[id]) altri.push(id); }
+        // quelle che la home ha gia' e Resume non dice, col tempo che resta: senza, bastano le voci di Resume
+        if (!altri.length || resta < 800) { cb({ voci: voci }); return; }
+        chiedi({ percorso: 'Items', query: 'userId=' + uid + '&ids=' + altri.join(',') + campi, tempo: Math.min(5000, resta), max: 1 << 20 },
+          function (e2, st2, j2, r2) {
+            if (!e2 && st2 === 200 && j2 && Array.isArray(j2.Items)) prendi(j2.Items.slice(0, 10), scartoDi(r2));
+            cb({ voci: voci });
+          });
+      });
+    }
+    function tieniFoto(id, k, d) {
+      if (foto.l[id]) { foto.peso -= foto.l[id].d.length; foto.ordine.splice(foto.ordine.indexOf(id), 1); }
+      foto.l[id] = { k: k, d: d };
+      foto.ordine.push(id);
+      foto.peso += d.length;
+      while (foto.peso > FOTO_TUTTE && foto.ordine.length > 1) { var via = foto.ordine.shift(); foto.peso -= foto.l[via].d.length; delete foto.l[via]; }
+    }
+    function fotoRiprendi(ids, ms, cb0) {
+      var fatto = false, uscita = {}, coda = [], inVolo = 0, entro = Date.now() + Math.max(500, Math.min(9000, +ms || 0));
+      var timer = setTimeout(fine, entro - Date.now());
+      function fine() { if (!fatto) { fatto = true; clearTimeout(timer); cb0(uscita); } }
+      fotoDelServer();
+      for (var i = 0; Array.isArray(ids) && i < ids.length && i < 12; i++) {
+        var id = idJf(ids[i]), im = id ? foto.im[id] : null, c = id ? foto.l[id] : null;
+        if (!im) continue;
+        var k = im.id + '/' + im.tipo + '/' + im.tag;
+        if (c && c.k === k) uscita[id] = c.d; else coda.push({ jf: id, im: im, k: k });
+      }
+      // dopo la risposta non se ne chiedono altre (quelle in volo si tengono per la prossima volta)
+      function prossima() {
+        while (!fatto && inVolo < 2 && coda.length && entro - Date.now() > 300) scarica(coda.shift());
+        if (!inVolo) fine();
+      }
+      function scarica(x) {
+        inVolo++;
+        chiedi({ percorso: 'Items/' + x.im.id + '/Images/' + x.im.tipo + (x.im.tipo === 'Backdrop' ? '/0' : ''), byte: true, max: FOTO_MAX, restaCollegato: true,
+          query: 'fillWidth=384&fillHeight=216&quality=70&tag=' + encodeURIComponent(x.im.tag), accetta: 'image/jpeg,image/*',
+          tempo: Math.max(300, Math.min(4000, entro - Date.now())) },
+        function (e, st, b, r) {
+          inVolo--;
+          var tipo = r && r.headers ? String(r.headers['content-type'] || '').split(';')[0].replace(/\s+/g, '').toLowerCase() : '';
+          if (!e && st === 200 && b && b.length && /^image\/(jpeg|png|webp)$/.test(tipo)) {
+            var d = 'data:' + tipo + ';base64,' + b.toString('base64');
+            tieniFoto(x.jf, x.k, d);
+            if (!fatto) uscita[x.jf] = d;
+          }
+          prossima();
+        });
+      }
+      prossima();
     }
 
     /* ---------------------------------------------------------- server, accesso */
@@ -856,9 +986,10 @@ var PontiVideo = (function () {
       // l'originale da Jellyfin arriva gia' pronto dal server: HLS col video copiato bit per bit e l'audio scelto copiato o
       // convertito li'. Sul TV i pezzi passano e basta. La strada diretta (il file dentro il servizio, con le tracce nascoste
       // dalla Scansione) e' stata, sul TV vero, l'ultima cosa prima che il processo venisse chiuso, 2 volte su 2 (30/10/2026,
-      // Iron Man 4K). Resta per le chiavette, e qui solo se chiesta: q.via 'file' (prove) o o.direttoJf
-      var dalServer = !(q.via === 'file' || o.direttoJf === true);
-      var corpo = { UserId: cfg.utente.id, DeviceProfile: profilo(L, qual), MaxStreamingBitrate: qual.mbps ? qual.mbps * 1e6 : 400e6,
+      // Iron Man 4K). Resta per le chiavette, e qui solo se chiesta: q.via 'file' (prove) o o.direttoJf. q.via 'pezzi': dal
+      // server anche col diretto (Real4K dal Mac, un film che a file non va: lo stesso punto a pezzi preparati da Jellyfin)
+      var dalServer = q.via === 'pezzi' || !(q.via === 'file' || o.direttoJf === true);
+      var corpo = { UserId: cfg.utente.id, DeviceProfile: profilo(L, qual, '', dalMac), MaxStreamingBitrate: qual.mbps ? qual.mbps * 1e6 : 400e6,
         StartTimeTicks: Math.max(0, Math.floor(+q.t || 0)) * 10000, EnableDirectPlay: !dalServer, EnableDirectStream: true, EnableTranscoding: true,
         AllowVideoStreamCopy: true, AllowAudioStreamCopy: true, AutoOpenLiveStream: true, SubtitleStreamIndex: -1 };
       if (idBuono(String(q.ms || ''))) corpo.MediaSourceId = String(q.ms).toLowerCase();
@@ -876,7 +1007,7 @@ var PontiVideo = (function () {
       var gammaIn = '';
       chiediInfo();
       function chiediInfo() {
-        corpo.DeviceProfile = profilo(L, qual, gammaIn);
+        corpo.DeviceProfile = profilo(L, qual, gammaIn, dalMac);
         chiedi({ percorso: 'Items/' + id + '/PlaybackInfo', query: 'userId=' + cfg.utente.id, metodo: 'POST', corpo: corpo, tempo: 20000 }, risposta);
       }
       function risposta(err, st, j) {
@@ -1362,7 +1493,8 @@ var PontiVideo = (function () {
       try { var d = JSON.parse(fs.readFileSync(FILE_DIARIO, 'utf8')); return Array.isArray(d) ? d.slice(-40) : []; } catch (e) { return []; }
     }
     var PAROLE_DIARIO = { strada: ['chiavetta', 'versione-tv', 'disco', 'diretto', 'file', 'copia', 'converti', 'mac'],
-      formato: ['mkv', 'webm', 'mp4', 'mov', 'm4v', 'ts', 'm2ts', 'avi', 'blu-ray', 'dvd', 'hls', 'altro'],
+      // (pezzi: i pezzi fMP4 di Jellyfin letti dall'app con MSE, Real4K dal Mac)
+      formato: ['mkv', 'webm', 'mp4', 'mov', 'm4v', 'ts', 'm2ts', 'avi', 'blu-ray', 'dvd', 'hls', 'pezzi', 'altro'],
       codec: ['HEVC', 'AVC', 'AV1', 'VP9', 'VP8', 'MPEG2', 'MPEG4', 'VC1'], hdr: ['HDR10', 'HDR10+', 'DV', 'HLG'],
       audio: ['AC3', 'EAC3', 'AAC', 'MP3', 'MP2', 'OPUS', 'FLAC', 'PCM', 'DTS', 'TRUEHD', 'VORBIS'],
       // il video diretto dal Mac (interruttore acceso): andato ('si' col rinvio del servizio, 'si2' con l'indirizzo del Mac nel
@@ -1691,6 +1823,9 @@ var PontiVideo = (function () {
       // l'app Video e' chiusa: via le sorgenti di Jellyfin ricordate (i film aperti li lascia la videoteca). La misura della
       // rete resta: vale per i prossimi 20 minuti
       riposa: function () { sorgenti = {}; misure = {}; Object.keys(diretti).forEach(fineDiretto); },
+      // Continua a guardare della home: i video da riprendere secondo Jellyfin, con le immagini piccole (vedi riprendi)
+      riprendi: function (gia, cb) { riprendi(gia, cb); },
+      fotoRiprendi: function (ids, ms, cb) { fotoRiprendi(ids, ms, cb); },
       // per le prove
       _cfg: function () { return cfg; }, _sorgenti: function () { return sorgenti; }, _mac: function () { return mac; }, _diretti: function () { return diretti; }
     };

@@ -45,7 +45,7 @@
 
   var $ = UI.$;
   var DEMO = UI.DEMO;
-  var VERSIONE = '1.3.16';
+  var VERSIONE = '1.3.17';
 
   /* ============================================================ dati */
 
@@ -92,6 +92,9 @@
   var visti = DEMO ? [] : UI.load('tvh-visti', []);
   if (!Array.isArray(visti)) visti = [];
   var vistiTotale = 0; // quanti ne ricorda il TV (anche i film finiti, che nella fila non ci sono)
+  // le immagini dei video di Jellyfin (id -> data:, dal servizio: solo in memoria, vedi getVistiJf); fotoGiro cambia quando
+  // cambiano, cosi' render() ridisegna anche se le schede sono le stesse
+  var fotoJf = {}, fotoGiro = 0;
 
   var DEFAULTS = {
     tema: 'notte', luce: 'vivace', categorie: true, nome: '', ricerca: 'google',
@@ -443,12 +446,13 @@
     if (v.episodio == null) return v.anno ? String(v.anno) : '';
     return v.stagione ? 'S' + v.stagione + ' E' + v.episodio : 'Puntata ' + v.episodio;
   }
-  // l'immagine che il sito mostra per quel film o quella serie (se non si carica resta il colore)
+  // l'immagine che il sito mostra per quel film o quella serie (se non si carica resta il colore); per un video di Jellyfin
+  // quella piccola che da' il servizio
   function continuaHTML(item) {
-    var v = item.v, sotto = riferimento(v);
+    var v = item.v, sotto = riferimento(v), jf = jfDi(v.url);
     var quota = v.durata && !v.prossima ? Math.max(3, Math.min(100, Math.round(v.posizione / v.durata * 100))) : 0;
-    var foto = /^https?:\/\//i.test(v.immagine || '') ?
-      '<img class="cont-foto" alt="" decoding="async" referrerpolicy="no-referrer" src="' + UI.esc(v.immagine) + '">' : '';
+    var src = /^https?:\/\//i.test(v.immagine || '') ? v.immagine : jf && fotoJf[jf] ? fotoJf[jf] : '';
+    var foto = src ? '<img class="cont-foto" alt="" decoding="async" referrerpolicy="no-referrer" src="' + UI.esc(src) + '">' : '';
     return '<div class="tile" data-key="' + UI.esc(item.key) + '"><div class="lift"><div class="card continua" style="background:' + cardBg(item) + '">' +
       foto + '<div class="cont-velo"></div><div class="label">' + (sotto ? '<small>' + UI.esc(sotto) + '</small>' : '') + '<b>' + UI.esc(v.nome) + '</b></div>' +
       (quota ? '<div class="cont-barra"><i style="width:' + quota + '%"></i></div>' : '') +
@@ -520,7 +524,7 @@
 
   function render(force) {
     build();
-    var sig = JSON.stringify([rows, opt('url'), opt('nomeSito'), DEMO]);
+    var sig = JSON.stringify([rows, opt('url'), opt('nomeSito'), DEMO, fotoGiro]);
     if (sig === signature && !force) return;
     signature = sig;
 
@@ -859,6 +863,41 @@
       if (settingsOpen) drawSettings();
     }, function () {});
   }
+  // Continua a guardare coi punti di Jellyfin (richiesta del 31/10): una domanda sola, 6 s dopo l'apertura (e tornando sulla
+  // home, se sono passati 10 minuti), solo con Real4K installata. Il servizio unisce i video da riprendere secondo Jellyfin
+  // (Real4K glieli manda anche dal Mac, quando il servizio del TV e' giu') e da' le immagini piccole dei video di Jellyfin:
+  // restano in memoria, non si salvano
+  // le domande della home che arrivano fino al Mac (questa e rinfrescaMac): una alla volta, l'altra riprova 3 s dopo. versoMac
+  // e' quando e' partita (0: nessuna); dopo 20 s senza risposta non ferma piu' l'altra
+  var jfGiro = 0, versoMac = 0;
+  function getVistiJf() {
+    var a = DEMO || document.hidden || Date.now() - jfGiro < 10 * 60000 ? null : appVideo();
+    if (!a) return;
+    if (Date.now() - versoMac < 20000) { setTimeout(getVistiJf, 3000); return; }
+    jfGiro = Date.now();
+    versoMac = jfGiro;
+    UI.service('/api/visti/jellyfin', { app: a.voce.url }).then(function (j) {
+      versoMac = 0;
+      if (!j || !Array.isArray(j.visti)) return;
+      var cambiate = false, k, f = j.foto && typeof j.foto === 'object' ? j.foto : {}, tenere = {};
+      var totale = typeof j.totale === 'number' ? j.totale : j.visti.length;
+      if (totale !== vistiTotale) { vistiTotale = totale; cambiate = true; }
+      if (JSON.stringify(j.visti) !== JSON.stringify(visti)) { visti = j.visti; UI.save('tvh-visti', visti); cambiate = true; }
+      // le immagini: solo quelle delle schede di adesso (le altre si lasciano andare)
+      for (k = 0; k < visti.length; k++) { var id = jfDi(visti[k] && visti[k].url); if (id) tenere[id] = 1; }
+      for (k in fotoJf) if (Object.prototype.hasOwnProperty.call(fotoJf, k) && !tenere[k]) delete fotoJf[k];
+      for (k in f) {
+        if (Object.prototype.hasOwnProperty.call(f, k) && tenere[k] && fotoBuona(f[k]) && fotoJf[k] !== f[k]) { fotoJf[k] = f[k]; fotoGiro++; cambiate = true; }
+      }
+      if (!cambiate) return;
+      render();
+      if (settingsOpen) drawSettings();
+    }, function () { versoMac = 0; });
+  }
+  // un'immagine piccola in data: (JPEG, PNG o WebP), mai altro
+  function fotoBuona(d) { return typeof d === 'string' && d.length < 250000 && /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/]+={0,2}$/.test(d); }
+  // l'id di Jellyfin di una scheda dell'app Video ("...#/jf/<id>")
+  function jfDi(u) { var m = /#\/jf\/([0-9a-f]{32})(?:[?&]|$)/.exec(String(u || '')); return m ? m[1] : ''; }
   // il servizio del TV era caduto con un'app aperta nello Store (il guardiano di ui.js l'ha riacceso): appena la home
   // riparte, riprende da dov'eri il film che stava andando, quello che dice il servizio (la sua traccia: "ripresa"), e solo
   // lui; se il servizio non lo sa (caduto prima che il film partisse, o lasciato), niente: mai un altro film o un sito.
@@ -1454,24 +1493,24 @@
   // Real4K dal Mac: qui sulla home il servizio del TV e' vivo (il TV lo chiude nell'istante in cui Real4K si apre). Il servizio
   // apre una sessione sul ponte per questo TV (col suo token: resta sul Mac e nel servizio) e ci si ricorda dove sta la pagina
   // del Mac (StoreDati.macReal4k): la Store poi apre Real4K da li' subito, senza domande al servizio. Alla partenza, tornando
-  // sulla home e ogni 10 minuti con la home in vista; spenta da Real4K (real4kMacNo) niente domande
+  // sulla home e ogni 10 minuti con la home in vista; spenta da Real4K (real4kMacNo) niente domande. Il servizio vivo: la prima
+  // domanda e' il gettone, e senza risposta non parte altro. Durante un film la home non c'e' (il film va nella Store o nella
+  // pagina del Mac). Una alla volta, anche con la domanda di Continua a guardare a Jellyfin (versoMac)
   var macGiro = 0;
   function rinfrescaMac() {
     if (DEMO || document.hidden || Date.now() - macGiro < 9 * 60000) return;
-    var ids = StoreDati.ufficiale.installate(), p = null, pr = null, i;
-    for (i = 0; i < ids.length && !p; i++) {
-      var q = StoreDati.perRiquadro('ws:' + ids[i]), v = q && q.voce;
-      if (q && q.stato === 'ok' && v && Array.isArray(v.permessi) && v.permessi.indexOf('video') >= 0 &&
-        /^https:\/\/[a-z0-9-]{1,39}\.github\.io\/[A-Za-z0-9._-]{1,100}\/$/.test(String(v.url || ''))) p = q;
-    }
+    var p = appVideo(), pr = null;
     if (!p) return;
     try { pr = JSON.parse(StoreDati.datiApp(p.riquadro).prefs || 'null'); } catch (e) { pr = null; }
     if (pr && pr.real4kMacNo === true) { StoreDati.scriviMacReal4k(''); return; }
+    if (Date.now() - versoMac < 20000) { setTimeout(rinfrescaMac, 3000); return; }
     macGiro = Date.now();
+    versoMac = macGiro;
+    function fine() { versoMac = 0; }
     UI.service('/api/video/gettone', {}).then(function (r) {
       var g = r && /^[0-9a-f]{64}$/.test(String(r.gettone || '')) ? r.gettone : '';
-      if (!g) return;
-      function togli() { UI.service('/api/video/gettone/via', { gettone: g })['catch'](function () {}); }
+      if (!g) { fine(); return; }
+      function togli() { fine(); UI.service('/api/video/gettone/via', { gettone: g })['catch'](function () {}); }
       fetch(UI.SERVICE + '/api/video/g/' + g + '/jf/real4k-mac/apri?app=' + encodeURIComponent(p.voce.url), { cache: 'no-store' })
         .then(function (res) { return res.ok ? res.json() : null; })
         .then(function (m) {
@@ -1480,9 +1519,21 @@
             /^http:\/\/[0-9a-fA-F.:\[\]]{3,47}:8098\/real4k\/$/.test(m.url)) StoreDati.scriviMacReal4k(m.url);
           else if (m) StoreDati.scriviMacReal4k('');
         }, togli);
-    }, function () {});
+    }, fine);
   }
   setInterval(rinfrescaMac, 10 * 60000);
+  // Real4K, l'app dello Store che chiede i video: il suo riquadro (con la scheda del catalogo), se e' installata e a posto.
+  // (installate() da' { id, vista, t }; una lista di soli nomi va bene lo stesso)
+  function appVideo() {
+    var ids = StoreDati.ufficiale.installate();
+    for (var i = 0; i < ids.length; i++) {
+      var id = ids[i] && typeof ids[i] === 'object' ? ids[i].id : ids[i];
+      var q = StoreDati.perRiquadro('ws:' + id), v = q && q.voce;
+      if (q && q.stato === 'ok' && v && Array.isArray(v.permessi) && v.permessi.indexOf('video') >= 0 &&
+        /^https:\/\/[a-z0-9-]{1,39}\.github\.io\/[A-Za-z0-9._-]{1,100}\/$/.test(String(v.url || ''))) return q;
+    }
+    return null;
+  }
   // cosa sa fare il servizio di questo TV ("funzioni" di GET /api/status): le app dello Store che chiedono altro restano
   // spente (l'app Video dove chiavette e ponti non ci sono). Lo ricorda StoreDati: alla prossima accensione si sa subito.
   // Fuori dall'attesa dello Store: un servizio che non risponde non deve fermare l'aggiornamento delle app
@@ -2009,7 +2060,7 @@
   }
 
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden) { getApps(); getConfig(); prendiNovita(); getVisti(); aggiornaStore(false); rinfrescaMac(); }
+    if (!document.hidden) { getApps(); getConfig(); prendiNovita(); getVisti(); aggiornaStore(false); rinfrescaMac(); setTimeout(getVistiJf, 6000); }
   });
   window.addEventListener('resize', function () {
     measure();
@@ -2073,6 +2124,7 @@
   getConfig();
   getApps();
   getVisti();
+  setTimeout(getVistiJf, 6000); // (dopo le domande dell'apertura: catalogo, novita', app del TV)
   restorePrefs();
   // lo Store: il catalogo si scarica a ogni accensione (qualche secondo dopo: prima le app del TV); tornando nella home
   // dallo Store o dal browser solo se ha piu' di 10 minuti
