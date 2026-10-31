@@ -430,11 +430,15 @@ h1, h2, p, ul { margin: 0; padding: 0; }
 /* l'icona dell'app scelta, in alto a destra: la luce arriva da li' */
 #hero-ico {
   position: fixed; right: 9.6rem; top: 14.4rem; z-index: 3;
-  width: 25.6rem; height: 25.6rem; border-radius: 5.6rem;
+  width: 42.67rem; height: 25.6rem; border-radius: 2.2rem;
   box-shadow: 0 3.2rem 6.4rem rgba(0, 0, 0, .5);
   transition: opacity .16s ease;
 }
 #hero-ico b { line-height: 25.6rem; font-size: 12rem; }
+/* l'app in grande e' un rettangolo 5:3 come i riquadri (31/10): la copertina lo riempie; senza, l'icona quadrata al centro */
+.st-ico .copertina-img { z-index: 1; }
+#hero-ico .app-ico-img, #det-ico .app-ico-img, #app-attesa .app-ico-img { left: 50%; top: 18%; width: auto; height: 64%; border-radius: 1rem;
+  -webkit-transform: translateX(-50%); transform: translateX(-50%); }
 #hero-ico.via, #hero-ico.fade { opacity: 0; }
 /* le azioni dello Store (Aggiungi, Cerca ancora): il segno in alto come negli altri riquadri */
 .pagina-store .card.add svg.glyph { left: 2.6rem; top: 2.6rem; margin: 0; }
@@ -451,11 +455,11 @@ h1, h2, p, ul { margin: 0; padding: 0; }
 @-webkit-keyframes appare { from { opacity: 0; -webkit-transform: translateY(2rem); } to { opacity: 1; -webkit-transform: none; } }
 @keyframes appare { from { opacity: 0; transform: translateY(2rem); } to { opacity: 1; transform: none; } }
 #det-ico {
-  position: absolute; left: 9.6rem; top: 17.6rem; width: 36rem; height: 36rem; border-radius: 8rem;
+  position: absolute; left: 9.6rem; top: 17.6rem; width: 48rem; height: 28.8rem; border-radius: 2.4rem;
   box-shadow: 0 4rem 8rem rgba(0, 0, 0, .55);
 }
-#det-ico b { line-height: 36rem; font-size: 17rem; }
-#det-testo { position: absolute; left: 56rem; right: 9.6rem; top: 17.6rem; }
+#det-ico b { line-height: 28.8rem; font-size: 14rem; }
+#det-testo { position: absolute; left: 64rem; right: 9.6rem; top: 17.6rem; }
 #det-cap {
   height: 3rem; font-size: 2.4rem; font-weight: 600; letter-spacing: .02em; color: var(--text-2);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -510,7 +514,7 @@ h1, h2, p, ul { margin: 0; padding: 0; }
   background: var(--bg); text-align: center; transition: opacity .3s ease;
 }
 #app-attesa.via { opacity: 0; pointer-events: none; }
-#app-attesa .st-ico { display: inline-block; width: 14.4rem; height: 14.4rem; border-radius: 3.4rem; box-shadow: 0 2.4rem 4.8rem rgba(0, 0, 0, .5); }
+#app-attesa .st-ico { display: inline-block; width: 24rem; height: 14.4rem; border-radius: 1.8rem; box-shadow: 0 2.4rem 4.8rem rgba(0, 0, 0, .5); }
 #app-attesa .st-ico b { line-height: 14.4rem; font-size: 7rem; }
 #app-attesa p { margin-top: 3.6rem; font-size: 3.2rem; font-weight: 600; color: var(--text-2); }
 

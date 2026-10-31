@@ -244,6 +244,12 @@
     }
     return '<b>' + UI.esc((e.nome || '?').charAt(0).toUpperCase()) + '</b>' + img;
   }
+  // l'app in grande (in alto, nella sua pagina, mentre si apre): un rettangolo 5:3 come i riquadri della home, riempito dalla
+  // copertina; senza copertina, l'icona al centro sul colore dell'app (31/10: sul TV niente quadrati arrotondati da telefono)
+  function quadroHTML(e, colore) {
+    if (e.tipo !== 'ws' || !e.voce || !e.voce.copertina) return iconaHTML(e, false, colore);
+    return '<b>' + UI.esc((e.nome || '?').charAt(0).toUpperCase()) + '</b><img class="copertina-img" alt="" decoding="async" src="' + UI.esc(e.voce.copertina) + '">';
+  }
   function tileHTML(e, r, i, fila) {
     var inner, cls = 'card', stile = '';
     if (e.tipo === 'azione') {
@@ -495,7 +501,7 @@
   function mostraIcona(e) {
     if (!e) { heroIco.className = 'st-ico via'; return; }
     var k = e.chiave + '|' + ((e.voce && e.voce.icona) || '');
-    if (heroIco.__chiave !== k) { heroIco.__chiave = k; heroIco.innerHTML = iconaHTML(e, false, !(e.voce && e.voce.copertina)); }
+    if (heroIco.__chiave !== k) { heroIco.__chiave = k; heroIco.innerHTML = quadroHTML(e, true); }
     heroIco.className = 'st-ico st-c' + tinta(e);
   }
 
@@ -655,7 +661,7 @@
     if (st.chip && !st.installa && st.chip !== 'Non verificata') info.push(st.chip);
     var ico = $('det-ico');
     ico.className = 'st-ico st-c' + tinta(e);
-    ico.innerHTML = iconaHTML(e, false);
+    ico.innerHTML = quadroHTML(e, false);
     var cap = $('det-cap'), nome = $('det-nome');
     cap.textContent = mia ? 'App privata · non verificata' : e.tipo === 'orfana' ? 'Non più nello Store' : v.autore ? 'di ' + v.autore : 'App per Home TV';
     cap.className = mia ? 'avviso' : '';
@@ -848,7 +854,7 @@
     attesaEl.className = '';
     var ico = $('app-attesa-ico');
     ico.className = 'st-ico st-c' + tinta(e);
-    ico.innerHTML = iconaHTML(e, false);
+    ico.innerHTML = quadroHTML(e, false);
     $('app-attesa-testo').textContent = testo;
   }
   function nascondiAttesa() { attesaEl.className = 'via'; }
