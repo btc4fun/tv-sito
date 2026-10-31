@@ -45,7 +45,7 @@
 
   var $ = UI.$;
   var DEMO = UI.DEMO;
-  var VERSIONE = '1.3.17';
+  var VERSIONE = '1.3.18';
 
   /* ============================================================ dati */
 
@@ -1516,11 +1516,20 @@
         .then(function (m) {
           togli();
           if (m && m.pronto === true && m.acceso === true && m.app === true && typeof m.url === 'string' &&
-            /^http:\/\/[0-9a-fA-F.:\[\]]{3,47}:8098\/real4k\/$/.test(m.url)) StoreDati.scriviMacReal4k(m.url);
-          else if (m) StoreDati.scriviMacReal4k('');
+            /^http:\/\/[0-9a-fA-F.:\[\]]{3,47}:8098\/real4k\/$/.test(m.url)) {
+            StoreDati.scriviMacReal4k(m.url);
+            // il Mac aveva cambiato indirizzo e il servizio l'ha appena ritrovato: lo si dice una volta
+            if (m.ritrovo === 'ritrovato' && macRitrovo !== 'detto') { macRitrovo = 'detto'; UI.toast('Il Mac ha cambiato indirizzo: l\'ho ritrovato', 4000); }
+          } else if (m) {
+            StoreDati.scriviMacReal4k('');
+            // il Mac non risponde al suo indirizzo e il servizio lo sta cercando nella rete (forse ha cambiato indirizzo): si
+            // richiede fra 5 s, al massimo due volte, cosi' Real4K dal Mac riparte dal nuovo indirizzo senza aspettare 10 minuti
+            if (m.ritrovo === 'cerco' && macRiprova < 2) { macRiprova++; macGiro = 0; setTimeout(rinfrescaMac, 5000); }
+          }
         }, togli);
     }, fine);
   }
+  var macRiprova = 0, macRitrovo = '';
   setInterval(rinfrescaMac, 10 * 60000);
   // Real4K, l'app dello Store che chiede i video: il suo riquadro (con la scheda del catalogo), se e' installata e a posto.
   // (installate() da' { id, vista, t }; una lista di soli nomi va bene lo stesso)

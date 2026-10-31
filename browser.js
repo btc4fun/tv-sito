@@ -313,8 +313,8 @@
   /* ============================================================ azioni */
 
   // cosa si e' scritto: un indirizzo (anche senza http://) o una ricerca. Gli apparecchi di casa (IP della rete di casa,
-  // localhost, nomi .local o senza punto con la porta, come 192.168.1.233:8099 o nas:5000) con http://; un IP qualsiasi o un
-  // nome con il dominio (anche con la porta) con https:// (31/10: "192.168.1.233:8099" diventava una ricerca)
+  // localhost, nomi .local o senza punto con la porta, come 192.168.1.20:8099 o nas:5000) con http://; un IP qualsiasi o un
+  // nome con il dominio (anche con la porta) con https:// (31/10: "192.168.1.20:8099" diventava una ricerca)
   function toSite(t) {
     t = String(t || '').replace(/^\s+|\s+$/g, '');
     if (!t) return null;

@@ -19,7 +19,8 @@
  *   (locale: solo nelle prove sul computer, un server su 127.0.0.1; dns: ogni nome si controlla prima di collegarsi;
  *   tempoLettura: quanto aspettare un server fermo a meta' film, 30 s se non c'e'; portaMac: dove cercare il limitatore
  *   del Mac accanto a Jellyfin, 8097 se non c'e'; radiceLE: una funzione che da' la radice di Let's Encrypt, per i server
- *   https sui TV col Node vecchio; passo: fn(testo, subito), i passi nella traccia del servizio, vedi sotto)
+ *   https sui TV col Node vecchio; passo: fn(testo, subito), i passi nella traccia del servizio, vedi sotto; cercaSu: solo nelle
+ *   prove sul computer, { porta, host } dove mandare la ricerca UDP di Jellyfin invece del broadcast sulla 7359)
  *   Videoteca.gestisci(vt, g, req, res, u, { punto: fn, ponti: p.tratta })
  *   p.riprendi(id, cb), p.fotoRiprendi(id, ms, cb)   Continua a guardare della home (POST /api/visti/jellyfin), vedi sotto
  *
@@ -157,10 +158,10 @@ var PontiVideo = (function () {
     return b;
   }
   // un indirizzo IP che e' il TV stesso (o "nessuno"): 127/8, 0/8, ::, ::1, e un IPv4 cosi' dentro un IPv6 (::ffff:127.x).
-  // Nelle prove sul computer (locale) 127.0.0.1 va bene
+  // Nelle prove sul computer (locale) 127.0.0.1 e ::1 vanno bene
   function ipVietato(ip, locale) {
     ip = String(ip || '').toLowerCase().replace(/^\[|\]$/g, '');
-    if (locale && ip === '127.0.0.1') return false;
+    if (locale && (ip === '127.0.0.1' || ip === '::1')) return false;
     var v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
     if (v4) return +v4[1] === 127 || +v4[1] === 0;
     if (ip.indexOf(':') < 0) return false;
@@ -172,7 +173,7 @@ var PontiVideo = (function () {
     return b[12] === 127 || b[12] === 0; // ::, ::1 e ::127.x (IPv4 "compatibile")
   }
   // un IP della rete di casa scritto per esteso (10/8, 172.16/12, 192.168/16, 169.254/16; IPv6 fc00::/7 e fe80::/10), mai un
-  // nome. Nelle prove sul computer (locale) anche 127.0.0.1
+  // nome. Nelle prove sul computer (locale) anche 127.0.0.1 e ::1
   function ipDiCasa(h, locale) {
     var a = String(h || '').replace(/^\[|\]$/g, '').toLowerCase(), m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(a);
     if (m) {
@@ -180,9 +181,9 @@ var PontiVideo = (function () {
       if (+m[3] > 255 || +m[4] > 255 || x > 255 || y > 255) return false;
       return x === 10 || (x === 172 && y >= 16 && y <= 31) || (x === 192 && y === 168) || (x === 169 && y === 254) || (!!locale && x === 127);
     }
-    return a.indexOf(':') >= 0 && /^[0-9a-f:.]+$/.test(a) && /^(f[cd]|fe[89ab])/.test(a);
+    return a.indexOf(':') >= 0 && /^[0-9a-f:.]+$/.test(a) && (/^(f[cd]|fe[89ab])/.test(a) || (!!locale && a === '::1'));
   }
-  // indirizzo del server: http(s)://host[:porta][/base], mai il TV stesso (solo le prove sul computer usano 127.0.0.1). Solo
+  // indirizzo del server: http(s)://host[:porta][/base], mai il TV stesso (solo le prove sul computer usano 127.0.0.1 e ::1). Solo
   // forme canoniche: niente numeri "da soli", esadecimali o ottali (2130706433, 0x7f000001, 0177.0.0.1), niente nomi col punto
   // finale (localhost.), IPv6 controllati dopo averli espansi. I nomi si controllano anche col DNS (guardiaDns)
   function indirizzoBuono(urlLib, s, locale) {
@@ -204,7 +205,14 @@ var PontiVideo = (function () {
     var base = (u.pathname || '').replace(/\/+$/, '');
     if (!/^(\/[A-Za-z0-9._\-]+)*$/.test(base) || /\/\.\.?(\/|$)/.test(base)) return '';
     return u.protocol + '//' + u.host.toLowerCase() + base;
+  }  // lo stesso indirizzo su un altro host, con porta e percorso di prima (il limitatore che stava accanto a Jellyfin)
+  function conHost(urlLib, ind, h, locale) {
+    var u = urlLib.parse(String(ind || ''));
+    if (!u || !u.protocol || !h) return '';
+    return indirizzoBuono(urlLib, u.protocol + '//' + (h.indexOf(':') >= 0 ? '[' + h + ']' : h) + (u.port ? ':' + u.port : '') +
+      (u.pathname && u.pathname !== '/' ? u.pathname : ''), locale);
   }
+
 
   // i codec come li chiama Jellyfin (ffmpeg) -> le famiglie della videoteca
   var FAMIGLIE = { hevc: 'HEVC', h265: 'HEVC', h264: 'AVC', avc: 'AVC', av1: 'AV1', vp9: 'VP9', vp8: 'VP8', mpeg2video: 'MPEG2',
@@ -554,8 +562,12 @@ var PontiVideo = (function () {
       var mod = u.protocol === 'https:' ? https : http;
       if (!mod) { cb(errore('server', 'https non disponibile')); return null; }
       var testa = { 'Accept': x.accetta || 'application/json', 'Accept-Encoding': 'identity' };
-      if (!x.mac) testa.Authorization = autorizzazione(x.token !== false);
-      else if (x.mac !== 'senza' && mac.chiave) testa['X-Chiave'] = mac.chiave;
+      // (x.anonima: nessuna intestazione d'accesso, ne' il token ne' la chiave del limitatore ne' il nome del TV: la sfida a un
+      // indirizzo nuovo, vedi provaMac)
+      if (!x.anonima) {
+        if (!x.mac) testa.Authorization = autorizzazione(x.token !== false);
+        else if (x.mac !== 'senza' && mac.chiave) testa['X-Chiave'] = mac.chiave;
+      }
       if (x.range) testa.Range = x.range;
       var corpo = x.corpo !== undefined ? bufDa(JSON.stringify(x.corpo)) : null;
       if (corpo) { testa['Content-Type'] = 'application/json'; testa['Content-Length'] = String(corpo.length); }
@@ -565,6 +577,8 @@ var PontiVideo = (function () {
         if (finito) { if (r) { try { r.destroy(); } catch (z) {} } return; }
         finito = true;
         if (e || x.lungo) ferma();
+        // l'host di Jellyfin che non risponde (anche il ponte o il limitatore accanto): forse il Mac ha cambiato indirizzo
+        if (e && e.codice === 'rete' && hostDi(base) === hostDi(cfg.indirizzo)) ritrova();
         if (r && !x.lungo) { r.on('end', ferma); r.on('aborted', ferma); r.on('error', ferma); r.on('close', ferma); }
         cb(e, r);
       }
@@ -759,7 +773,9 @@ var PontiVideo = (function () {
         servizio: { memoria: memoriaServizio(), node: process.version, acceso: Math.round(process.uptime()) },
         // questo servizio sa fare il video diretto dal Mac e Real4K dal Mac (Real4K mostra gli interruttori solo allora);
         // dalMac: e' il ponte del Mac che serve Real4K a pagina intera
-        diretto: dalMac ? 0 : 1, real4kMac: dalMac ? 0 : 1, dalMac: dalMac ? 1 : 0 };
+        diretto: dalMac ? 0 : 1, real4kMac: dalMac ? 0 : 1, dalMac: dalMac ? 1 : 0,
+        // il Mac che ha cambiato indirizzo: 'cerco' mentre lo si cerca, 'ritrovato' subito dopo (vedi ritrova)
+        ritrovo: statoRitrovo() };
     }
     // i server Jellyfin nella rete di casa (rispondono al broadcast UDP 7359 con il loro indirizzo)
     var cercando = null;
@@ -787,12 +803,84 @@ var PontiVideo = (function () {
       s.bind(function () {
         try {
           s.setBroadcast(true);
-          var m = bufDa('Who is JellyfinServer?');
-          s.send(m, 0, m.length, 7359, '255.255.255.255');
+          var m = bufDa('Who is JellyfinServer?'), su = o.locale && o.cercaSu ? o.cercaSu : { porta: 7359, host: '255.255.255.255' };
+          s.send(m, 0, m.length, su.porta, su.host);
         } catch (e) { fine(); }
       });
       setTimeout(fine, 2000);
     }
+    /* ---------------------------------------------------------- Jellyfin che cambia indirizzo (richiesta del 31/10)
+     * Il Mac puo' cambiare IP (Wi-Fi staccato, indirizzo privato a rotazione): l'indirizzo salvato di Jellyfin allora non
+     * risponde piu', e neanche il ponte e il limitatore accanto (stesso host). Quando una domanda verso quell'host cade per la
+     * rete, lo si ritrova con la ricerca UDP di Jellyfin (AutoDiscovery, porta 7359): solo lo stesso server (lo stesso
+     * ServerId salvato), con lo stesso protocollo, su un IP della rete di casa, e solo se il ponte di Home TV Film li' passa la
+     * prova (provaMac: il ServerId da solo e' pubblico). Della risposta si prende solo l'IP: l'indirizzo salvato resta lo stesso
+     * (protocollo, porta, percorso) con l'host nuovo, e il ponte lo segue da solo (dovePonte), il limitatore se stava sullo
+     * stesso host. Al massimo una ricerca al minuto, e solo quando serve.
+     * ritrovo.stato: 'cerco', poi 'trovato', 'dubbio' (trovato ma senza la prova) o 'no' */
+    var ritrovo = { stato: '', quando: 0, fine: 0 };
+    function hostDi(ind) { var u = ind ? urlLib.parse(ind) : null; return u ? String(u.hostname || '').toLowerCase().replace(/^\[|\]$/g, '') : ''; }
+    // il nuovo indirizzo e' davvero il tuo Mac? Il ServerId e' pubblico (Jellyfin lo dice a chiunque), quindi non basta: un altro
+    // apparecchio di casa potrebbe rispondere con lo stesso e farsi mandare token e chiavi. Il ponte di Home TV Film accanto a
+    // quel Jellyfin (stesso host, 8098) ha gia' il token di questo TV (le sessioni di Real4K): firma un numero a caso con quel
+    // token (HMAC), e qui si controlla. Al nuovo indirizzo non parte niente di segreto prima della prova: ne' il token, ne' la
+    // chiave del limitatore, ne' il nome del TV. cb(true) solo con la firma giusta
+    function provaMac(ind, cb) {
+      var h = hostDi(ind), dove = h ? indirizzoBuono(urlLib, 'http://' + (h.indexOf(':') >= 0 ? '[' + h + ']' : h) + ':' + (o.portaDiretto || 8098), o.locale) : '';
+      if (!dove || !cfg.token || !cfg.id) { cb(false); return; }
+      var n = o.crypto.randomBytes(32).toString('hex');
+      var atteso = o.crypto.createHmac('sha256', cfg.token).update('hometv-sfida/1|' + cfg.id + '|' + n).digest('hex');
+      chiedi({ dove: dove, percorso: 'sfida', metodo: 'POST', corpo: { n: n, server: cfg.id }, anonima: true, diretto: true, tempo: 2500, max: 4096 },
+        function (err, st, j) { cb(!err && st === 200 && !!j && typeof j.firma === 'string' && j.firma === atteso); });
+    }
+    function ritrova() {
+      if (dalMac || !cfg.indirizzo || !cfg.id || !cfg.token || ritrovo.stato === 'cerco') return;
+      // (una ricerca al minuto: una caduta subito dopo averlo ritrovato non fa dire piu' "ritrovato")
+      if (Date.now() - ritrovo.quando < 60000) { if (ritrovo.stato === 'trovato') ritrovo.stato = 'no'; return; }
+      var prima = cfg.indirizzo, id = cfg.id, token = cfg.token, proto = urlLib.parse(prima).protocol, vecchio = hostDi(prima);
+      ritrovo = { stato: 'cerco', quando: Date.now(), fine: 0 };
+      passo('jellyfin: non risponde al suo indirizzo, lo cerco nella rete', true);
+      function fine(stato, testo) { ritrovo.stato = stato; ritrovo.fine = Date.now(); passo('jellyfin: ' + testo, true); }
+      cerca(function (l) {
+        // della risposta si prende solo l'IP, quello che la prova del ponte controlla: protocollo, porta e percorso restano
+        // quelli salvati (una risposta con un'altra porta non puo' far andare il token a un altro programma di quell'host)
+        var buoni = [], stesso = false;
+        for (var i = 0; i < l.length; i++) {
+          var h = l[i].id === id ? hostDi(l[i].indirizzo) : '';
+          if (!h) continue;
+          if (h === vecchio) { stesso = true; continue; }
+          var nuovo = urlLib.parse(l[i].indirizzo).protocol === proto && ipDiCasa(h, o.locale) ? conHost(urlLib, prima, h, o.locale) : '';
+          if (nuovo && buoni.length < 3 && buoni.indexOf(nuovo) < 0) buoni.push(nuovo);
+        }
+        if (!buoni.length) { fine('no', stesso ? 'risponde allo stesso indirizzo' : 'non trovato nella rete'); return; }
+        // uno alla volta, al massimo tre: il primo che passa la prova del ponte
+        (function prossimo(k) {
+          if (k >= buoni.length) { fine('dubbio', 'trovato a un altro indirizzo, ma non passa la prova del ponte: resta quello di prima'); return; }
+          provaMac(buoni[k], function (si) {
+            if (!si) { prossimo(k + 1); return; }
+            // (intanto il server salvato puo' essere cambiato: scollegato, ricollegato, o un altro scelto a mano)
+            if (cfg.indirizzo !== prima || cfg.id !== id || cfg.token !== token) { fine('no', 'il server salvato e\' cambiato intanto'); return; }
+            cfg.indirizzo = buoni[k];
+            salva();
+            sorgenti = {};
+            ponteDiretto = { dove: '', ok: false, quando: 0 };
+            if (mac.indirizzo && hostDi(mac.indirizzo) === vecchio) {
+              var m2 = conHost(urlLib, mac.indirizzo, hostDi(buoni[k]), o.locale);
+              if (m2) { mac.indirizzo = m2; salvaMac(); }
+            }
+            fine('trovato', 'ritrovato a un altro indirizzo');
+            log('Jellyfin ha cambiato indirizzo: ritrovato con la ricerca nella rete di casa e la prova del ponte');
+          });
+        })(0);
+      });
+    }
+    // per le risposte all'app: 'cerco' mentre lo si cerca; nei 2 minuti dopo 'ritrovato', o 'dubbio' (trovato a un altro
+    // indirizzo, ma senza la prova del ponte: si resta su quello di prima); '' se no
+    function statoRitrovo() {
+      var recente = Date.now() - ritrovo.fine < 120000;
+      return ritrovo.stato === 'cerco' ? 'cerco' : recente && ritrovo.stato === 'trovato' ? 'ritrovato' : recente && ritrovo.stato === 'dubbio' ? 'dubbio' : '';
+    }
+
     // al massimo 20 indirizzi provati ogni 10 minuti: il ponte non deve diventare un modo per esplorare la rete di casa
     var prove = [];
     function scegliServer(dove, cb) {
@@ -1192,7 +1280,7 @@ var PontiVideo = (function () {
       if (dalMac || !dove || !cfg.id) { cb({ pronto: false, acceso: false }); return; }
       chiedi({ dove: dove, percorso: 'scelte', token: false, diretto: true, tempo: DIRETTO_TEMPO, max: 4096 }, function (err, st, j) {
         var si = !err && st === 200 && !!j && j.possibile === true;
-        cb({ pronto: si, acceso: si && j.acceso === true });
+        cb({ pronto: si, acceso: si && j.acceso === true, ritrovo: si ? '' : statoRitrovo() });
       });
     }
     function sceltaReal4k(acceso, cb) {
@@ -1213,7 +1301,10 @@ var PontiVideo = (function () {
       if (dalMac || !cfg.token || !cfg.utente || !cfg.id) { cb({ pronto: false, motivo: 'jellyfin' }); return; }
       if (!dove) { cb({ pronto: false, motivo: 'mac' }); return; }
       passo('real4k-mac: controllo il ponte', true);
-      ponteReal4k(dove, function (noto) { passo('real4k-mac: ponte ' + (noto ? 'buono' : 'no'), true); if (noto) chiediSessione(); else cb({ pronto: false, motivo: 'mac' }); });
+      ponteReal4k(dove, function (noto) {
+        passo('real4k-mac: ponte ' + (noto ? 'buono' : 'no'), true);
+        if (noto) chiediSessione(); else cb({ pronto: false, motivo: 'mac', ritrovo: statoRitrovo() });
+      });
       function chiediSessione() {
         passo('real4k-mac: chiedo la sessione', true);
         chiedi({ dove: dove, percorso: 'sessioni', metodo: 'POST', diretto: true, tempo: REAL4K_TEMPO, max: 8192,
@@ -1228,7 +1319,7 @@ var PontiVideo = (function () {
             // si ricontrolla (non si aspettano 3 s a ogni apertura)
             if (err) ponteDiretto = { dove: dove, ok: false, quando: Date.now() };
             if (!g) { cb({ pronto: false, motivo: err || st === 404 || st === 503 ? 'mac' : j && j.codice === 'versione' ? 'versione' : 'sessione' }); return; }
-            cb({ pronto: true, acceso: true, app: j.app === true, url: dove + '/real4k/', servizio: dove, gettone: g });
+            cb({ pronto: true, acceso: true, app: j.app === true, url: dove + '/real4k/', servizio: dove, gettone: g, ritrovo: statoRitrovo() });
           });
       }
     }
@@ -1281,7 +1372,7 @@ var PontiVideo = (function () {
           accetta: img && /^[\w\/*+.,;=\s-]{1,200}$/.test(acc) ? acc : '*/*',
           range: req.headers.range, tempo: lungo || /\.m3u8$/i.test(percorso) ? 60000 : 15000, lungo: lungo }, function (err, r) {
           if (segnata) passo('jf/p: ' + tipoJf + ' ' + (err ? 'errore' : r.statusCode));
-          if (err) { rispondi(res, 502, { error: err.message, codice: 'rete' }); return; }
+          if (err) { rispondi(res, 502, { error: err.message, codice: err.codice === 'certificato' ? 'certificato' : 'rete', ritrovo: statoRitrovo() }); return; }
           if (r.statusCode === 401 && cfg.token) { r.resume(); dimentica(); rispondi(res, 401, { error: 'accesso scaduto', codice: 'accesso' }); return; }
           var tipo = String(r.headers['content-type'] || '');
           if (/mpegurl/i.test(tipo) || /\.m3u8$/i.test(percorso)) {
@@ -1331,9 +1422,10 @@ var PontiVideo = (function () {
     function trattaJf(req, res, resto, q, u) {
       var get = req.method === 'GET', post = req.method === 'POST', m;
       function errore2(e) {
-        var c = e.codice || 'errore';
+        var c = e.codice || 'errore', r = { error: e.message, codice: c };
+        if (c === 'rete') r.ritrovo = statoRitrovo();
         rispondi(res, c === 'accesso' ? 401 : c === 'rete' || c === 'certificato' ? 502 : c === 'assente' ? 404 : c === 'server' ? 409 :
-          c === 'troppe' ? 429 : 400, { error: e.message, codice: c });
+          c === 'troppe' ? 429 : 400, r);
       }
       if (resto === 'stato' && get) { rispondi(res, 200, statoPubblico()); return; }
       // sul Mac il server, l'accesso e il video diretto sono del servizio del TV (Real4K dal Mac usa la sua sessione)
@@ -1834,6 +1926,6 @@ var PontiVideo = (function () {
   return {
     crea: crea, VERSIONE: VERSIONE,
     _interni: { misuraCpu: misuraCpu, inLista: inLista, senzaChiavi: senzaChiavi, riscriviPlaylist: riscriviPlaylist, indirizzoBuono: indirizzoBuono,
-      famigliaJf: famigliaJf, profilo: profilo, qualitaAuto: qualitaAuto, fsRemoto: fsRemoto, QUALITA: QUALITA, ipDiCasa: ipDiCasa }
+      famigliaJf: famigliaJf, profilo: profilo, qualitaAuto: qualitaAuto, fsRemoto: fsRemoto, QUALITA: QUALITA, ipDiCasa: ipDiCasa, conHost: conHost }
   };
 })();
