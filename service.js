@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.9';
+  var VERSION = '1.3.10';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -734,7 +734,7 @@
       traccia.fini.push({ fine: prec.t, minuti: Math.round((prec.t - (+prec.avvio || prec.t)) / 60000), versione: String(prec.versione || '').slice(0, 12),
         memoria: prec.memoria || null, inVolo: +prec.inVolo || 0, video: +prec.video || 0,
         richieste: Array.isArray(prec.richieste) ? prec.richieste.slice(-8) : [], errori: Array.isArray(prec.errori) ? prec.errori.slice(-3) : [],
-        eventi: Array.isArray(prec.eventi) ? prec.eventi.slice(-8) : [] });
+        eventi: Array.isArray(prec.eventi) ? prec.eventi.slice(-8) : [], campioni: Array.isArray(prec.campioni) ? prec.campioni.slice(-30) : [] });
     }
   })();
   // un fatto da ricordare (chi chiude il processo, un lavoro pesante che parte): nella traccia entro 300 ms
@@ -812,7 +812,7 @@
     try {
       var dati = { v: 1, t: Date.now(), avvio: traccia.avvio, versione: VERSION, memoria: memoriaVera(), inVolo: traccia.inVolo,
         video: traccia.video, richieste: traccia.richieste.slice(-12), eventi: traccia.eventi.slice(-10), errori: erroriRecenti.slice(-5), fini: traccia.fini,
-        film: traccia.film };
+        film: traccia.film, campioni: diagnosi ? diagnosi.campioni.slice(-30) : [] };
       // sincrona e piccola (un paio di KB): se il processo viene chiuso subito dopo, il file c'e' gia'
       fs.writeFileSync(TRACCIA + '.tmp', JSON.stringify(dati));
       fs.renameSync(TRACCIA + '.tmp', TRACCIA);
@@ -826,6 +826,88 @@
     if (traccia.video > 0 || ora - traccia.ultimoVideo < 30000 || ora - traccia.scritta >= 60000) scriviTraccia();
   }, 5000);
   if (timerTraccia && timerTraccia.unref) timerTraccia.unref();
+
+  /* ---------------------------------------------------------- la scatola nera delle chiusure (1.3.10, 31/10/2026)
+   * Il TV chiude il servizio di forza (niente errori, niente segnali) appena si apre Real4K, e anche con Real4K ferma. Per
+   * sapere chi e perche', ogni 2 s un campione: picco del processo, heap, memoria libera, richieste in corso e quanto si e'
+   * fermato il ciclo degli eventi (un ciclo fermo per secondi farebbe pensare a un controllo del sistema sui processi
+   * bloccati). In piu', se il TV li lascia leggere (all'avvio si prova una volta sola e si dice in 8091/tv), i numeri del
+   * kernel: memoria disponibile, quella del processo, il suo punteggio per l'OOM, il limite del suo gruppo di memoria
+   * (cgroup) e quante volte l'ha toccato. Gli ultimi 30 campioni (un minuto) vanno nella traccia, scritta ogni 2 s se Real4K
+   * ha lavorato negli ultimi 10 minuti: dopo una caduta 8091/tv dice com'era il minuto prima. Letture di pochi byte. */
+  var diagnosi = { campioni: [], ritardoMax: 0, leggibili: {}, gruppo: '', fileGruppo: null, v2: false };
+  function leggiPiccolo(f) { try { return String(fs.readFileSync(f, 'utf8')).slice(0, 6000); } catch (e) { return null; } }
+  // "VmRSS:   81234 kB" -> 79 (MB)
+  function campoMB(testo, nome) {
+    var m = testo ? new RegExp('^' + nome + ':\\s*(\\d+)', 'm').exec(testo) : null;
+    return m ? Math.round(+m[1] / 1024) : null;
+  }
+  function numeroMB(testo) { var n = testo === null ? NaN : parseInt(testo, 10); return isFinite(n) ? Math.round(n / 1048576) : null; }
+  (function () {
+    var prove = ['/proc/meminfo', '/proc/self/status', '/proc/self/oom_score_adj', '/proc/self/oom_score', '/proc/self/cgroup', '/proc/pressure/memory'];
+    for (var i = 0; i < prove.length; i++) diagnosi.leggibili[prove[i]] = leggiPiccolo(prove[i]) !== null;
+    var cg = leggiPiccolo('/proc/self/cgroup') || '';
+    // cgroup v1: "N:memory:/percorso"; v2: "0::/percorso"
+    var m1 = /^\d+:[^:\n]*\bmemory\b[^:\n]*:(.*)$/m.exec(cg), m2 = /^0::(.*)$/m.exec(cg);
+    diagnosi.gruppo = m1 ? m1[1] : m2 ? m2[1] : '';
+    diagnosi.v2 = !m1 && !!m2;
+    if (diagnosi.gruppo) {
+      var base = (diagnosi.v2 ? '/sys/fs/cgroup' : '/sys/fs/cgroup/memory') + diagnosi.gruppo.replace(/\/+$/, '');
+      diagnosi.fileGruppo = diagnosi.v2 ?
+        { limite: base + '/memory.max', uso: base + '/memory.current', eventi: base + '/memory.events', processi: base + '/cgroup.procs' } :
+        { limite: base + '/memory.limit_in_bytes', uso: base + '/memory.usage_in_bytes', massimo: base + '/memory.max_usage_in_bytes',
+          volte: base + '/memory.failcnt', eventi: base + '/memory.oom_control', processi: base + '/cgroup.procs' };
+      for (var k in diagnosi.fileGruppo) {
+        if (Object.prototype.hasOwnProperty.call(diagnosi.fileGruppo, k)) diagnosi.leggibili['gruppo.' + k] = leggiPiccolo(diagnosi.fileGruppo[k]) !== null;
+      }
+    }
+    var adj = leggiPiccolo('/proc/self/oom_score_adj');
+    diagnosi.oomAdj = adj === null ? null : parseInt(adj, 10);
+  })();
+  var ultimoTic = Date.now();
+  var timerTic = setInterval(function () {
+    var ora = Date.now(), r = ora - ultimoTic - 500;
+    if (r > diagnosi.ritardoMax) diagnosi.ritardoMax = r;
+    ultimoTic = ora;
+  }, 500);
+  if (timerTic && timerTic.unref) timerTic.unref();
+  function campione() {
+    var c = { t: Date.now() }, m = memoriaVera(), x;
+    c.picco = m.piccoMB; c.heap = m.heapMB; c.libera = m.liberaMB; c.fuori = m.fuoriHeapMB;
+    c.ritardo = Math.max(0, diagnosi.ritardoMax); diagnosi.ritardoMax = 0;
+    c.inVolo = traccia.inVolo; c.video = traccia.video;
+    if (diagnosi.leggibili['/proc/meminfo']) {
+      x = leggiPiccolo('/proc/meminfo');
+      c.disp = campoMB(x, 'MemAvailable'); c.cache = campoMB(x, 'Cached'); c.swapLibero = campoMB(x, 'SwapFree');
+    }
+    if (diagnosi.leggibili['/proc/self/status']) { x = leggiPiccolo('/proc/self/status'); c.rss = campoMB(x, 'VmRSS'); c.swap = campoMB(x, 'VmSwap'); }
+    if (diagnosi.leggibili['/proc/self/oom_score']) { x = parseInt(leggiPiccolo('/proc/self/oom_score'), 10); c.oom = isFinite(x) ? x : null; }
+    var g = diagnosi.fileGruppo;
+    if (g) {
+      if (diagnosi.leggibili['gruppo.uso']) c.gUso = numeroMB(leggiPiccolo(g.uso));
+      if (diagnosi.leggibili['gruppo.limite']) { x = leggiPiccolo(g.limite); c.gLimite = x !== null && /max/.test(x) ? -1 : numeroMB(x); }
+      if (diagnosi.leggibili['gruppo.massimo']) c.gMassimo = numeroMB(leggiPiccolo(g.massimo));
+      if (diagnosi.leggibili['gruppo.volte']) { x = parseInt(leggiPiccolo(g.volte), 10); c.gVolte = isFinite(x) ? x : null; }
+      if (diagnosi.leggibili['gruppo.eventi']) {
+        x = leggiPiccolo(g.eventi) || '';
+        var ok = /oom_kill\s+(\d+)/.exec(x), sotto = /under_oom\s+(\d+)/.exec(x), mx = /^max\s+(\d+)/m.exec(x);
+        if (ok) c.gUccisi = +ok[1];
+        if (sotto) c.gSotto = +sotto[1];
+        if (mx) c.gMax = +mx[1];
+      }
+      if (diagnosi.leggibili['gruppo.processi']) { x = leggiPiccolo(g.processi); c.gProcessi = x === null ? null : x.split('\n').filter(function (r) { return /\d/.test(r); }).length; }
+    }
+    diagnosi.campioni.push(c);
+    if (diagnosi.campioni.length > 30) diagnosi.campioni.shift();
+    // con Real4K al lavoro (o da poco) la traccia si scrive a ogni campione: se il TV chiude il processo, l'ultimo minuto c'e'
+    if (Date.now() - traccia.ultimoVideo < 600000) scriviTraccia();
+  }
+  var timerCampioni = setInterval(function () { try { campione(); } catch (e) { /* la diagnosi non deve mai fermare niente */ } }, 2000);
+  if (timerCampioni && timerCampioni.unref) timerCampioni.unref();
+  function statoDiagnosi() {
+    return { leggibili: diagnosi.leggibili, gruppo: diagnosi.gruppo.slice(0, 200), v2: diagnosi.v2, oomAdj: diagnosi.oomAdj,
+      ultimi: diagnosi.campioni.slice(-5) };
+  }
 
   function leggiJson(file, def) {
     try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return def; }
@@ -16834,6 +16916,7 @@
         try { p.memoria = memoriaVera(); p.acceso = { minuti: Math.round((Date.now() - traccia.avvio) / 60000), inVolo: traccia.inVolo, video: traccia.video };
           p.ultimeFini = traccia.fini.slice(); } catch (e) { annotaErrore('tv traccia', e); }
         try { p.custode = statoCustode(); } catch (e) { annotaErrore('tv custode', e); }
+        try { p.diagnosi = statoDiagnosi(); } catch (e) { annotaErrore('tv diagnosi', e); }
         try { rispondiTel(res, 200, p); } catch (e) { annotaErrore('tv risposta', e); }
       });
       return;
