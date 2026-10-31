@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.10';
+  var VERSION = '1.3.11';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -834,7 +834,8 @@
    * bloccati). In piu', se il TV li lascia leggere (all'avvio si prova una volta sola e si dice in 8091/tv), i numeri del
    * kernel: memoria disponibile, quella del processo, il suo punteggio per l'OOM, il limite del suo gruppo di memoria
    * (cgroup) e quante volte l'ha toccato. Gli ultimi 30 campioni (un minuto) vanno nella traccia, scritta ogni 2 s se Real4K
-   * ha lavorato negli ultimi 10 minuti: dopo una caduta 8091/tv dice com'era il minuto prima. Letture di pochi byte. */
+   * ha lavorato negli ultimi 10 minuti: dopo una caduta 8091/tv dice com'era il minuto prima (ultimeFini[].campioni, e scatolaNera:
+   * non "diagnosi", che e' la lista dei controlli letta dalla home e dagli installatori). Letture di pochi byte. */
   var diagnosi = { campioni: [], ritardoMax: 0, leggibili: {}, gruppo: '', fileGruppo: null, v2: false };
   function leggiPiccolo(f) { try { return String(fs.readFileSync(f, 'utf8')).slice(0, 6000); } catch (e) { return null; } }
   // "VmRSS:   81234 kB" -> 79 (MB)
@@ -16916,7 +16917,7 @@
         try { p.memoria = memoriaVera(); p.acceso = { minuti: Math.round((Date.now() - traccia.avvio) / 60000), inVolo: traccia.inVolo, video: traccia.video };
           p.ultimeFini = traccia.fini.slice(); } catch (e) { annotaErrore('tv traccia', e); }
         try { p.custode = statoCustode(); } catch (e) { annotaErrore('tv custode', e); }
-        try { p.diagnosi = statoDiagnosi(); } catch (e) { annotaErrore('tv diagnosi', e); }
+        try { p.scatolaNera = statoDiagnosi(); } catch (e) { annotaErrore('tv scatola nera', e); }
         try { rispondiTel(res, 200, p); } catch (e) { annotaErrore('tv risposta', e); }
       });
       return;
