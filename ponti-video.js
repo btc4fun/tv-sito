@@ -170,6 +170,17 @@ var PontiVideo = (function () {
     if (b[10] || b[11]) return false;
     return b[12] === 127 || b[12] === 0; // ::, ::1 e ::127.x (IPv4 "compatibile")
   }
+  // un IP della rete di casa scritto per esteso (10/8, 172.16/12, 192.168/16, 169.254/16; IPv6 fc00::/7 e fe80::/10), mai un
+  // nome. Nelle prove sul computer (locale) anche 127.0.0.1
+  function ipDiCasa(h, locale) {
+    var a = String(h || '').replace(/^\[|\]$/g, '').toLowerCase(), m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(a);
+    if (m) {
+      var x = +m[1], y = +m[2];
+      if (+m[3] > 255 || +m[4] > 255 || x > 255 || y > 255) return false;
+      return x === 10 || (x === 172 && y >= 16 && y <= 31) || (x === 192 && y === 168) || (x === 169 && y === 254) || (!!locale && x === 127);
+    }
+    return a.indexOf(':') >= 0 && /^[0-9a-f:.]+$/.test(a) && /^(f[cd]|fe[89ab])/.test(a);
+  }
   // indirizzo del server: http(s)://host[:porta][/base], mai il TV stesso (solo le prove sul computer usano 127.0.0.1). Solo
   // forme canoniche: niente numeri "da soli", esadecimali o ottali (2130706433, 0x7f000001, 0177.0.0.1), niente nomi col punto
   // finale (localhost.), IPv6 controllati dopo averli espansi. I nomi si controllano anche col DNS (guardiaDns)
@@ -544,9 +555,11 @@ var PontiVideo = (function () {
         if (r && !x.lungo) { r.on('end', ferma); r.on('aborted', ferma); r.on('error', ferma); r.on('close', ferma); }
         cb(e, r);
       }
-      // le domande lunghe (il film, i pezzi HLS) su una connessione loro; le brevi riusano le connessioni aperte
+      // le domande lunghe (il film, i pezzi HLS) su una connessione loro; le brevi riusano le connessioni aperte. Quelle al
+      // ponte del video diretto (poche per film) su una connessione nuova: il ponte chiude le sue dopo 65 s, e una riusata
+      // proprio allora sembrerebbe un Mac che non risponde
       var opz = { protocol: u.protocol, hostname: u.hostname, port: u.port, path: u.path, method: x.metodo || 'GET',
-        headers: testa, agent: x.lungo ? false : agenti[u.protocol] || undefined };
+        headers: testa, agent: x.lungo || x.diretto ? false : agenti[u.protocol] || undefined };
       if (o.dns) opz.lookup = guardiaDns;
       // i TV 2017-2019 (Node 4) hanno le autorita' del 2016: un server https con un certificato Let's Encrypt si riprova con
       // la sua radice (come le liste dei filtri e lo Store nel servizio); se va, per quel server la si usa subito
@@ -579,7 +592,8 @@ var PontiVideo = (function () {
         r.on('end', function () {
           if (rotto) return;
           if (r.statusCode === 401 && x.mac && x.mac !== 'senza' && mac.chiave) { dimenticaMac(); cb(errore('accesso', 'il Mac non riconosce piu\' questo TV')); return; }
-          if (r.statusCode === 401 && !x.mac && x.token !== false && cfg.token) { dimentica(); cb(errore('accesso', 'accesso scaduto')); return; }
+          // (un 401 del ponte del video diretto non dice niente del token: l'accesso a Jellyfin resta)
+          if (r.statusCode === 401 && !x.mac && !x.diretto && x.token !== false && cfg.token) { dimentica(); cb(errore('accesso', 'accesso scaduto')); return; }
           var b = Buffer.concat(parti, n), v = null;
           if (x.byte) { cb(null, r.statusCode, b, r); return; }
           if (b.length) { try { v = JSON.parse(b.toString('utf8')); } catch (e) { v = null; } }
@@ -605,7 +619,9 @@ var PontiVideo = (function () {
       return { server: cfg.indirizzo ? { indirizzo: cfg.indirizzo, nome: cfg.nome || '', versione: cfg.versione || '', id: cfg.id || '' } : null,
         utente: cfg.token && cfg.utente ? { id: cfg.utente.id, nome: cfg.utente.nome } : null, letti: letti(),
         // per le prove sul TV (pannello Info del lettore): quanta memoria usa il servizio, e da quanto e' acceso
-        servizio: { memoria: memoriaServizio(), node: process.version, acceso: Math.round(process.uptime()) } };
+        servizio: { memoria: memoriaServizio(), node: process.version, acceso: Math.round(process.uptime()) },
+        // questo servizio sa fare il video diretto dal Mac (Real4K mostra l'interruttore solo allora)
+        diretto: 1 };
     }
     // i server Jellyfin nella rete di casa (rispondono al broadcast UDP 7359 con il loro indirizzo)
     var cercando = null;
@@ -910,7 +926,7 @@ var PontiVideo = (function () {
           var cont = (String(ms.Container || 'ts').split(',')[0] || 'ts').replace(/[^a-z0-9]/gi, '').slice(0, 5) || 'ts';
           out.modo = 'file';
           out.url = 'jf/p/Videos/' + id + '/stream.' + cont + '?Static=true&MediaSourceId=' + msid + (ms.ETag ? '&Tag=' + encodeURIComponent(String(ms.ETag).slice(0, 64)) : '');
-          cb(null, out);
+          conDiretto(out);
           return;
         }
         if (typeof ms.TranscodingUrl !== 'string' || !ms.TranscodingUrl) { cb(errore('formato', 'il server non sa convertire questo film per il TV')); return; }
@@ -919,9 +935,99 @@ var PontiVideo = (function () {
         out.modo = vl && dentro && !videoRifatto ? 'copia' : 'converti';
         out.url = 'jf/p/' + senzaChiavi(ms.TranscodingUrl.replace(/^\/+/, ''));
         // i sottotitoli dentro il file si leggono dal file vero, come nella strada diretta
-        if (estDi(ms) === 'mkv' || estDi(ms) === 'webm') { sorgenteDaMs(id, msid, ms, function () { cb(null, out); }); return; }
-        cb(null, out);
+        if (estDi(ms) === 'mkv' || estDi(ms) === 'webm') { sorgenteDaMs(id, msid, ms, function () { conDiretto(out); }); return; }
+        conDiretto(out);
       }
+      // con l'interruttore di Real4K (q.diretto): anche il video diretto dal Mac, se il ponte c'e'. La strada di sempre resta
+      // in out.url: e' quella del ritorno da solo
+      function conDiretto(out) {
+        if (q.diretto !== '1') { cb(null, out); return; }
+        bigliettoDiretto(id, out.url.slice(5), function (d) {
+          if (d) out.diretto = d;
+          else out.direttoNo = ponteDiretto.ok ? 'biglietto' : 'mac';
+          cb(null, out);
+        });
+      }
+    }
+
+    /* ---------------------------------------------------------- il video diretto dal Mac (prova: interruttore in Real4K)
+     * Il ponte del video sul Mac (mac/video-diretto, porta 8098 accanto a Jellyfin) tiene il token al posto della pagina:
+     * qui si chiede un biglietto per il film (vale per quel film, per l'IP del TV e per 12 ore) e il lettore del TV prende
+     * playlist e pezzi da li', senza passare da qui. Il <video> chiede l'inizio a questo servizio (jf/diretto/<biglietto>/...)
+     * e riceve un 302 verso il Mac: cosi' un controllo del motore fatto solo sull'indirizzo di partenza non lo ferma, e i pezzi
+     * non passano piu' di qui. Solo se l'app lo chiede, solo se il ponte parla con lo stesso Jellyfin (stesso ServerId), al
+     * massimo 1,5 s per domanda: se il Mac non risponde il film va come sempre. */
+    var DIRETTO_TEMPO = 1500;
+    var ponteDiretto = { dove: '', ok: false, quando: 0 }, diretti = {};
+    // il ponte sta accanto a Jellyfin, ma solo se Jellyfin e' http su un IP della rete di casa e senza percorso base: il token
+    // va al ponte in chiaro, come gia' va a quel Jellyfin. Con Jellyfin in https, su un nome o fuori casa niente video diretto
+    // (un nome o un https direbbero che il token non deve viaggiare in chiaro, o che sulla 8098 puo' rispondere un altro)
+    function dovePonte() {
+      var u = cfg.indirizzo ? urlLib.parse(cfg.indirizzo) : null, h = u ? String(u.hostname || '') : '';
+      if (!u || u.protocol !== 'http:' || (u.pathname && u.pathname !== '/') || !ipDiCasa(h, o.locale)) return '';
+      return indirizzoBuono(urlLib, 'http://' + (h.indexOf(':') >= 0 ? '[' + h + ']' : h) + ':' + (o.portaDiretto || 8098), o.locale) || '';
+    }
+    // il ponte c'e', parla la stessa lingua (protocollo 1) ed e' accanto allo stesso Jellyfin? (si ricorda 5 minuti se si', 1
+    // minuto se no; fresco: si chiede di nuovo, per l'interruttore appena acceso)
+    function controllaPonte(cb, fresco) {
+      var dove = dovePonte(), eta = Date.now() - ponteDiretto.quando;
+      if (!dove || !cfg.id) { cb(''); return; }
+      if (!fresco && ponteDiretto.dove === dove && eta >= 0 && eta < (ponteDiretto.ok ? 300000 : 60000)) { cb(ponteDiretto.ok ? dove : ''); return; }
+      chiedi({ dove: dove, percorso: 'stato', token: false, diretto: true, tempo: DIRETTO_TEMPO, max: 4096 }, function (err, st, j) {
+        var ok = !err && st === 200 && !!j && j.app === 'hometv-video-diretto' && j.protocollo === 1 && j.server === cfg.id;
+        ponteDiretto = { dove: dove, ok: ok, quando: Date.now() };
+        cb(ok ? dove : '');
+      });
+    }
+    // il biglietto per il film. percorso = quello di Jellyfin (senza chiavi) che il <video> chiederebbe al ponte del servizio
+    function bigliettoDiretto(id, percorso, cb) {
+      controllaPonte(function (dove) {
+        if (!dove) { cb(null); return; }
+        chiedi({ dove: dove, percorso: 'biglietti', metodo: 'POST', corpo: { id: id, percorso: percorso, server: cfg.id }, diretto: true, tempo: DIRETTO_TEMPO, max: 8192 },
+          function (err, st, j) {
+            var k = !err && st === 200 && j && typeof j.biglietto === 'string' && /^[0-9a-f]{64}$/.test(j.biglietto) ? j.biglietto : '';
+            var testa = 'v/' + k + '/', resto = k && typeof j.url === 'string' && j.url.indexOf(testa) === 0 ? j.url.slice(testa.length) : '';
+            // (va nel Location del 302: solo caratteri stampabili ASCII, se no writeHead fallisce)
+            if (!resto || !/^[\x21-\x7e]+$/.test(resto) || /[\\#]/.test(resto) || resto.length > 4096) {
+              // il ponte non risponde piu' (Mac spento a meta'): si ricontrolla tra un minuto, intanto i film vanno come sempre.
+              // Solo lento (il Mac aspetta Jellyfin): niente biglietto per questo film, ma il ponte resta buono
+              if (err && err.message !== 'tempo scaduto') ponteDiretto = { dove: dove, ok: false, quando: Date.now() };
+              else log('video diretto: il Mac non da\' il biglietto (' + st + (j && j.codice ? ' ' + testo(j.codice, 20) : '') + ')');
+              cb(null);
+              return;
+            }
+            pulisciDiretti();
+            diretti[k] = { dove: dove, resto: resto, quando: Date.now(), rinvii: 0 };
+            // mac: lo stesso indirizzo senza il rinvio, per un lettore che non segue i 302 (l'app lo prova una volta)
+            cb({ url: 'jf/diretto/' + k + '/' + resto, biglietto: k, mac: dove + '/v/' + k + '/' + resto });
+          });
+      });
+    }
+    function pulisciDiretti() {
+      var ora = Date.now(), l = Object.keys(diretti).filter(function (k) { if (ora - diretti[k].quando > 12 * 3600000) { delete diretti[k]; return false; } return true; });
+      l.sort(function (a, b) { return diretti[a].quando - diretti[b].quando; });
+      while (l.length >= 32) delete diretti[l.shift()];
+    }
+    // quante domande del lettore sono arrivate al Mac con questo biglietto (e i tentativi https dallo stesso TV): l'app
+    // capisce se il motore del TV ha bloccato il video diretto, e torna da sola alla strada di sempre
+    function statoDiretto(k, cb) {
+      var d = diretti[k];
+      if (!d) { cb(errore('assente', 'biglietto sconosciuto')); return; }
+      chiedi({ dove: d.dove, percorso: 'biglietti/' + k, token: false, diretto: true, tempo: DIRETTO_TEMPO, max: 4096 }, function (err, st, j) {
+        function n(x) { x = +x; return isFinite(x) ? Math.max(-1, Math.round(x)) : 0; }
+        var r = { rinvii: d.rinvii, mac: !err && st === 200 && !!j };
+        if (r.mac) {
+          r.richieste = n(j.richieste); r.byte = n(j.byte); r.primo = n(j.primo); r.https = n(j.https); r.errori = n(j.errori); r.attese = n(j.attese);
+          r.rifiutate = n(j.rifiutate);
+        }
+        cb(null, r);
+      });
+    }
+    function fineDiretto(k) {
+      var d = diretti[k];
+      if (!d) return;
+      delete diretti[k];
+      chiedi({ dove: d.dove, percorso: 'biglietti/' + k, metodo: 'DELETE', token: false, diretto: true, tempo: DIRETTO_TEMPO, max: 4096 }, function () {});
     }
 
     // quanti Mbps arrivano dal server (per la qualita' "Automatica"): 8 MB, e altri 16 se e' veloce. I byte si contano e si
@@ -1051,6 +1157,19 @@ var PontiVideo = (function () {
         guarda(m[1].toLowerCase(), q, function (e, r) { if (e) errore2(e); else rispondi(res, 200, r); });
         return;
       }
+      // il video diretto dal Mac: il <video> chiede qui l'inizio e va al ponte del Mac (302); playlist e pezzi arrivano da li'
+      if ((m = /^diretto\/([0-9a-f]{64})\/./.exec(resto)) && (get || req.method === 'HEAD')) {
+        var dd = diretti[m[1]];
+        if (!dd) { res.writeHead(404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' }); res.end('biglietto'); return; }
+        dd.rinvii++;
+        res.writeHead(302, { 'Location': dd.dove + '/v/' + m[1] + '/' + dd.resto, 'Content-Length': '0', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+        res.end();
+        return;
+      }
+      if ((m = /^diretto-stato\/([0-9a-f]{64})$/.exec(resto)) && get) { statoDiretto(m[1], function (e, r) { if (e) errore2(e); else rispondi(res, 200, r); }); return; }
+      if ((m = /^diretto-fine\/([0-9a-f]{64})$/.exec(resto)) && post) { fineDiretto(m[1]); rispondi(res, 200, { ok: true }); return; }
+      // l'interruttore acceso in Real4K: il ponte del Mac c'e'? (per dirlo subito, prima del film)
+      if (resto === 'diretto-ponte' && get) { controllaPonte(function (dove) { rispondi(res, 200, { pronto: !!dove }); }, true); return; }
       // file/<id>[/<nome.mkv>]: il nome col suo tipo nell'indirizzo, come per le chiavette (alcuni lettori dei TV lo guardano)
       if ((m = /^(file|info|sotto)\/([0-9a-fA-F]{32})(\/[^\/]{1,200})?$/.exec(resto)) && (m[1] === 'file' || !m[3]) && (get || (m[1] === 'file' && req.method === 'HEAD'))) {
         var id = m[2].toLowerCase(), cosa = m[1], ms = String(q.ms || '').toLowerCase();
@@ -1153,7 +1272,11 @@ var PontiVideo = (function () {
     var PAROLE_DIARIO = { strada: ['chiavetta', 'versione-tv', 'disco', 'diretto', 'file', 'copia', 'converti', 'mac'],
       formato: ['mkv', 'webm', 'mp4', 'mov', 'm4v', 'ts', 'm2ts', 'avi', 'blu-ray', 'dvd', 'hls', 'altro'],
       codec: ['HEVC', 'AVC', 'AV1', 'VP9', 'VP8', 'MPEG2', 'MPEG4', 'VC1'], hdr: ['HDR10', 'HDR10+', 'DV', 'HLG'],
-      audio: ['AC3', 'EAC3', 'AAC', 'MP3', 'MP2', 'OPUS', 'FLAC', 'PCM', 'DTS', 'TRUEHD', 'VORBIS'] };
+      audio: ['AC3', 'EAC3', 'AAC', 'MP3', 'MP2', 'OPUS', 'FLAC', 'PCM', 'DTS', 'TRUEHD', 'VORBIS'],
+      // il video diretto dal Mac (interruttore acceso): andato ('si' col rinvio del servizio, 'si2' con l'indirizzo del Mac nel
+      // <video>), o perche' no. "bloccato": nessuna domanda e' arrivata al Mac (il motore del TV non l'ha fatta); "https": il
+      // motore l'ha portata a https; "mac": ponte del Mac non trovato
+      diretto: ['si', 'si2', 'mac', 'biglietto', 'bloccato', 'https', 'errore', 'tempo', 'meta', 'servizio'] };
     function voceDiario(b) {
       function num(x, max) { x = +x; return isFinite(x) ? Math.max(0, Math.min(max, Math.round(x * 10) / 10)) : 0; }
       var v = { quando: Date.now() }, k;
@@ -1169,6 +1292,10 @@ var PontiVideo = (function () {
       v.salti = num(b.salti, 100000);
       v.ritmo = num(b.ritmo, 10);
       v.errore = num(b.errore, 99);
+      // il video diretto: il codice d'errore del <video> nel tentativo, e cosa aveva visto il Mac quando si e' scelto
+      v.dirErrore = num(b.dirErrore, 99);
+      v.dirRichieste = num(b.dirRichieste, 100000);
+      v.dirHttps = num(b.dirHttps, 100000);
       return v;
     }
 
@@ -1469,15 +1596,15 @@ var PontiVideo = (function () {
       },
       // l'app Video e' chiusa: via le sorgenti di Jellyfin ricordate (i film aperti li lascia la videoteca). La misura della
       // rete resta: vale per i prossimi 20 minuti
-      riposa: function () { sorgenti = {}; misure = {}; },
+      riposa: function () { sorgenti = {}; misure = {}; Object.keys(diretti).forEach(fineDiretto); },
       // per le prove
-      _cfg: function () { return cfg; }, _sorgenti: function () { return sorgenti; }, _mac: function () { return mac; }
+      _cfg: function () { return cfg; }, _sorgenti: function () { return sorgenti; }, _mac: function () { return mac; }, _diretti: function () { return diretti; }
     };
   }
 
   return {
     crea: crea, VERSIONE: VERSIONE,
     _interni: { misuraCpu: misuraCpu, inLista: inLista, senzaChiavi: senzaChiavi, riscriviPlaylist: riscriviPlaylist, indirizzoBuono: indirizzoBuono,
-      famigliaJf: famigliaJf, profilo: profilo, qualitaAuto: qualitaAuto, fsRemoto: fsRemoto, QUALITA: QUALITA }
+      famigliaJf: famigliaJf, profilo: profilo, qualitaAuto: qualitaAuto, fsRemoto: fsRemoto, QUALITA: QUALITA, ipDiCasa: ipDiCasa }
   };
 })();
