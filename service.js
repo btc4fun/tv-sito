@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.12';
+  var VERSION = '1.3.13';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -734,14 +734,27 @@
       traccia.fini.push({ fine: prec.t, minuti: Math.round((prec.t - (+prec.avvio || prec.t)) / 60000), versione: String(prec.versione || '').slice(0, 12),
         memoria: prec.memoria || null, inVolo: +prec.inVolo || 0, video: +prec.video || 0,
         richieste: Array.isArray(prec.richieste) ? prec.richieste.slice(-8) : [], errori: Array.isArray(prec.errori) ? prec.errori.slice(-3) : [],
-        eventi: Array.isArray(prec.eventi) ? prec.eventi.slice(-8) : [], campioni: Array.isArray(prec.campioni) ? prec.campioni.slice(-30) : [] });
+        eventi: Array.isArray(prec.eventi) ? prec.eventi.slice(-24) : [], campioni: Array.isArray(prec.campioni) ? prec.campioni.slice(-30) : [] });
     }
   })();
+  // i passi dell'apertura di un'app che le pagine segnano (GET o POST /api/passo?da=&p=): solo questi nomi
+  var PASSI_APERTURA = { apri: 1, 'apri-video': 1, attesa: 1, permesso: 1, 'permesso-ok': 1, 'permesso-no': 1, 'mac-memoria': 1, 'mac-chiesto': 1,
+    'mac-ok': 1, 'mac-no': 1, 'verso-mac': 1, iframe: 1, 'iframe-caricato': 1, 'app-pronta': 1, 'r4k-avvio': 1, 'r4k-permesso': 1, 'r4k-dati': 1,
+    'r4k-fila': 1, 'r4k-copertine': 1, 'r4k-banner': 1, 'r4k-font': 1, 'r4k-video': 1 };
+  var DA_APERTURA = { store: 1, riquadro: 1, mac: 1 }, contoPassi = { da: 0, n: 0 };
+  function passoApertura(req, res, q) {
+    var ora = Date.now(), p = String(q.p || ''), da = String(q.da || '');
+    if (req.method === 'POST') req.resume();
+    if (!(ora - contoPassi.da < 60000)) contoPassi = { da: ora, n: 0 };
+    if (PASSI_APERTURA[p] === 1 && DA_APERTURA[da] === 1 && ++contoPassi.n <= 120) segna('apri: ' + p + ' (' + da + ')');
+    res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' });
+    res.end();
+  }
   // un fatto da ricordare (chi chiude il processo, un lavoro pesante che parte): nella traccia entro 300 ms
   function segna(cosa) {
     try {
       traccia.eventi.push({ t: Date.now(), e: String(cosa).slice(0, 300) });
-      if (traccia.eventi.length > 15) traccia.eventi.shift();
+      if (traccia.eventi.length > 30) traccia.eventi.shift();
       presto();
     } catch (e) { /* niente */ }
   }
@@ -1302,6 +1315,11 @@
       sendJson(req, res, 403, { error: 'indirizzo non autorizzato' });
       return;
     }
+    // i passi dell'apertura di un'app (la Store, poi la pagina di Real4K nel riquadro o dal Mac): nella traccia, cosi' dopo una
+    // caduta ultimeFini[].eventi dice l'ultimo passo arrivato (il TV chiude il servizio all'apertura di Real4K: si cerca quale
+    // lavoro della pagina lo fa). Da qualsiasi pagina e senza chiave (il riquadro ha Origin "null", la pagina del Mac un'altra
+    // origine): solo nomi fissi, niente dati, al massimo 120 al minuto. Risposta vuota
+    if (url.pathname === '/api/passo' && (req.method === 'GET' || req.method === 'POST')) { passoApertura(req, res, url.query); return; }
     // l'app Video: il gettone nel percorso basta (il <video> non ha Origin, il riquadro dello Store ha "null"). Col gettone
     // giusto il custode delle app sa che Real4K lavora; la partenza di un film aspetta che la memoria sia libera
     var gv = url.pathname.indexOf('/api/video/g/') === 0 && req.method !== 'OPTIONS' ? /^\/api\/video\/g\/([^\/]+)\/(.*)$/.exec(url.pathname) : null;
@@ -6272,8 +6290,14 @@
     }
     function tratta(vt, g, req, res, u, opzioni, m) {
       if (req.method === 'OPTIONS') {
-        res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, HEAD, DELETE',
-          'Access-Control-Allow-Headers': 'Content-Type, Range', 'Access-Control-Max-Age': '600' });
+        // le OPTIONS di Chromium dalla 104 (sul TV la 108): prima di ogni domanda di una pagina in rete verso 127.0.0.1 il browser
+        // chiede il permesso (Access-Control-Request-Private-Network). Senza Access-Control-Allow-Private-Network la domanda parte
+        // lo stesso, ma il permesso non si tiene e la OPTIONS si ripete ogni volta (scatola nera del 31/10: 7 in un secondo). Le
+        // immagini lo chiedono con le credenziali: l'origine si ripete ("null" per il riquadro dell'app)
+        var o = req.headers.origin, h = { 'Access-Control-Allow-Origin': o || '*', 'Access-Control-Allow-Methods': 'GET, POST, HEAD, DELETE',
+          'Access-Control-Allow-Headers': 'Content-Type, Range', 'Access-Control-Allow-Private-Network': 'true', 'Access-Control-Max-Age': '600' };
+        if (o) { h['Access-Control-Allow-Credentials'] = 'true'; h.Vary = 'Origin'; }
+        res.writeHead(204, h);
         res.end();
         return true;
       }
@@ -15881,11 +15905,11 @@
       }
       // il ponte c'e', parla la stessa lingua (protocollo 1) ed e' accanto allo stesso Jellyfin? (si ricorda 5 minuti se si', 1
       // minuto se no; fresco: si chiede di nuovo, per l'interruttore appena acceso)
-      function controllaPonte(cb, fresco) {
+      function controllaPonte(cb, fresco, tempo) {
         var dove = dovePonte(), eta = Date.now() - ponteDiretto.quando;
         if (!dove || !cfg.id) { cb(''); return; }
         if (!fresco && ponteDiretto.dove === dove && eta >= 0 && eta < (ponteDiretto.ok ? 300000 : 60000)) { cb(ponteDiretto.ok ? dove : ''); return; }
-        chiedi({ dove: dove, percorso: 'stato', token: false, diretto: true, tempo: DIRETTO_TEMPO, max: 4096 }, function (err, st, j) {
+        chiedi({ dove: dove, percorso: 'stato', token: false, diretto: true, tempo: tempo || DIRETTO_TEMPO, max: 4096 }, function (err, st, j) {
           var ok = !err && st === 200 && !!j && j.app === 'hometv-video-diretto' && j.protocollo === 1 && j.server === cfg.id;
           ponteDiretto = { dove: dove, ok: ok, quando: Date.now() };
           cb(ok ? dove : '');
@@ -15946,9 +15970,20 @@
        * Il TV chiude questo servizio quando la pagina di Real4K lavora (scatola nera, 31/10): con "Real4K dal Mac" la home apre
        * Real4K come pagina intera dal ponte del Mac, che fa tutto col token di questo TV (gli si da' qui una sessione: il token
        * resta sul Mac e qui, alla pagina va un gettone del Mac). Solo col ponte nuovo accanto allo stesso Jellyfin e con lo stesso
-       * codice del servizio (o.impronta); la scelta sta sul ponte, per TV, spenta finche' non la si accende. Una domanda sola,
-       * al massimo 3 s: se no, il riquadro di sempre. Un ponte vecchio risponde 404: come assente */
-      var REAL4K_TEMPO = 3000;
+       * codice del servizio (o.impronta); la scelta sta sul ponte, per TV, accesa di base (richiesta del 31/10). La home lo prova
+       * a ogni apertura di Real4K, quindi la risposta viene dalla memoria del ponte (ponteDiretto, la stessa del video diretto):
+       * noto e buono, anche da ore, si chiede la sessione (una domanda, al massimo 3 s); noto e assente, subito il riquadro e un
+       * controllo dietro per la prossima volta (al massimo uno al minuto); mai controllato da quando il servizio e' partito (il
+       * TV lo chiude spesso), un controllo di 0,8 s al massimo, una volta: se no, dopo ogni ripartenza Real4K si aprirebbe nel
+       * riquadro, la strada che fa cadere il servizio. Un ponte vecchio risponde 404: come assente */
+      var REAL4K_TEMPO = 3000, REAL4K_PRIMO = 800;
+      function ponteReal4k(dove, cb) {
+        var p = ponteDiretto, eta = Date.now() - p.quando;
+        if (p.dove === dove && p.ok) { cb(true); return; }
+        if (p.dove !== dove || !p.quando) { controllaPonte(function (d) { cb(!!d); }, true, REAL4K_PRIMO); return; }
+        if (!(eta >= 0 && eta < 60000)) controllaPonte(function () {}, true);
+        cb(false);
+      }
       function statoReal4k(cb) {
         var dove = dovePonte();
         if (dalMac || !dove || !cfg.id) { cb({ pronto: false, acceso: false }); return; }
@@ -15972,16 +16007,22 @@
         var dove = dovePonte();
         if (dalMac || !cfg.token || !cfg.utente || !cfg.id) { cb({ pronto: false, motivo: 'jellyfin' }); return; }
         if (!dove) { cb({ pronto: false, motivo: 'mac' }); return; }
-        chiedi({ dove: dove, percorso: 'sessioni', metodo: 'POST', diretto: true, tempo: REAL4K_TEMPO, max: 8192,
-          corpo: { server: cfg.id, nome: cfg.nome || '', versione: cfg.versione || '', utente: cfg.utente, dispositivo: cfg.dispositivo, letti: letti(),
-            tetto: partenza(), imp: imp, nomeTv: nomeDelTv(), impronta: String(o.impronta || ''),
-            app: /^https:\/\/[a-z0-9-]{1,39}\.github\.io\/[A-Za-z0-9._-]{1,100}\/$/.test(app) ? app : '' } },
-          function (err, st, j) {
-            if (!err && st === 200 && j && j.acceso === false) { cb({ pronto: true, acceso: false, app: false }); return; }
-            var g = !err && st === 200 && j && typeof j.gettone === 'string' && /^[0-9a-f]{64}$/.test(j.gettone) ? j.gettone : '';
-            if (!g) { cb({ pronto: false, motivo: err || st === 404 || st === 503 ? 'mac' : j && j.codice === 'versione' ? 'versione' : 'sessione' }); return; }
-            cb({ pronto: true, acceso: true, app: j.app === true, url: dove + '/real4k/', servizio: dove, gettone: g });
-          });
+        ponteReal4k(dove, function (noto) { if (noto) chiediSessione(); else cb({ pronto: false, motivo: 'mac' }); });
+        function chiediSessione() {
+          chiedi({ dove: dove, percorso: 'sessioni', metodo: 'POST', diretto: true, tempo: REAL4K_TEMPO, max: 8192,
+            corpo: { server: cfg.id, nome: cfg.nome || '', versione: cfg.versione || '', utente: cfg.utente, dispositivo: cfg.dispositivo, letti: letti(),
+              tetto: partenza(), imp: imp, nomeTv: nomeDelTv(), impronta: String(o.impronta || ''),
+              app: /^https:\/\/[a-z0-9-]{1,39}\.github\.io\/[A-Za-z0-9._-]{1,100}\/$/.test(app) ? app : '' } },
+            function (err, st, j) {
+              if (!err && st === 200 && j && j.acceso === false) { cb({ pronto: true, acceso: false, app: false }); return; }
+              var g = !err && st === 200 && j && typeof j.gettone === 'string' && /^[0-9a-f]{64}$/.test(j.gettone) ? j.gettone : '';
+              // il Mac che non risponde piu' (spento, addormentato, lento): la prossima apertura va subito nel riquadro, e intanto
+              // si ricontrolla (non si aspettano 3 s a ogni apertura)
+              if (err) ponteDiretto = { dove: dove, ok: false, quando: Date.now() };
+              if (!g) { cb({ pronto: false, motivo: err || st === 404 || st === 503 ? 'mac' : j && j.codice === 'versione' ? 'versione' : 'sessione' }); return; }
+              cb({ pronto: true, acceso: true, app: j.app === true, url: dove + '/real4k/', servizio: dove, gettone: g });
+            });
+        }
       }
 
       // quanti Mbps arrivano dal server (per la qualita' "Automatica"): 8 MB, e altri 16 se e' veloce. I byte si contano e si
@@ -16581,7 +16622,7 @@
   })();
   /* </ponti:generato> */
   /* <impronta:generato> l'impronta di videoteca.js e ponti-video.js (prove/incorpora_videoteca.py): non modificare qui */
-  var IMPRONTA_MAC = 'b19af7e76bf6de44';
+  var IMPRONTA_MAC = 'a11260853b80f9ca';
   /* </impronta:generato> */
   var pontiVideo = PontiVideo.crea({ http: http, https: require('https'), dgram: require('dgram'), url: urlLib, crypto: require('crypto'),
     // Real4K dal Mac: il ponte del Mac apre una sessione solo se ha lo stesso codice del servizio

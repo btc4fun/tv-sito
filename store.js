@@ -887,7 +887,9 @@
     // un'ancora che non va (troppo lunga, caratteri strani): l'app si apre dall'inizio, e lo si dice invece di tacere
     // (revisione d'insieme, punto 5)
     if (ancora && !x.ancora) UI.toast(p.voce.nome + ': non riesco a riprendere questo film, si apre dall\'inizio', 6000);
+    passo(Array.isArray(p.voce && p.voce.permessi) && p.voce.permessi.indexOf('video') >= 0 ? 'apri-video' : 'apri');
     mostraAttesa('Apro ' + p.voce.nome + '…', e);
+    passo('attesa');
     UI.pushKeys(tastiApp);
     function parti() {
       if (app !== x) return;
@@ -907,29 +909,67 @@
   // Real4K dal Mac: un'app ufficiale col permesso "video" si apre a pagina intera dal ponte del Mac, se il servizio del TV dice
   // che per questo TV e' accesa e pronta (il TV chiude il servizio quando la pagina di Real4K lavora: cosi' non serve). Il
   // servizio apre la sessione sul Mac col suo token; alla pagina vanno il gettone del Mac, la home per tornare, la Store per
-  // riaprirla nel riquadro e le scelte dell'app. Le chiavette (#/v/...) restano qui. Al massimo 5 s, poi il riquadro
-  // Solo se l'app l'ha accesa (le sue preferenze, tenute qui): spenta, l'apertura resta quella di sempre, senza domande in piu'
+  // riaprirla nel riquadro e le scelte dell'app. Le chiavette (#/v/..., #/d/...) restano qui. Al massimo 5 s, poi il riquadro
+  // Acceso di base (richiesta del 31/10: sulla stessa rete Real4K arriva dal Mac da sola, senza accendere niente): si prova
+  // salvo spento dall'app (real4kMacNo nelle sue preferenze, tenute qui; la vecchia real4kMac non conta). Senza il ponte il
+  // servizio risponde subito, dalla sua memoria del ponte
   // (un'ancora che porta gia' i parametri del Mac non vale: potrebbe averla scritta un sito per farli contare)
   function puoDalMac(x) {
     var v = x.info.voce || {}, pr = null;
     if (SENZA_MAC) { SENZA_MAC = false; return false; }
     if (x.info.privata || x.info.tipo !== 'ws' || !Array.isArray(v.permessi) || v.permessi.indexOf('video') === -1 ||
-      !/^https:\/\/[a-z0-9-]{1,39}\.github\.io\/[A-Za-z0-9._-]{1,100}\/$/.test(String(v.url || '')) || /^#\/v\//.test(x.ancora || '') ||
-      /[#&?](gettone|casa|riapri|prefs|servizio|tv|app)=/.test(x.ancora || '')) return false;
+      !/^https:\/\/[a-z0-9-]{1,39}\.github\.io\/[A-Za-z0-9._-]{1,100}\/$/.test(String(v.url || '')) || /^#\/[vd]\//.test(x.ancora || '') ||
+      /[#&?](gettone|gtv|casa|riapri|prefs|servizio|tv|app)=/.test(x.ancora || '')) return false;
     try { pr = JSON.parse(StoreDati.datiApp(x.riquadro).prefs || 'null'); } catch (e) { pr = null; }
-    return !!pr && pr.real4kMac === true;
+    return !(pr && pr.real4kMacNo === true);
   }
   // il ponte dice che per questo TV e' spenta (spenta dalla pagina del Mac): anche le scelte dell'app lo dicono, cosi' la
   // prossima apertura non lo chiede piu'
   function spentaDalMac(x) {
     var d = StoreDati.datiApp(x.riquadro), pr = null;
     try { pr = JSON.parse(d.prefs || 'null'); } catch (e) { pr = null; }
-    if (!pr || pr.real4kMac !== true) return;
-    pr.real4kMac = false;
+    if (pr && pr.real4kMacNo === true) return;
+    pr = pr && typeof pr === 'object' ? pr : {};
+    pr.real4kMacNo = true;
     d.prefs = JSON.stringify(pr);
     StoreDati.scriviDatiApp(x.riquadro, d);
   }
+  // l'indirizzo della pagina del Mac: l'ancora del film prima (Real4K la legge da "#/jf/<id>" a "?" e i suoi parametri), poi
+  // prima, casa (dove si torna uscendo: la home se l'app e' partita da li', se no la Store), riapri (la Store che riapre l'app
+  // nel riquadro se dal Mac qualcosa non va), dopo e le scelte dell'app (qualita', lingue...: la pagina del Mac le prende la
+  // prima volta, se non ne ha di sue)
+  function indirizzoMac(x, url, prima, dopo) {
+    var a = x.ancora, store = location.href.split('#')[0], casa = x.da === 'home' ? new URL('./', store).href : store;
+    var riapri = store + '#apri=' + encodeURIComponent(x.riquadro) + (x.da === 'home' ? '&da=home' : '') + '&noMac=1';
+    var piu = prima + 'casa=' + encodeURIComponent(casa) + '&riapri=' + encodeURIComponent(riapri) + dopo;
+    var pr = String(StoreDati.datiApp(x.riquadro).prefs || '');
+    if (pr.length <= 2000 && /^\{[\x20-\x7e]*\}$/.test(pr)) piu += '&prefs=' + encodeURIComponent(pr);
+    return url + (a ? a + (a.indexOf('?') >= 0 ? '&' : '?') : '#') + piu;
+  }
+  // Real4K dal Mac senza aspettare il servizio del TV: il TV lo chiude nell'istante in cui Real4K si apre (scatola nera del
+  // 31/10, 15:12 e 15:14: la sessione arrivava al ponte, la risposta non tornava, e Real4K si apriva nel riquadro col servizio
+  // morto). Se la home ha visto il ponte buono da poco (StoreDati.macReal4k, rinfrescato col servizio vivo) si va subito alla
+  // pagina del Mac: la sessione di questo TV la trova il ponte, alla pagina vanno solo ancora, casa, riapri e scelte (nessun
+  // segreto). Se no, la strada di prima: il servizio apre la sessione (al massimo 5 s), poi il riquadro
+  var MAC_FRESCO = 15 * 60000;
+  // si va al Mac: un segno per il guardiano della pagina che si apre al ritorno (UI.guardiano: il servizio del TV quasi
+  // certamente e' stato chiuso, si riavvia subito e senza contarlo)
+  function vaiAlMac(url) {
+    try { sessionStorage.setItem('tvh-da-mac', String(Date.now())); } catch (e) {}
+    passo('verso-mac');
+    location.replace(url);
+  }
+  // un passo dell'apertura di un'app al servizio del TV, che lo scrive nella sua traccia (dopo una caduta si vede l'ultimo
+  // arrivato): solo il nome, a fuoco e dimentica, anche se la pagina se ne sta andando
+  function passo(p) {
+    if (UI.DEMO) return;
+    var u = UI.SERVICE + '/api/passo?da=store&p=' + p;
+    try { if (navigator.sendBeacon && navigator.sendBeacon(u)) return; } catch (e) {}
+    try { fetch(u, { mode: 'no-cors', keepalive: true, cache: 'no-store' })['catch'](function () {}); } catch (e) {}
+  }
   function dalMac(x, poi) {
+    var noto = StoreDati.macReal4k ? StoreDati.macReal4k() : null, eta = noto ? Date.now() - noto.quando : -1;
+    if (noto && eta >= 0 && eta < MAC_FRESCO) { passo('mac-memoria'); vaiAlMac(indirizzoMac(x, noto.url, '', '')); return; }
     var finito = false, gTv = '', t = setTimeout(function () { fine(''); }, 5000);
     function fine(url) {
       if (finito) return;
@@ -937,33 +977,32 @@
       clearTimeout(t);
       if (app !== x) return;
       // (replace: andare e tornare dal Mac non allunga la cronologia della finestra)
-      if (url) location.replace(url); else poi();
+      if (url) vaiAlMac(url); else poi();
     }
+    passo('permesso');
     UI.service(PERMESSI.video, {}).then(function (r) {
-      if (!r || typeof r.gettone !== 'string' || !/^[0-9a-f]{64}$/.test(r.gettone)) { fine(''); return; }
+      if (!r || typeof r.gettone !== 'string' || !/^[0-9a-f]{64}$/.test(r.gettone)) { passo('permesso-no'); fine(''); return; }
       gTv = r.gettone;
+      passo('permesso-ok');
+      passo('mac-chiesto');
       return fetch(UI.SERVICE + '/api/video/g/' + r.gettone + '/jf/real4k-mac/apri?app=' + encodeURIComponent(x.info.voce.url), { cache: 'no-store' })
         .then(function (res) { return res.ok ? res.json() : null; })
         .then(function (m) {
+          passo(m && m.pronto === true && m.acceso === true && m.app === true ? 'mac-ok' : 'mac-no');
           if (m && m.pronto === true && m.acceso === false && app === x) spentaDalMac(x);
           if (!m || m.pronto !== true || m.acceso !== true || m.app !== true || typeof m.url !== 'string' ||
             !/^http:\/\/[0-9a-fA-F.:\[\]]{3,47}:8098\/real4k\/$/.test(m.url) || typeof m.gettone !== 'string' || !/^[0-9a-f]{64}$/.test(m.gettone)) {
+            // (il ponte che non c'e' o e' spento per questo TV: la prossima volta la Store non ci va subito)
+            if (m && m.pronto !== true && m.motivo === 'mac' || m && m.acceso === false) StoreDati.scriviMacReal4k('');
             togliGettone(r.gettone);
             fine('');
             return;
           }
-          // casa: dove si torna uscendo (la home se l'app e' partita da li', se no la Store); riapri: la Store che riapre l'app nel
-          // riquadro, se dal Mac qualcosa non va
-          var a = x.ancora, store = location.href.split('#')[0], casa = x.da === 'home' ? new URL('./', store).href : store;
-          var riapri = store + '#apri=' + encodeURIComponent(x.riquadro) + (x.da === 'home' ? '&da=home' : '') + '&noMac=1';
-          var piu = 'gettone=' + m.gettone + '&casa=' + encodeURIComponent(casa) + '&riapri=' + encodeURIComponent(riapri);
-          // le scelte dell'app (qualita', lingue...): la pagina del Mac le prende la prima volta, se non ne ha di sue
-          var pr = String(StoreDati.datiApp(x.riquadro).prefs || '');
-          if (pr.length <= 2000 && /^\{[\x20-\x7e]*\}$/.test(pr)) piu += '&prefs=' + encodeURIComponent(pr);
-          // il gettone del servizio del TV serviva solo a chiedere la sessione: dal Mac non si usa
-          togliGettone(r.gettone);
-          // (l'ancora del film resta prima: Real4K la legge da "#/jf/<id>" a "?" e i suoi parametri)
-          fine(m.url + (a ? a + (a.indexOf('?') >= 0 ? '&' : '?') : '#') + piu);
+          StoreDati.scriviMacReal4k(m.url);
+          // il gettone del servizio del TV e il sito dell'app: dal Mac servono solo al punto per Continua a guardare della home e
+          // alla barra del telefono, e alla fila delle chiavette. Si toglie alla prossima apertura della Store (vedi sotto)
+          try { sessionStorage.setItem('tvh-gettone-mac', r.gettone); } catch (e) {}
+          fine(indirizzoMac(x, m.url, 'gettone=' + m.gettone + '&', '&gtv=' + r.gettone + '&app=' + encodeURIComponent(x.info.voce.url)));
         });
     })['catch'](function () { if (gTv) togliGettone(gTv); fine(''); });
   }
@@ -982,6 +1021,7 @@
     f.setAttribute('tabindex', '-1');
     f.setAttribute('title', x.info.voce.nome);
     f.addEventListener('load', function () {
+      if (app === x) passo('iframe-caricato');
       if (app !== x || x.pronta) return;
       clearTimeout(x.timerPronto);
       x.timerPronto = setTimeout(function () { if (app === x && !x.pronta) senzaLibreria(x); }, 3000);
@@ -989,6 +1029,7 @@
     f.src = x.info.voce.url + x.ancora;
     x.iframe = f;
     appEl.insertBefore(f, attesaEl);
+    passo('iframe');
     x.timerCarica = setTimeout(function () { if (app === x && !x.pronta && !x.senza) erroreApp(x, 'lenta'); }, 20000);
   }
   function erroreApp(x, motivo) {
@@ -1139,6 +1180,7 @@
         capacita: ProfiloTV.motore(window) }, dati: StoreDati.datiApp(x.riquadro) });
       if (x.pronta) return;
       x.pronta = true;
+      passo('app-pronta');
       clearTimeout(x.timerPronto);
       clearTimeout(x.timerCarica);
       if (x.senza && UI.sheetOpen()) UI.closeSheet();
@@ -1231,6 +1273,14 @@
   // cosa sa fare il servizio di questo TV ("funzioni" di GET /api/status): le app che chiedono altro restano spente. Si
   // chiede a ogni apertura (risponde il TV stesso, costa poco); intanto vale quello che si sapeva
   if (!DEMO) UI.service('/api/status').then(function (s) { if (StoreDati.servizio(s) && listaFatta) rinfresca(); }, function () {});
+
+  // il gettone del TV dato a Real4K dal Mac l'ultima volta (dalMac): la pagina del Mac non c'e' piu', si toglie
+  if (!DEMO) {
+    try {
+      var gMac = sessionStorage.getItem('tvh-gettone-mac');
+      if (gMac) { sessionStorage.removeItem('tvh-gettone-mac'); if (/^[0-9a-f]{64}$/.test(gMac)) togliGettone(gMac); }
+    } catch (e) {}
+  }
 
   var daAprire = parametro('apri'), daVedere = parametro('app');
   if (daAprire) {

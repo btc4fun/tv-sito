@@ -3619,8 +3619,14 @@ var Videoteca = (function () {
   }
   function tratta(vt, g, req, res, u, opzioni, m) {
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, HEAD, DELETE',
-        'Access-Control-Allow-Headers': 'Content-Type, Range', 'Access-Control-Max-Age': '600' });
+      // le OPTIONS di Chromium dalla 104 (sul TV la 108): prima di ogni domanda di una pagina in rete verso 127.0.0.1 il browser
+      // chiede il permesso (Access-Control-Request-Private-Network). Senza Access-Control-Allow-Private-Network la domanda parte
+      // lo stesso, ma il permesso non si tiene e la OPTIONS si ripete ogni volta (scatola nera del 31/10: 7 in un secondo). Le
+      // immagini lo chiedono con le credenziali: l'origine si ripete ("null" per il riquadro dell'app)
+      var o = req.headers.origin, h = { 'Access-Control-Allow-Origin': o || '*', 'Access-Control-Allow-Methods': 'GET, POST, HEAD, DELETE',
+        'Access-Control-Allow-Headers': 'Content-Type, Range', 'Access-Control-Allow-Private-Network': 'true', 'Access-Control-Max-Age': '600' };
+      if (o) { h['Access-Control-Allow-Credentials'] = 'true'; h.Vary = 'Origin'; }
+      res.writeHead(204, h);
       res.end();
       return true;
     }

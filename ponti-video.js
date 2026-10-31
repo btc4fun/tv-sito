@@ -973,11 +973,11 @@ var PontiVideo = (function () {
     }
     // il ponte c'e', parla la stessa lingua (protocollo 1) ed e' accanto allo stesso Jellyfin? (si ricorda 5 minuti se si', 1
     // minuto se no; fresco: si chiede di nuovo, per l'interruttore appena acceso)
-    function controllaPonte(cb, fresco) {
+    function controllaPonte(cb, fresco, tempo) {
       var dove = dovePonte(), eta = Date.now() - ponteDiretto.quando;
       if (!dove || !cfg.id) { cb(''); return; }
       if (!fresco && ponteDiretto.dove === dove && eta >= 0 && eta < (ponteDiretto.ok ? 300000 : 60000)) { cb(ponteDiretto.ok ? dove : ''); return; }
-      chiedi({ dove: dove, percorso: 'stato', token: false, diretto: true, tempo: DIRETTO_TEMPO, max: 4096 }, function (err, st, j) {
+      chiedi({ dove: dove, percorso: 'stato', token: false, diretto: true, tempo: tempo || DIRETTO_TEMPO, max: 4096 }, function (err, st, j) {
         var ok = !err && st === 200 && !!j && j.app === 'hometv-video-diretto' && j.protocollo === 1 && j.server === cfg.id;
         ponteDiretto = { dove: dove, ok: ok, quando: Date.now() };
         cb(ok ? dove : '');
@@ -1038,9 +1038,20 @@ var PontiVideo = (function () {
      * Il TV chiude questo servizio quando la pagina di Real4K lavora (scatola nera, 31/10): con "Real4K dal Mac" la home apre
      * Real4K come pagina intera dal ponte del Mac, che fa tutto col token di questo TV (gli si da' qui una sessione: il token
      * resta sul Mac e qui, alla pagina va un gettone del Mac). Solo col ponte nuovo accanto allo stesso Jellyfin e con lo stesso
-     * codice del servizio (o.impronta); la scelta sta sul ponte, per TV, spenta finche' non la si accende. Una domanda sola,
-     * al massimo 3 s: se no, il riquadro di sempre. Un ponte vecchio risponde 404: come assente */
-    var REAL4K_TEMPO = 3000;
+     * codice del servizio (o.impronta); la scelta sta sul ponte, per TV, accesa di base (richiesta del 31/10). La home lo prova
+     * a ogni apertura di Real4K, quindi la risposta viene dalla memoria del ponte (ponteDiretto, la stessa del video diretto):
+     * noto e buono, anche da ore, si chiede la sessione (una domanda, al massimo 3 s); noto e assente, subito il riquadro e un
+     * controllo dietro per la prossima volta (al massimo uno al minuto); mai controllato da quando il servizio e' partito (il
+     * TV lo chiude spesso), un controllo di 0,8 s al massimo, una volta: se no, dopo ogni ripartenza Real4K si aprirebbe nel
+     * riquadro, la strada che fa cadere il servizio. Un ponte vecchio risponde 404: come assente */
+    var REAL4K_TEMPO = 3000, REAL4K_PRIMO = 800;
+    function ponteReal4k(dove, cb) {
+      var p = ponteDiretto, eta = Date.now() - p.quando;
+      if (p.dove === dove && p.ok) { cb(true); return; }
+      if (p.dove !== dove || !p.quando) { controllaPonte(function (d) { cb(!!d); }, true, REAL4K_PRIMO); return; }
+      if (!(eta >= 0 && eta < 60000)) controllaPonte(function () {}, true);
+      cb(false);
+    }
     function statoReal4k(cb) {
       var dove = dovePonte();
       if (dalMac || !dove || !cfg.id) { cb({ pronto: false, acceso: false }); return; }
@@ -1064,16 +1075,22 @@ var PontiVideo = (function () {
       var dove = dovePonte();
       if (dalMac || !cfg.token || !cfg.utente || !cfg.id) { cb({ pronto: false, motivo: 'jellyfin' }); return; }
       if (!dove) { cb({ pronto: false, motivo: 'mac' }); return; }
-      chiedi({ dove: dove, percorso: 'sessioni', metodo: 'POST', diretto: true, tempo: REAL4K_TEMPO, max: 8192,
-        corpo: { server: cfg.id, nome: cfg.nome || '', versione: cfg.versione || '', utente: cfg.utente, dispositivo: cfg.dispositivo, letti: letti(),
-          tetto: partenza(), imp: imp, nomeTv: nomeDelTv(), impronta: String(o.impronta || ''),
-          app: /^https:\/\/[a-z0-9-]{1,39}\.github\.io\/[A-Za-z0-9._-]{1,100}\/$/.test(app) ? app : '' } },
-        function (err, st, j) {
-          if (!err && st === 200 && j && j.acceso === false) { cb({ pronto: true, acceso: false, app: false }); return; }
-          var g = !err && st === 200 && j && typeof j.gettone === 'string' && /^[0-9a-f]{64}$/.test(j.gettone) ? j.gettone : '';
-          if (!g) { cb({ pronto: false, motivo: err || st === 404 || st === 503 ? 'mac' : j && j.codice === 'versione' ? 'versione' : 'sessione' }); return; }
-          cb({ pronto: true, acceso: true, app: j.app === true, url: dove + '/real4k/', servizio: dove, gettone: g });
-        });
+      ponteReal4k(dove, function (noto) { if (noto) chiediSessione(); else cb({ pronto: false, motivo: 'mac' }); });
+      function chiediSessione() {
+        chiedi({ dove: dove, percorso: 'sessioni', metodo: 'POST', diretto: true, tempo: REAL4K_TEMPO, max: 8192,
+          corpo: { server: cfg.id, nome: cfg.nome || '', versione: cfg.versione || '', utente: cfg.utente, dispositivo: cfg.dispositivo, letti: letti(),
+            tetto: partenza(), imp: imp, nomeTv: nomeDelTv(), impronta: String(o.impronta || ''),
+            app: /^https:\/\/[a-z0-9-]{1,39}\.github\.io\/[A-Za-z0-9._-]{1,100}\/$/.test(app) ? app : '' } },
+          function (err, st, j) {
+            if (!err && st === 200 && j && j.acceso === false) { cb({ pronto: true, acceso: false, app: false }); return; }
+            var g = !err && st === 200 && j && typeof j.gettone === 'string' && /^[0-9a-f]{64}$/.test(j.gettone) ? j.gettone : '';
+            // il Mac che non risponde piu' (spento, addormentato, lento): la prossima apertura va subito nel riquadro, e intanto
+            // si ricontrolla (non si aspettano 3 s a ogni apertura)
+            if (err) ponteDiretto = { dove: dove, ok: false, quando: Date.now() };
+            if (!g) { cb({ pronto: false, motivo: err || st === 404 || st === 503 ? 'mac' : j && j.codice === 'versione' ? 'versione' : 'sessione' }); return; }
+            cb({ pronto: true, acceso: true, app: j.app === true, url: dove + '/real4k/', servizio: dove, gettone: g });
+          });
+      }
     }
 
     // quanti Mbps arrivano dal server (per la qualita' "Automatica"): 8 MB, e altri 16 se e' veloce. I byte si contano e si

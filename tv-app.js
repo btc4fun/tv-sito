@@ -41,6 +41,7 @@ var HomeTV = (function () {
   if (NELLO_STORE) window.__hometvCasa = true;
   // l'app a pagina intera dal ponte del Mac (Real4K dal Mac: http://<Mac>:8098/real4k/). Indietro dalla schermata principale,
   // Verde ed esci tornano alla home: casa (nell'ancora) e' la home su GitHub Pages o, se non la si sa, il servizio del TV.
+  // I comandi del telefono la pagina li chiede da sola al servizio del TV (vedi ascoltaTelefono).
   // (segno per il ponte del Mac: questa libreria sa fare real4k-dal-mac)
   var DAL_MAC = !NEL_RIQUADRO && location.protocol === 'http:' && location.port === '8098' && /^\/real4k\//.test(location.pathname);
   var CASA = '';
@@ -207,8 +208,7 @@ var HomeTV = (function () {
     } else if (d.tipo === 'memoriaPiena') {
       try { window.dispatchEvent(new Event('hometvmemoriapiena')); } catch (e) {}
     } else if (d.tipo === 'video') {
-      var az = String(d.azione || ''), sec = Number(d.secondi);
-      if (az === 'vai' || az === 'scorri' || az === 'salta' || az === 'play' || az === 'pausa') chiedi(suVideo, { azione: az, secondi: isFinite(sec) ? sec : 0 });
+      videoDalTelefono(d);
     } else if (d.tipo === 'permesso') {
       var p = permessi[d.id];
       delete permessi[d.id];
@@ -284,7 +284,7 @@ var HomeTV = (function () {
     var t = ev.target && ev.target.tagName, inCasella = t === 'INPUT' || t === 'TEXTAREA';
     if (inCasella && (ev.keyCode === 8 || a === 'left' || a === 'right' || a === 'ok')) return; // si sta scrivendo
     // a pagina intera dal Mac il Verde e' della home, come nel riquadro: si torna li' (la home, anche se l'app e' partita dalla Store)
-    if (DAL_MAC && a === 'green') { ev.preventDefault(); if (CASA) vaiDalMac(/^https:/.test(CASA) ? new URL('./', CASA).href : CASA); else esci(); return; }
+    if (DAL_MAC && a === 'green') { ev.preventDefault(); allaHome(); return; }
     var fatto = a === 'back' ? chiedi(suIndietro, 'back') : (chiedi(suTasti, a) || naviga(a));
     if (fatto) ev.preventDefault();
     else if (a === 'back' && (collegata || DAL_MAC)) { ev.preventDefault(); esci(); }
@@ -461,6 +461,8 @@ var HomeTV = (function () {
       try { fetch(andando.split('#')[0], { mode: 'no-cors', cache: 'no-store' }).then(si, no); } catch (e) { si(); }
     })();
   }
+  // la home (dal Mac): la pagina della home, anche se l'app e' partita dalla Store
+  function allaHome() { if (CASA) vaiDalMac(/^https:/.test(CASA) ? new URL('./', CASA).href : CASA); else esci(); }
   function avviso(t) {
     t = String(t || '').slice(0, 160);
     if (collegata) { posta({ tipo: 'avviso', testo: t }); return; }
@@ -480,6 +482,173 @@ var HomeTV = (function () {
       setTimeout(function () { if (permessi[id]) { delete permessi[id]; no(erroreCodice('servizio')); } }, 10000);
     });
   }
+
+  /* ------------------------------------------------------------ il telefono, a pagina intera dal Mac
+   * Nel riquadro i comandi del telefono li prende la home e li passa qui (tasto, puntatore, testoTelefono, video). A pagina
+   * intera dal Mac la home non c'e': la pagina li chiede da sola al servizio del TV, come i siti (richiesta del 31/10), e
+   * li usa come la home. Il TV puo' chiudere il servizio mentre la pagina lavora: niente risposta = si riprova dopo 5 s, in
+   * silenzio; una domanda alla volta e mai con la pagina nascosta (i comandi vanno all'app che si vede)
+   */
+  var SERVIZIO_TV = 'http://127.0.0.1:8090';
+  // i tasti del telefono come quelli del telecomando (come nella home; avanti e indietro veloce come nei siti). Blu e "tieni"
+  // nel riquadro aprono il menu dell'app della home, che qui non c'e'
+  var DAL_TELEFONO = { su: 'up', giu: 'down', sx: 'left', dx: 'right', ok: 'ok', indietro: 'back', rosso: 'red', verde: 'green',
+    giallo: 'yellow', playpausa: 'play', avanti: 'ff', indietroVeloce: 'rew' };
+  function videoDalTelefono(d) {
+    var az = String(d.azione || ''), sec = Number(d.secondi);
+    if (az === 'vai' || az === 'scorri' || az === 'salta' || az === 'play' || az === 'pausa') chiedi(suVideo, { azione: az, secondi: isFinite(sec) ? sec : 0 });
+  }
+  function tastoDalTelefono(t) {
+    var a = Object.prototype.hasOwnProperty.call(DAL_TELEFONO, t) ? DAL_TELEFONO[t] : '';
+    if (!a) return;
+    if (a === 'green') { allaHome(); return; }
+    if (a === 'back') { if (!indietroApp()) esci(); return; }
+    // le frecce nascondono il puntatore; OK, mentre si vede, clicca dove indica (come nella home)
+    if (a === 'ok' && pt.on) { clicPt(); return; }
+    if (a === 'up' || a === 'down' || a === 'left' || a === 'right') nascondiPt();
+    azione(a);
+  }
+
+  // il puntatore del telefono (il trackpad): il dito lo muove, il tocco clicca proprio li', due dita scorrono come le frecce
+  var PT_RIF = 1920, PASSO_PT = 110, SVG_NS = 'http://www.w3.org/2000/svg';
+  var pt = { x: -1, y: -1, el: null, on: false, sx: 0, sy: 0, scorsoAt: 0, nascondi: null };
+  function tracciaPt(d, attr) {
+    var p = document.createElementNS(SVG_NS, 'path');
+    p.setAttribute('d', d);
+    for (var k in attr) if (Object.prototype.hasOwnProperty.call(attr, k)) p.setAttribute(k, attr[k]);
+    return p;
+  }
+  function elementoPt() {
+    if (pt.el || !document.body) return pt.el;
+    var st = document.createElement('style');
+    st.textContent = '#hometv-puntatore{position:fixed;left:0;top:0;width:46px;height:56px;margin:-3px 0 0 -5px;z-index:2147483647;' +
+      'pointer-events:none;opacity:0;transition:opacity .2s ease}#hometv-puntatore.on{opacity:1}';
+    (document.head || document.documentElement).appendChild(st);
+    var svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 28 34');
+    svg.setAttribute('width', '46');
+    svg.setAttribute('height', '56');
+    svg.appendChild(tracciaPt('M4.6 3.6v23l6-5.5 4.2 9.5 4.4-2-4.1-9.2h8z', { fill: 'rgba(0,0,0,.4)' }));
+    svg.appendChild(tracciaPt('M3 2v23l6-5.5 4.2 9.5 4.4-2-4.1-9.2h8z', { fill: '#fff', stroke: '#0b0c10', 'stroke-width': '1.5', 'stroke-linejoin': 'round' }));
+    pt.el = document.createElement('div');
+    pt.el.id = 'hometv-puntatore';
+    pt.el.appendChild(svg);
+    document.body.appendChild(pt.el);
+    return pt.el;
+  }
+  function disegnaPt() { pt.el.style.transform = 'translate(' + Math.round(pt.x) + 'px,' + Math.round(pt.y) + 'px)'; }
+  // si vede finche' lo si usa: 20 s fermo e sparisce (come nella home)
+  function mostraPt() {
+    if (!elementoPt()) return false;
+    if (pt.x < 0) { pt.x = Math.round(window.innerWidth / 2); pt.y = Math.round(window.innerHeight / 2); }
+    if (!pt.on) { pt.on = true; disegnaPt(); pt.el.className = 'on'; }
+    clearTimeout(pt.nascondi);
+    pt.nascondi = setTimeout(nascondiPt, 20000);
+    return true;
+  }
+  function nascondiPt() {
+    clearTimeout(pt.nascondi);
+    if (!pt.on) return;
+    pt.on = false;
+    pt.el.className = '';
+  }
+  function muoviPt(dx, dy) {
+    if (!mostraPt()) return;
+    var w = window.innerWidth, h = window.innerHeight, k = w / PT_RIF;
+    pt.x = Math.max(0, Math.min(w - 1, pt.x + dx * k));
+    pt.y = Math.max(0, Math.min(h - 1, pt.y + dy * k));
+    disegnaPt();
+  }
+  // due dita: un passo come una freccia ogni 110 (un pezzo solo vale al massimo un passo; dopo 0,4 s fermi si riparte da zero)
+  function scorriPt(dx, dy) {
+    var ora = Date.now();
+    if (ora - pt.scorsoAt > 400) { pt.sx = 0; pt.sy = 0; }
+    pt.scorsoAt = ora;
+    pt.sx += Math.max(-PASSO_PT, Math.min(PASSO_PT, dx));
+    pt.sy += Math.max(-PASSO_PT, Math.min(PASSO_PT, dy));
+    while (Math.abs(pt.sy) >= PASSO_PT) { azione(pt.sy > 0 ? 'down' : 'up'); pt.sy -= pt.sy > 0 ? PASSO_PT : -PASSO_PT; }
+    while (Math.abs(pt.sx) >= PASSO_PT) { azione(pt.sx > 0 ? 'right' : 'left'); pt.sx -= pt.sx > 0 ? PASSO_PT : -PASSO_PT; }
+  }
+  function clicPt() { if (mostraPt()) puntatore({ azione: 'clic', x: pt.x, y: pt.y }); }
+  function puntatoreDalTelefono(e) {
+    var az = String(e.azione || '');
+    if (az === 'muovi') muoviPt(Number(e.dx) || 0, Number(e.dy) || 0);
+    else if (az === 'scorri') scorriPt(Number(e.dx) || 0, Number(e.dy) || 0);
+    else if (az === 'clic') clicPt();
+    else if (az === 'mostra') mostraPt();
+    else if (az === 'nascondi') nascondiPt();
+  }
+  function comandoDalTelefono(e) {
+    if (e.tipo === 'tasto') tastoDalTelefono(String(e.tasto || ''));
+    else if (e.tipo === 'puntatore') puntatoreDalTelefono(e);
+    else if (e.tipo === 'testo') scriviDalTelefono(String(e.testo || '').slice(0, 500), e.invio !== false);
+    else if (e.tipo === 'video') videoDalTelefono(e);
+    // Home, un link o un sito, le schede del browser: come nella home con un'app aperta, prima l'app salva e poi si va
+    else if (e.tipo === 'home') allaHome();
+    else if ((e.tipo === 'link' || e.tipo === 'sito') && /^https?:\/\/[^\s]{1,2000}$/i.test(String(e.url || ''))) vaiDalMac(String(e.url));
+    else if ((e.tipo === 'schede' || e.tipo === 'nuovaScheda') && /^https:/.test(CASA)) vaiDalMac(new URL('browser.html#' + (e.tipo === 'nuovaScheda' ? 'nuova' : 'schede'), CASA).href);
+  }
+  // la domanda resta aperta al servizio finche' arriva un comando (o 25 s). Una rimasta appesa per piu' di 40 s (pagina
+  // rimessa dalla cache, rete) si chiude e se ne fa una nuova. (XMLHttpRequest: si chiude con abort su tutti i motori; il
+  // servizio risponde con Cache-Control: no-store)
+  function ascoltaTelefono() {
+    var seq = -1, inCorso = false, giroN = 0, partito = 0, richiesta = null;
+    function chiudiRichiesta() { var r = richiesta; richiesta = null; if (r) { try { r.abort(); } catch (e) {} } }
+    function giro() {
+      chiudiRichiesta();
+      if (document.hidden) { inCorso = false; return; }
+      var mio = ++giroN, da = seq, x = new XMLHttpRequest(), finita = false;
+      inCorso = true;
+      partito = Date.now();
+      richiesta = x;
+      // niente risposta (servizio chiuso dal TV, rete): si riprova dopo 5 s, in silenzio
+      function no() {
+        if (finita) return;
+        finita = true;
+        if (mio === giroN) setTimeout(function () { if (mio === giroN) giro(); }, 5000);
+      }
+      x.onload = function () {
+        if (finita) return;
+        var j = null;
+        try { j = x.status === 200 ? JSON.parse(x.responseText) : null; } catch (e) { j = null; }
+        if (!j || typeof j !== 'object') { no(); return; }
+        finita = true;
+        if (richiesta === x) richiesta = null;
+        if (mio !== giroN) return;
+        var numero = typeof j.seq === 'number';
+        if (numero) seq = j.seq;
+        var ev = Array.isArray(j.eventi) ? j.eventi : [], veloce = false;
+        for (var i = 0; i < ev.length; i++) {
+          if (!ev[i] || typeof ev[i] !== 'object') continue;
+          if (ev[i].tipo === 'puntatore') veloce = true;
+          try { comandoDalTelefono(ev[i]); } catch (e2) { lancia(e2); }
+        }
+        // col trackpad si richiede subito: il puntatore segue il dito. Una risposta senza numero, o vuota e subito (non la
+        // prima), non e' il servizio che aspetta un comando: si riprova piu' tardi, mai di continuo
+        var dopo = veloce ? 0 : !numero ? 5000 : !ev.length && da !== -1 && Date.now() - partito < 1000 ? 2000 : 30;
+        setTimeout(function () { if (mio === giroN) giro(); }, dopo);
+      };
+      x.onerror = no;
+      x.ontimeout = no;
+      try {
+        x.open('GET', SERVIZIO_TV + '/api/telefono/eventi?da=' + da + '&dove=Real4K', true);
+        x.timeout = 40000;
+        x.send();
+      } catch (e) { no(); }
+    }
+    function riparti() { if (!document.hidden && (!inCorso || Date.now() - partito > 40000)) giro(); }
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) { riparti(); return; }
+      giroN++;
+      inCorso = false;
+      chiudiRichiesta();
+      nascondiPt();
+    });
+    window.addEventListener('pageshow', function (ev) { if (ev.persisted) { inCorso = false; riparti(); } });
+    setInterval(riparti, 10000);
+    giro();
+  }
+  if (DAL_MAC) ascoltaTelefono();
 
   return {
     pronto: pronto, tasti: tasti, indietro: indietro, memoria: memoria, chiediTesto: chiediTesto, esci: esci, avviso: avviso,

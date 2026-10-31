@@ -697,6 +697,21 @@ var StoreDati = (function () {
 
   var ufficiale = creaUfficiale(), mie = creaMie();
 
+  /* ------------------------------------------------------------ Real4K dal Mac: dove sta la pagina del ponte */
+
+  // tvh-real4k-mac: { url: 'http://<Mac>:8098/real4k/', quando }, scritto quando il servizio del TV ha aperto una sessione sul
+  // ponte (la home lo rinfresca col servizio vivo): la Store apre Real4K da li' subito, senza domande al servizio, che il TV
+  // chiude nell'istante in cui Real4K si apre. Si rilegge sempre (la home e la Store sono pagine diverse)
+  var K_MAC = 'tvh-real4k-mac';
+  function macReal4k() {
+    var v = null;
+    try { var t = localStorage.getItem(K_MAC); v = t ? JSON.parse(t) : null; } catch (e) { v = null; }
+    return v && typeof v === 'object' && typeof v.url === 'string' && /^http:\/\/[0-9a-fA-F.:\[\]]{3,47}:8098\/real4k\/$/.test(v.url) && v.quando > 0 ? v : null;
+  }
+  function scriviMacReal4k(url) {
+    if (url) scrivi(K_MAC, { url: url, quando: Date.now() }); else togli(K_MAC);
+  }
+
   /* ------------------------------------------------------------ dati delle app (tramite tv-app.js) */
 
   // ogni app ha la sua chiave: 'ws:<id>' -> tvh-app-ws-<id>, 'mia:<fonte>:<id>' -> tvh-app-mia-<fonte>-<id>
@@ -865,6 +880,7 @@ var StoreDati = (function () {
     catalogoDa: catalogoDa, adatta: adatta, perche: perche, servizio: servizio, funzioni: funzioni,
     scarica: scarica, urlUfficiale: urlUfficiale, cercaApp: cercaApp, piano: piano,
     ufficiale: ufficiale, mie: mie, perRiquadro: perRiquadro, segnaVista: segnaVista, chiaveDati: chiaveDati,
-    datiApp: datiApp, scriviDatiApp: scriviDatiApp, copia: copia, ripristina: ripristina, perTelefono: perTelefono, azioneTelefono: azioneTelefono
+    datiApp: datiApp, scriviDatiApp: scriviDatiApp, copia: copia, ripristina: ripristina, perTelefono: perTelefono, azioneTelefono: azioneTelefono,
+    macReal4k: macReal4k, scriviMacReal4k: scriviMacReal4k
   };
 })();

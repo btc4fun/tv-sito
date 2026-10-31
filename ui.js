@@ -870,13 +870,24 @@ var UI = (function () {
       primaCasa = +sessionStorage.getItem('hometv-prima-casa') || 0;
       if (!primaCasa) { primaCasa = history.length; sessionStorage.setItem('hometv-prima-casa', String(primaCasa)); }
     } catch (e) { primaCasa = 0; }
+    // tornata da Real4K dal Mac: il TV chiude il servizio nell'istante in cui Real4K si apre, quindi tornando lo si trova quasi
+    // sempre fermo. Il segno lo mette la Store prima di andare al Mac (tvh-da-mac, con l'ora) e si consuma qui. Allora si
+    // controlla subito (dopo 1 s, poi ogni 2 s: due no bastano) e quel riavvio non conta nel limite di 2 in 10 minuti: uno solo
+    // per ritorno, cosi' niente giri senza fine (richiesta del 31/10: aprire e chiudere Real4K tre volte di fila)
+    var dalMac = 0;
+    try {
+      dalMac = +sessionStorage.getItem('tvh-da-mac') || 0;
+      if (dalMac) sessionStorage.removeItem('tvh-da-mac');
+    } catch (e) { dalMac = 0; }
+    if (!(dalMac > 0 && Date.now() - dalMac < 12 * 3600000)) dalMac = 0;
     function prova() {
       var fatto = false;
       function esito(buono) {
         if (fatto) return;
         fatto = true;
         falliti = buono ? 0 : falliti + 1;
-        if (falliti >= 3) riparti(); else setTimeout(prova, 5000);
+        if (buono) dalMac = 0;
+        if (falliti >= (dalMac ? 2 : 3)) riparti(); else setTimeout(prova, dalMac ? 2000 : 5000);
       }
       // un servizio fermo rifiuta subito la connessione; uno vivo ma lento non conta come fermo prima di 8 s. Qualsiasi
       // risposta, anche un rifiuto (403 "chiave"), vuol dire vivo: senza chiave il servizio vero risponde 403, e contarlo come
@@ -889,17 +900,20 @@ var UI = (function () {
       } catch (e) { esito(false); }
     }
     function riparti() {
-      var ora = Date.now(), prima = load(CHIAVE_RIAVVII, []);
+      var ora = Date.now(), prima = load(CHIAVE_RIAVVII, []), gratis = !!dalMac;
+      dalMac = 0;
       if (!Array.isArray(prima)) prima = [];
       prima = prima.filter(function (t) { return typeof t === 'number' && ora - t < 600000 && t <= ora; });
-      if (prima.length >= 2 || history.length < 2) {
+      if (history.length < 2 || (!gratis && prima.length >= 2)) {
         if (opz.messaggio) opz.messaggio('Il servizio del TV si e\' fermato: riapri TizenBrew');
         falliti = 0;
         setTimeout(prova, 60000);
         return;
       }
-      prima.push(ora);
-      save(CHIAVE_RIAVVII, prima);
+      if (!gratis) {
+        prima.push(ora);
+        save(CHIAVE_RIAVVII, prima);
+      }
       // un'app aperta nello Store (Real4K con un film, di solito; lo dice la pagina): la home, ripartita, riprende il film
       // da sola (home.js, riprendiDopoCaduta)
       try { if (opz.appAperta && opz.appAperta()) save('hometv-riprendi', { t: ora }); } catch (e) {}
@@ -917,7 +931,7 @@ var UI = (function () {
         try { fetch(SERVICE + conChiave('/api/status?davanti=' + (document.hidden ? 0 : 1), CHIAVE), { cache: 'no-store' })['catch'](function () {}); } catch (e) {}
       });
     } catch (e) {}
-    setTimeout(prova, 8000);
+    setTimeout(prova, dalMac ? 1000 : 8000);
   }
 
   return {

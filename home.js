@@ -45,7 +45,7 @@
 
   var $ = UI.$;
   var DEMO = UI.DEMO;
-  var VERSIONE = '1.3.12';
+  var VERSIONE = '1.3.13';
 
   /* ============================================================ dati */
 
@@ -1451,6 +1451,38 @@
     funzioniServizio();
     return Promise.all([StoreDati.ufficiale.aggiorna(forza), StoreDati.mie.aggiornaTutte(false)]).then(fine, fine);
   }
+  // Real4K dal Mac: qui sulla home il servizio del TV e' vivo (il TV lo chiude nell'istante in cui Real4K si apre). Il servizio
+  // apre una sessione sul ponte per questo TV (col suo token: resta sul Mac e nel servizio) e ci si ricorda dove sta la pagina
+  // del Mac (StoreDati.macReal4k): la Store poi apre Real4K da li' subito, senza domande al servizio. Alla partenza, tornando
+  // sulla home e ogni 10 minuti con la home in vista; spenta da Real4K (real4kMacNo) niente domande
+  var macGiro = 0;
+  function rinfrescaMac() {
+    if (DEMO || document.hidden || Date.now() - macGiro < 9 * 60000) return;
+    var ids = StoreDati.ufficiale.installate(), p = null, pr = null, i;
+    for (i = 0; i < ids.length && !p; i++) {
+      var q = StoreDati.perRiquadro('ws:' + ids[i]), v = q && q.voce;
+      if (q && q.stato === 'ok' && v && Array.isArray(v.permessi) && v.permessi.indexOf('video') >= 0 &&
+        /^https:\/\/[a-z0-9-]{1,39}\.github\.io\/[A-Za-z0-9._-]{1,100}\/$/.test(String(v.url || ''))) p = q;
+    }
+    if (!p) return;
+    try { pr = JSON.parse(StoreDati.datiApp(p.riquadro).prefs || 'null'); } catch (e) { pr = null; }
+    if (pr && pr.real4kMacNo === true) { StoreDati.scriviMacReal4k(''); return; }
+    macGiro = Date.now();
+    UI.service('/api/video/gettone', {}).then(function (r) {
+      var g = r && /^[0-9a-f]{64}$/.test(String(r.gettone || '')) ? r.gettone : '';
+      if (!g) return;
+      function togli() { UI.service('/api/video/gettone/via', { gettone: g })['catch'](function () {}); }
+      fetch(UI.SERVICE + '/api/video/g/' + g + '/jf/real4k-mac/apri?app=' + encodeURIComponent(p.voce.url), { cache: 'no-store' })
+        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (m) {
+          togli();
+          if (m && m.pronto === true && m.acceso === true && m.app === true && typeof m.url === 'string' &&
+            /^http:\/\/[0-9a-fA-F.:\[\]]{3,47}:8098\/real4k\/$/.test(m.url)) StoreDati.scriviMacReal4k(m.url);
+          else if (m) StoreDati.scriviMacReal4k('');
+        }, togli);
+    }, function () {});
+  }
+  setInterval(rinfrescaMac, 10 * 60000);
   // cosa sa fare il servizio di questo TV ("funzioni" di GET /api/status): le app dello Store che chiedono altro restano
   // spente (l'app Video dove chiavette e ponti non ci sono). Lo ricorda StoreDati: alla prossima accensione si sa subito.
   // Fuori dall'attesa dello Store: un servizio che non risponde non deve fermare l'aggiornamento delle app
@@ -1977,7 +2009,7 @@
   }
 
   document.addEventListener('visibilitychange', function () {
-    if (!document.hidden) { getApps(); getConfig(); prendiNovita(); getVisti(); aggiornaStore(false); }
+    if (!document.hidden) { getApps(); getConfig(); prendiNovita(); getVisti(); aggiornaStore(false); rinfrescaMac(); }
   });
   window.addEventListener('resize', function () {
     measure();
@@ -2047,6 +2079,7 @@
   var primoAvvio = true, uStore = '';
   try { primoAvvio = !sessionStorage.getItem('tvh-avviata'); sessionStorage.setItem('tvh-avviata', '1'); } catch (e) {}
   setTimeout(function () { aggiornaStore(primoAvvio); }, 3000);
+  setTimeout(rinfrescaMac, 4000);
   // un sito arrivato dallo Store ("È un sito, non un'app"): si aggiunge come col +. Passa per sessionStorage (lo scrive
   // solo lo Store, dopo l'avviso): un link da fuori non puo' far aggiungere un sito
   try { uStore = sessionStorage.getItem('tvh-sito-dallo-store') || ''; sessionStorage.removeItem('tvh-sito-dallo-store'); } catch (e) {}
