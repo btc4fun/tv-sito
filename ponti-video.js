@@ -480,6 +480,9 @@ var PontiVideo = (function () {
   function crea(o) {
     var http = o.http, https = o.https, urlLib = o.url, fs = o.fs, path = o.path, vt = o.videoteca;
     var log = typeof o.log === 'function' ? o.log : function () {};
+    // dalMac: questo codice gira nel ponte del Mac per Real4K a pagina intera (mac/video-diretto/ponte.js), con la sessione
+    // data dal servizio del TV: niente video diretto (il video arriva gia' dal Mac), niente cambio di server o di accesso
+    var dalMac = o.dalMac === true;
     var FILE = path.join(o.cartella, 'jellyfin.json');
     var agenti = { 'http:': new http.Agent({ keepAlive: true, maxSockets: 8 }), 'https:': https ? new https.Agent({ keepAlive: true, maxSockets: 8 }) : null };
     var cfg = carica();
@@ -620,8 +623,9 @@ var PontiVideo = (function () {
         utente: cfg.token && cfg.utente ? { id: cfg.utente.id, nome: cfg.utente.nome } : null, letti: letti(),
         // per le prove sul TV (pannello Info del lettore): quanta memoria usa il servizio, e da quanto e' acceso
         servizio: { memoria: memoriaServizio(), node: process.version, acceso: Math.round(process.uptime()) },
-        // questo servizio sa fare il video diretto dal Mac (Real4K mostra l'interruttore solo allora)
-        diretto: 1 };
+        // questo servizio sa fare il video diretto dal Mac e Real4K dal Mac (Real4K mostra gli interruttori solo allora);
+        // dalMac: e' il ponte del Mac che serve Real4K a pagina intera
+        diretto: dalMac ? 0 : 1, real4kMac: dalMac ? 0 : 1, dalMac: dalMac ? 1 : 0 };
     }
     // i server Jellyfin nella rete di casa (rispondono al broadcast UDP 7359 con il loro indirizzo)
     var cercando = null;
@@ -941,7 +945,7 @@ var PontiVideo = (function () {
       // con l'interruttore di Real4K (q.diretto): anche il video diretto dal Mac, se il ponte c'e'. La strada di sempre resta
       // in out.url: e' quella del ritorno da solo
       function conDiretto(out) {
-        if (q.diretto !== '1') { cb(null, out); return; }
+        if (q.diretto !== '1' || dalMac) { cb(null, out); return; }
         bigliettoDiretto(id, out.url.slice(5), function (d) {
           if (d) out.diretto = d;
           else out.direttoNo = ponteDiretto.ok ? 'biglietto' : 'mac';
@@ -1028,6 +1032,48 @@ var PontiVideo = (function () {
       if (!d) return;
       delete diretti[k];
       chiedi({ dove: d.dove, percorso: 'biglietti/' + k, metodo: 'DELETE', token: false, diretto: true, tempo: DIRETTO_TEMPO, max: 4096 }, function () {});
+    }
+
+    /* ---------------------------------------------------------- Real4K dal Mac
+     * Il TV chiude questo servizio quando la pagina di Real4K lavora (scatola nera, 31/10): con "Real4K dal Mac" la home apre
+     * Real4K come pagina intera dal ponte del Mac, che fa tutto col token di questo TV (gli si da' qui una sessione: il token
+     * resta sul Mac e qui, alla pagina va un gettone del Mac). Solo col ponte nuovo accanto allo stesso Jellyfin e con lo stesso
+     * codice del servizio (o.impronta); la scelta sta sul ponte, per TV, spenta finche' non la si accende. Una domanda sola,
+     * al massimo 3 s: se no, il riquadro di sempre. Un ponte vecchio risponde 404: come assente */
+    var REAL4K_TEMPO = 3000;
+    function statoReal4k(cb) {
+      var dove = dovePonte();
+      if (dalMac || !dove || !cfg.id) { cb({ pronto: false, acceso: false }); return; }
+      chiedi({ dove: dove, percorso: 'scelte', token: false, diretto: true, tempo: DIRETTO_TEMPO, max: 4096 }, function (err, st, j) {
+        var si = !err && st === 200 && !!j && j.possibile === true;
+        cb({ pronto: si, acceso: si && j.acceso === true });
+      });
+    }
+    function sceltaReal4k(acceso, cb) {
+      var dove = dovePonte();
+      if (dalMac || !dove || !cfg.id) { cb(errore('rete', 'il Mac non risponde')); return; }
+      chiedi({ dove: dove, percorso: 'scelte', metodo: 'POST', corpo: { acceso: acceso }, token: false, diretto: true, tempo: DIRETTO_TEMPO, max: 4096 },
+        function (err, st, j) {
+          if (err || st !== 200 || !j) { cb(errore('rete', 'il Mac non risponde')); return; }
+          cb(null, { pronto: j.possibile === true, acceso: j.acceso === true });
+        });
+    }
+    // la sessione per la home: pronto (il ponte l'ha aperta), acceso (la scelta di questo TV), app (la pagina e tutti i suoi file
+    // sono pronti sul Mac), e l'indirizzo della pagina col gettone del Mac. motivo: jellyfin, mac, versione, sessione
+    function sessioneReal4k(app, cb) {
+      var dove = dovePonte();
+      if (dalMac || !cfg.token || !cfg.utente || !cfg.id) { cb({ pronto: false, motivo: 'jellyfin' }); return; }
+      if (!dove) { cb({ pronto: false, motivo: 'mac' }); return; }
+      chiedi({ dove: dove, percorso: 'sessioni', metodo: 'POST', diretto: true, tempo: REAL4K_TEMPO, max: 8192,
+        corpo: { server: cfg.id, nome: cfg.nome || '', versione: cfg.versione || '', utente: cfg.utente, dispositivo: cfg.dispositivo, letti: letti(),
+          tetto: partenza(), imp: imp, nomeTv: nomeDelTv(), impronta: String(o.impronta || ''),
+          app: /^https:\/\/[a-z0-9-]{1,39}\.github\.io\/[A-Za-z0-9._-]{1,100}\/$/.test(app) ? app : '' } },
+        function (err, st, j) {
+          if (!err && st === 200 && j && j.acceso === false) { cb({ pronto: true, acceso: false, app: false }); return; }
+          var g = !err && st === 200 && j && typeof j.gettone === 'string' && /^[0-9a-f]{64}$/.test(j.gettone) ? j.gettone : '';
+          if (!g) { cb({ pronto: false, motivo: err || st === 404 || st === 503 ? 'mac' : j && j.codice === 'versione' ? 'versione' : 'sessione' }); return; }
+          cb({ pronto: true, acceso: true, app: j.app === true, url: dove + '/real4k/', servizio: dove, gettone: g });
+        });
     }
 
     // quanti Mbps arrivano dal server (per la qualita' "Automatica"): 8 MB, e altri 16 se e' veloce. I byte si contano e si
@@ -1128,6 +1174,11 @@ var PontiVideo = (function () {
           c === 'troppe' ? 429 : 400, { error: e.message, codice: c });
       }
       if (resto === 'stato' && get) { rispondi(res, 200, statoPubblico()); return; }
+      // sul Mac il server, l'accesso e il video diretto sono del servizio del TV (Real4K dal Mac usa la sua sessione)
+      if (dalMac && /^(cerca|server|qc|accedi|esci|veloce|real4k-mac(\/.*)?|diretto(-ponte|-stato\/.*|-fine\/.*|\/.*)?)$/.test(resto)) {
+        rispondi(res, 403, { error: 'da Real4K dal Mac no: si fa da Real4K sul TV', codice: 'dalMac' });
+        return;
+      }
       if (resto === 'cerca' && get) { cerca(function (l) { rispondi(res, 200, { server: l }); }); return; }
       if (resto === 'server' && post) {
         corpoJson(req, function (b) {
@@ -1170,6 +1221,16 @@ var PontiVideo = (function () {
       if ((m = /^diretto-fine\/([0-9a-f]{64})$/.exec(resto)) && post) { fineDiretto(m[1]); rispondi(res, 200, { ok: true }); return; }
       // l'interruttore acceso in Real4K: il ponte del Mac c'e'? (per dirlo subito, prima del film)
       if (resto === 'diretto-ponte' && get) { controllaPonte(function (dove) { rispondi(res, 200, { pronto: !!dove }); }, true); return; }
+      // Real4K dal Mac: la scelta di questo TV (sul ponte), e la sessione per la home che apre Real4K (app: il sito dell'app)
+      if (resto === 'real4k-mac' && get) { statoReal4k(function (r) { rispondi(res, 200, r); }); return; }
+      if (resto === 'real4k-mac' && post) {
+        corpoJson(req, function (b) {
+          if (!b || typeof b.acceso !== 'boolean') { rispondi(res, 400, { error: 'corpo non valido', codice: 'corpo' }); return; }
+          sceltaReal4k(b.acceso, function (e, r) { if (e) errore2(e); else rispondi(res, 200, r); });
+        });
+        return;
+      }
+      if (resto === 'real4k-mac/apri' && get) { sessioneReal4k(String(q.app || ''), function (r) { rispondi(res, 200, r); }); return; }
       // file/<id>[/<nome.mkv>]: il nome col suo tipo nell'indirizzo, come per le chiavette (alcuni lettori dei TV lo guardano)
       if ((m = /^(file|info|sotto)\/([0-9a-fA-F]{32})(\/[^\/]{1,200})?$/.exec(resto)) && (m[1] === 'file' || !m[3]) && (get || (m[1] === 'file' && req.method === 'HEAD'))) {
         var id = m[2].toLowerCase(), cosa = m[1], ms = String(q.ms || '').toLowerCase();
@@ -1537,6 +1598,8 @@ var PontiVideo = (function () {
     return {
       tratta: function (req, res, cosa, q, u) {
         if (cosa.indexOf('jf/') === 0) { trattaJf(req, res, cosa.slice(3), q || {}, u); return; }
+        // sul Mac la velocita' e' quella del Mac e il limitatore e' del TV (passa dall'HLS, che dalla pagina del Mac non va)
+        if (dalMac && (cosa === 'tv/cpu' || cosa.indexOf('mac/') === 0)) { rispondi(res, 403, { error: 'da Real4K dal Mac no', codice: 'dalMac' }); return; }
         // la velocita' del TV (una alla volta: e' un lavoro di qualche secondo)
         if (cosa === 'tv/cpu' && req.method === 'GET') {
           if (misurando) { rispondi(res, 409, { error: 'misura gia\' in corso', codice: 'occupato' }); return; }

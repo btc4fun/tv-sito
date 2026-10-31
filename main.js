@@ -504,7 +504,7 @@
   ProfiloTV.ripara(window);
   var MOTORE = ProfiloTV.motore(window);
 
-  var VERSIONE = '1.3.11';
+  var VERSIONE = '1.3.12';
   var SERVIZIO = 'http://127.0.0.1:8090';
   var IN_FRAME = false;
   try { IN_FRAME = window.top !== window.self; } catch (e) { IN_FRAME = true; }
@@ -586,6 +586,12 @@
   if ((HOST === '127.0.0.1' || HOST === 'localhost') && location.port === '8090') return;
   if (/\.github\.io$/i.test(HOST) && /^\/tv-sito\//.test(location.pathname)) return;
   if ((HOST === '127.0.0.1' || HOST === 'localhost') && location.port === '8081') return;
+  // Real4K servita dal ponte del Mac a pagina intera (http://<IP di casa>:8098/real4k/): ai tasti e all'uscita pensa la sua
+  // libreria (tv-app.js), come nel riquadro dello Store. Solo un IP della rete di casa scritto per esteso, come quelli del ponte
+  // del Mac (10/8, 172.16/12, 192.168/16, 169.254/16, IPv6 fc00::/7 e fe80::/10; [::1] per le prove sul Mac), quella porta,
+  // quella cartella
+  if (location.protocol === 'http:' && location.port === '8098' && /^\/real4k\//.test(location.pathname) &&
+    /^(10\.\d{1,3}|172\.(1[6-9]|2\d|3[01])|192\.168|169\.254)\.\d{1,3}\.\d{1,3}$|^\[(::1|f[cd][0-9a-f:]*|fe[89ab][0-9a-f:]*)\]$/i.test(HOST)) return;
   // dentro il riquadro di un'app dello store (store.html): l'app ha la sua libreria (tv-app.js) e i tasti glieli passa
   // la home. Qui niente blocco della pubblicita' ne' pulizie, che la potrebbero rompere. Vale solo se la pagina sopra e'
   // una home (github.io, o le pagine delle prove): un sito qualsiasi non puo' spegnere il blocco nei suoi riquadri

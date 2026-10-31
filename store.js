@@ -68,6 +68,8 @@
   }
   function ha(nome) { return new RegExp('[#&]' + nome + '(&|$)').test(location.hash || ''); }
   var DA_HOME = ha('da=home');
+  // Real4K dal Mac tornata qui perche' il Mac non rispondeva: la prima app si apre nel riquadro, senza riprovare il Mac
+  var SENZA_MAC = ha('noMac=1');
   function casa() { location.replace('./'); }
   var MESI = ['gen', 'feb', 'mar', 'apr', 'mag', 'giu', 'lug', 'ago', 'set', 'ott', 'nov', 'dic'];
   function quando(t) {
@@ -887,16 +889,83 @@
     if (ancora && !x.ancora) UI.toast(p.voce.nome + ': non riesco a riprendere questo film, si apre dall\'inizio', 6000);
     mostraAttesa('Apro ' + p.voce.nome + '…', e);
     UI.pushKeys(tastiApp);
-    carica(x);
-    // le app dello Store stanno sullo stesso account: intanto si prova l'indirizzo, cosi' senza internet o con un 404
-    // compare un messaggio e non una pagina d'errore (una pagina grande va bene lo stesso). Le private no: il loro sito
-    // puo' non lasciarlo leggere
-    if (!p.privata) {
-      StoreDati.scarica(p.voce.url).then(null, function (err) {
-        var m = err && err.message;
-        if (app === x && !x.pronta && m !== 'troppoGrande') erroreApp(x, m);
-      });
+    function parti() {
+      if (app !== x) return;
+      carica(x);
+      // le app dello Store stanno sullo stesso account: intanto si prova l'indirizzo, cosi' senza internet o con un 404
+      // compare un messaggio e non una pagina d'errore (una pagina grande va bene lo stesso). Le private no: il loro sito
+      // puo' non lasciarlo leggere
+      if (!p.privata) {
+        StoreDati.scarica(p.voce.url).then(null, function (err) {
+          var m = err && err.message;
+          if (app === x && !x.pronta && m !== 'troppoGrande') erroreApp(x, m);
+        });
+      }
     }
+    if (puoDalMac(x)) dalMac(x, parti); else parti();
+  }
+  // Real4K dal Mac: un'app ufficiale col permesso "video" si apre a pagina intera dal ponte del Mac, se il servizio del TV dice
+  // che per questo TV e' accesa e pronta (il TV chiude il servizio quando la pagina di Real4K lavora: cosi' non serve). Il
+  // servizio apre la sessione sul Mac col suo token; alla pagina vanno il gettone del Mac, la home per tornare, la Store per
+  // riaprirla nel riquadro e le scelte dell'app. Le chiavette (#/v/...) restano qui. Al massimo 5 s, poi il riquadro
+  // Solo se l'app l'ha accesa (le sue preferenze, tenute qui): spenta, l'apertura resta quella di sempre, senza domande in piu'
+  // (un'ancora che porta gia' i parametri del Mac non vale: potrebbe averla scritta un sito per farli contare)
+  function puoDalMac(x) {
+    var v = x.info.voce || {}, pr = null;
+    if (SENZA_MAC) { SENZA_MAC = false; return false; }
+    if (x.info.privata || x.info.tipo !== 'ws' || !Array.isArray(v.permessi) || v.permessi.indexOf('video') === -1 ||
+      !/^https:\/\/[a-z0-9-]{1,39}\.github\.io\/[A-Za-z0-9._-]{1,100}\/$/.test(String(v.url || '')) || /^#\/v\//.test(x.ancora || '') ||
+      /[#&?](gettone|casa|riapri|prefs|servizio|tv|app)=/.test(x.ancora || '')) return false;
+    try { pr = JSON.parse(StoreDati.datiApp(x.riquadro).prefs || 'null'); } catch (e) { pr = null; }
+    return !!pr && pr.real4kMac === true;
+  }
+  // il ponte dice che per questo TV e' spenta (spenta dalla pagina del Mac): anche le scelte dell'app lo dicono, cosi' la
+  // prossima apertura non lo chiede piu'
+  function spentaDalMac(x) {
+    var d = StoreDati.datiApp(x.riquadro), pr = null;
+    try { pr = JSON.parse(d.prefs || 'null'); } catch (e) { pr = null; }
+    if (!pr || pr.real4kMac !== true) return;
+    pr.real4kMac = false;
+    d.prefs = JSON.stringify(pr);
+    StoreDati.scriviDatiApp(x.riquadro, d);
+  }
+  function dalMac(x, poi) {
+    var finito = false, gTv = '', t = setTimeout(function () { fine(''); }, 5000);
+    function fine(url) {
+      if (finito) return;
+      finito = true;
+      clearTimeout(t);
+      if (app !== x) return;
+      // (replace: andare e tornare dal Mac non allunga la cronologia della finestra)
+      if (url) location.replace(url); else poi();
+    }
+    UI.service(PERMESSI.video, {}).then(function (r) {
+      if (!r || typeof r.gettone !== 'string' || !/^[0-9a-f]{64}$/.test(r.gettone)) { fine(''); return; }
+      gTv = r.gettone;
+      return fetch(UI.SERVICE + '/api/video/g/' + r.gettone + '/jf/real4k-mac/apri?app=' + encodeURIComponent(x.info.voce.url), { cache: 'no-store' })
+        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (m) {
+          if (m && m.pronto === true && m.acceso === false && app === x) spentaDalMac(x);
+          if (!m || m.pronto !== true || m.acceso !== true || m.app !== true || typeof m.url !== 'string' ||
+            !/^http:\/\/[0-9a-fA-F.:\[\]]{3,47}:8098\/real4k\/$/.test(m.url) || typeof m.gettone !== 'string' || !/^[0-9a-f]{64}$/.test(m.gettone)) {
+            togliGettone(r.gettone);
+            fine('');
+            return;
+          }
+          // casa: dove si torna uscendo (la home se l'app e' partita da li', se no la Store); riapri: la Store che riapre l'app nel
+          // riquadro, se dal Mac qualcosa non va
+          var a = x.ancora, store = location.href.split('#')[0], casa = x.da === 'home' ? new URL('./', store).href : store;
+          var riapri = store + '#apri=' + encodeURIComponent(x.riquadro) + (x.da === 'home' ? '&da=home' : '') + '&noMac=1';
+          var piu = 'gettone=' + m.gettone + '&casa=' + encodeURIComponent(casa) + '&riapri=' + encodeURIComponent(riapri);
+          // le scelte dell'app (qualita', lingue...): la pagina del Mac le prende la prima volta, se non ne ha di sue
+          var pr = String(StoreDati.datiApp(x.riquadro).prefs || '');
+          if (pr.length <= 2000 && /^\{[\x20-\x7e]*\}$/.test(pr)) piu += '&prefs=' + encodeURIComponent(pr);
+          // il gettone del servizio del TV serviva solo a chiedere la sessione: dal Mac non si usa
+          togliGettone(r.gettone);
+          // (l'ancora del film resta prima: Real4K la legge da "#/jf/<id>" a "?" e i suoi parametri)
+          fine(m.url + (a ? a + (a.indexOf('?') >= 0 ? '&' : '?') : '#') + piu);
+        });
+    })['catch'](function () { if (gTv) togliGettone(gTv); fine(''); });
   }
   // l'ancora che la home passa all'app: solo "#/..." con i caratteri di un indirizzo (cambia solo la parte dopo #: la
   // pagina dell'app e il suo indirizzo restano quelli del catalogo). Fino a 2100 caratteri: l'indirizzo di una scheda di

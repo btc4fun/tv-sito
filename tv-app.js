@@ -39,6 +39,19 @@ var HomeTV = (function () {
   // i siti resta fermo. Altrove (una pagina normale, o l'app aperta "come sito") Home TV lavora come sempre
   var NELLO_STORE = NEL_RIQUADRO && window.name === 'hometv-app';
   if (NELLO_STORE) window.__hometvCasa = true;
+  // l'app a pagina intera dal ponte del Mac (Real4K dal Mac: http://<Mac>:8098/real4k/). Indietro dalla schermata principale,
+  // Verde ed esci tornano alla home: casa (nell'ancora) e' la home su GitHub Pages o, se non la si sa, il servizio del TV.
+  // (segno per il ponte del Mac: questa libreria sa fare real4k-dal-mac)
+  var DAL_MAC = !NEL_RIQUADRO && location.protocol === 'http:' && location.port === '8098' && /^\/real4k\//.test(location.pathname);
+  var CASA = '';
+  if (DAL_MAC) {
+    // (vale l'ultima casa=: quella che mette la home, dopo l'ancora del film)
+    var reCasa = /[#&?]casa=([^&]*)/g, mCasa, casa = '', ultima = null;
+    while ((mCasa = reCasa.exec(location.hash))) ultima = mCasa[1];
+    try { casa = ultima !== null ? decodeURIComponent(ultima) : ''; } catch (e) { casa = ''; }
+    CASA = /^https:\/\/[a-z0-9-]{1,39}\.github\.io\/[A-Za-z0-9._\/-]{0,200}$/.test(casa) || casa === 'http://127.0.0.1:8090/casa' ? casa : '';
+    window.__hometvCasa = true;
+  }
 
   var MAX_MEMORIA = 64 * 1024, INVIO_MS = 300;
   var info = { piattaforma: 'browser', lingua: String(navigator.language || 'it').slice(0, 2), tema: '', capacita: {} };
@@ -270,10 +283,21 @@ var HomeTV = (function () {
     if (!a) return;
     var t = ev.target && ev.target.tagName, inCasella = t === 'INPUT' || t === 'TEXTAREA';
     if (inCasella && (ev.keyCode === 8 || a === 'left' || a === 'right' || a === 'ok')) return; // si sta scrivendo
+    // a pagina intera dal Mac il Verde e' della home, come nel riquadro: si torna li' (la home, anche se l'app e' partita dalla Store)
+    if (DAL_MAC && a === 'green') { ev.preventDefault(); if (CASA) vaiDalMac(/^https:/.test(CASA) ? new URL('./', CASA).href : CASA); else esci(); return; }
     var fatto = a === 'back' ? chiedi(suIndietro, 'back') : (chiedi(suTasti, a) || naviga(a));
     if (fatto) ev.preventDefault();
-    else if (a === 'back' && collegata) { ev.preventDefault(); esci(); }
+    else if (a === 'back' && (collegata || DAL_MAC)) { ev.preventDefault(); esci(); }
   });
+  // a pagina intera dal Mac, tornando al TV dopo tanto tempo (standby, altre app) si riparte dalla home, come nei siti
+  if (DAL_MAC) {
+    var nascostaDa = 0;
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) { nascostaDa = Date.now(); return; }
+      if (nascostaDa && Date.now() - nascostaDa > 10 * 60 * 1000 && CASA) vaiDalMac(CASA);
+      nascostaDa = 0;
+    });
+  }
 
   /* ------------------------------------------------------------ navigazione di serie */
 
@@ -410,7 +434,32 @@ var HomeTV = (function () {
   }
   function esci() {
     if (collegata) { svuota(); posta({ tipo: 'esci' }); return; }
+    if (DAL_MAC && CASA) { vaiDalMac(CASA); return; }
     try { history.back(); } catch (e) {}
+  }
+  // dal Mac si va via (la home, o Real4K del TV) come quando la home chiude l'app: prima l'app salva (hometvchiudi), poi si va,
+  // ma solo se la meta risponde: senza rete una pagina d'errore non ha tasti per tornare. Se no si resta (l'app lo dice:
+  // hometvsenzarete) e si riprova ogni 10 s. Vale la prima meta: un Indietro durante un ritorno da solo va a casa
+  // (replace: andare e tornare dal Mac non allunga la cronologia della finestra)
+  var andando = '';
+  function vaiDalMac(dest) {
+    if (andando) return;
+    andando = String(dest);
+    try { window.dispatchEvent(new Event('hometvchiudi')); } catch (e) {}
+    svuota();
+    (function prova() {
+      var fatto = false, t = setTimeout(function () { no(); }, 5000);
+      function si() { if (fatto) return; fatto = true; clearTimeout(t); location.replace(andando); }
+      function no() {
+        if (fatto) return;
+        fatto = true;
+        clearTimeout(t);
+        try { window.dispatchEvent(new Event('hometvsenzarete')); } catch (e) {}
+        setTimeout(prova, 10000);
+      }
+      if (typeof fetch !== 'function') { si(); return; }
+      try { fetch(andando.split('#')[0], { mode: 'no-cors', cache: 'no-store' }).then(si, no); } catch (e) { si(); }
+    })();
   }
   function avviso(t) {
     t = String(t || '').slice(0, 160);
@@ -434,6 +483,8 @@ var HomeTV = (function () {
 
   return {
     pronto: pronto, tasti: tasti, indietro: indietro, memoria: memoria, chiediTesto: chiediTesto, esci: esci, avviso: avviso,
-    permesso: permesso, video: video, scegli: function (el) { scegli(el); }, info: function () { return info; }
+    permesso: permesso, video: video, scegli: function (el) { scegli(el); }, info: function () { return info; },
+    // Real4K dal Mac: la pagina intera dal ponte, e l'uscita verso una meta che risponde
+    dalMac: DAL_MAC, vaiDalMac: function (u) { if (DAL_MAC) vaiDalMac(u); }
   };
 })();
