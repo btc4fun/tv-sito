@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.13';
+  var VERSION = '1.3.14';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -14910,15 +14910,16 @@
     misura: function (cb) { segna('audio del TV: misuro la velocita\' del TV'); PontiVideo._interni.misuraCpu(function (r) { segna('audio del TV: misura finita'); cb(r); }); },
     fs: fs, file: pathLib.join(CACHE_DIR, 'hometv-audio-tv.json'), log: log
   });
-  // le domande dell'app Video in "isole" con un async hook acceso solo finche' servono; i domini di Node solo dove
-  // async_hooks non c'e' (Node 4): accesi una volta, il loro hook costava a ogni domanda del servizio
-  var asyncHooks = (function () {
-    try { var a = require('async_hooks'); return a && typeof a.createHook === 'function' && typeof a.executionAsyncId === 'function' ? a : null; } catch (e) { return null; }
-  })();
-  // stdout e stderr Node li crea la prima volta che servono, e restano per sempre: si creano ora, fuori dalle isole
+  // le domande dell'app Video SENZA isole e senza domini (1.3.14, 31/10/2026). Sul TV il processo moriva di colpo, senza
+  // errori ne' segnali, solo mentre arrivavano domande di Real4K: la scatola nera e la sonda a passi lo legano al primo
+  // tratto che passa da qui. Le isole accendevano e spegnevano un async hook a ogni domanda (prima i domini di Node,
+  // che ne tengono acceso uno): sul Node 12 dei TV un async hook puo' fermare il processo dal C++ (pila degli id
+  // rovinata), che non lascia tracce. Un errore in un callback di una domanda video arriva ora all'ascoltatore
+  // 'uncaughtException' del servizio, che lo annota e va avanti: quella risposta puo' restare senza fine, il servizio resta su
+  // stdout e stderr Node li crea la prima volta che servono, e restano per sempre: si creano ora
   try { if (process.stdout && process.stderr) { /* creati */ } } catch (e) { /* niente */ }
-  var videoteca = Videoteca.crea({ fs: fs, path: pathLib, zlib: require('zlib'), radici: RADICI_USB, asyncHooks: asyncHooks,
-    domain: asyncHooks ? null : require('domain'), log: log,
+  var videoteca = Videoteca.crea({ fs: fs, path: pathLib, zlib: require('zlib'), radici: RADICI_USB, asyncHooks: null,
+    domain: null, log: log,
     letti: lettiTv, audioTv: audioTv });
   var gettoniVideo = Videoteca.gettoni(require('crypto'));
   function riposaVideo() {
