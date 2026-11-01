@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.18';
+  var VERSION = '1.3.19';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -1694,7 +1694,8 @@
   // stato: 'mai' (mai provato), 'attesa' (il TV sta chiedendo il permesso), 'ok', 'negato', 'assente'
   var rem = { stato: remoto.stato === 'ok' || remoto.stato === 'negato' ? remoto.stato : 'mai', token: remoto.token || '',
     sock: null, pronto: false, coda: [], tentativo: 0, ultimoErrore: '', indicePorta: 0, buffer: null, frammenti: null,
-    tentativi: 0, muti: 0, risposto: false, provando: null, provate: {}, giro: 0, ripreso: false,
+    tentativi: 0, muti: 0, risposto: false, provando: null, provate: {}, giro: 0, ripreso: false, nota: '', casa: null,
+    tornaHome: false,
     // dove il TV ha detto si' (ci si ricollega li', col suo token) e le ultime prove con la risposta del TV: restano nel
     // file, cosi' dopo una caduta del servizio si sa ancora cosa ha risposto il TV
     // (un si' salvato prima che si annotasse la strada e' di 127.0.0.1:8002, la sola provata per prima fino alla 1.3.13)
@@ -1756,6 +1757,7 @@
       rem.giro = 0;
       rem.dove = dove || rem.dove;
       if (!gia) annotaRemoto(dove, 'si', 'consentito'); else if (rem.token !== prima) salvaRemoto(true);
+      tornaDopoPermesso();
       // tasti premuti mentre ci si collegava: solo quelli di pochi secondi fa
       var coda = rem.coda, ora = Date.now(); rem.coda = [];
       for (var i = 0; i < coda.length; i++) if (ora - coda[i].at < 4000) inviaRemoto(coda[i].msg);
@@ -1765,6 +1767,7 @@
       rem.giro = 0;
       annotaRemoto(dove, 'no', 'negato');
       chiudiRemoto();
+      tornaDopoPermesso();
       log('il TV non ha dato il permesso ai tasti dal telefono');
     } else if (ev === 'ms.channel.timeOut') {
       if (rem.pronto) { chiudiRemoto(); return; } // canale gia' aperto: non e' una risposta al permesso
@@ -1835,9 +1838,10 @@
   // no, si bussa subito alla strada dopo, ognuna una volta sola
   function giroRemoto() {
     var l = combinazioniRemoto(), c = l[rem.indicePorta % l.length];
-    if (rem.giro <= 0 || !c || rem.provate[c.dove]) { rem.giro = 0; return; }
+    if (rem.giro <= 0 || !c || rem.provate[c.dove]) { rem.giro = 0; return false; }
     rem.giro--;
     setTimeout(function () { if (!rem.sock && rem.stato === 'mai') apriRemoto(); }, 300);
+    return true;
   }
 
   // il TV ha aperto il canale ma non ha detto ne' si' ne' no (ha aspettato 30 s, o l'ha chiuso): forse la richiesta non e'
@@ -1852,11 +1856,13 @@
     chiudiRemoto();
     var l = combinazioniRemoto();
     if (l.length) rem.indicePorta = stessoTipoDopo(l, p.i % l.length);
-    giroRemoto();
+    // giro finito senza una scelta: si resta dove si e' (davanti puo' esserci Netflix, non la Home di Samsung)
+    if (!giroRemoto()) rem.tornaHome = false;
   }
 
   function apriRemoto() {
-    if (rem.sock || !HAS_TIZEN && !PROVE) return;
+    if (rem.sock || rem.casa || !HAS_TIZEN && !PROVE) return;
+    rem.nota = '';
     var l = combinazioniRemoto();
     // gia' consentito: ci si ricollega dove il TV ha detto si' (una volta per avvio; se li' non risponde, si va avanti)
     if (rem.stato === 'ok' && rem.dove && !rem.ripreso) {
@@ -1885,7 +1891,7 @@
       if (!rem.risposto && rem.muti >= l.length * 2 && rem.stato !== 'ok') rem.stato = 'assente';
       annotaRemoto(dove, 'muto', testo);
       chiudiRemoto();
-      giroRemoto();
+      if (!giroRemoto()) rem.tornaHome = false; // giro finito senza risposta: si resta dove si e'
     }
     function avvia() {
       sock.write('GET ' + percorso + ' HTTP/1.1\r\nHost: ' + dove + '\r\nUpgrade: websocket\r\n' +
@@ -1955,13 +1961,16 @@
 
   // per il telefono: l'ultima richiesta e' rimasta senza un si' o un no (forse la richiesta non e' comparsa sul TV)
   function notaRemoto() {
+    if (rem.nota) return rem.nota; // 'casa': si aspetta (o si e' aspettata invano) la casetta del telecomando
     var u = rem.storia[rem.storia.length - 1];
     return rem.stato === 'mai' && u && u.c === 'senza' && Date.now() - u.a < 3600000 ? 'senza-scelta' : '';
   }
 
   // per 8091/tv (il Mac e l'installatore): i tasti veri e le ultime prove, senza il token
   function statoRemoto() {
-    return { stato: rem.stato, dove: rem.dove, codice: !!rem.token, tentativi: rem.tentativi, prove: rem.storia.slice() };
+    return { stato: rem.stato, dove: rem.dove, codice: !!rem.token, tentativi: rem.tentativi, prove: rem.storia.slice(),
+      // volume e muto dal lettore DLNA (porta 9197), senza permesso
+      volume: { stato: upnp.stato, errore: upnp.errore, dove: upnp.controllo ? upnp.host + ':' + PORTA_UPNP + upnp.controllo : '' } };
   }
 
   function tastoVero(nome) {
@@ -1989,7 +1998,172 @@
     rem.provate = {};
     rem.giro = combinazioniRemoto().length - 1;
     chiudiRemoto();
-    apriRemoto();
+    aspettaCasa();
+  }
+
+  /* Il TV mostra la richiesta solo sulla sua Home, mai dentro un'app (QE55Q80B 2022, 1/11/2026; lo scrive anche il
+   * plugin di PepperDash per i Samsung): e la home di Home TV e' un'app, TizenBrew. Se TizenBrew e' davanti, chi chiede
+   * il permesso preme la casetta del telecomando del TV; il servizio guarda ogni secondo (al massimo un minuto) e chiede
+   * appena TizenBrew non e' piu' davanti. Finita la richiesta, la home di Home TV torna da sola. Se l'API del TV non
+   * risponde, si chiede subito (come prima). */
+  var CASA_MS = typeof HOMETV_PROVE_CASA_MS === 'number' ? HOMETV_PROVE_CASA_MS : 60000;
+  function aspettaCasa() {
+    if (rem.casa) { clearTimeout(rem.casa.timer); rem.casa = null; }
+    var attesa = { timer: null, fino: Date.now() + CASA_MS, primo: true };
+    rem.casa = attesa;
+    rem.stato = 'attesa';
+    rem.nota = 'casa';
+    cambiaStato();
+    (function guarda() {
+      apiTv('GET', '/api/v2/applications/' + encodeURIComponent(tizenBrewAppId()), function (j, c) {
+        if (rem.casa !== attesa) return; // un'altra richiesta, o finita
+        if (c === 200 && j && j.visible === true) {
+          if (Date.now() >= attesa.fino) {
+            // nessuno ha premuto la casetta: il telefono dice di premerla e di chiedere di nuovo
+            rem.casa = null;
+            rem.stato = 'mai';
+            cambiaStato();
+            return;
+          }
+          attesa.primo = false;
+          attesa.timer = setTimeout(guarda, 1000);
+          return;
+        }
+        // TizenBrew non e' davanti (o il TV non lo dice): si chiede. Si torna alla home solo se ci si e' spostati adesso
+        if (!attesa.primo && c === 200 && j && j.visible === false) rem.tornaHome = true;
+        rem.casa = null;
+        rem.nota = '';
+        cambiaStato();
+        apriRemoto();
+      });
+    })();
+  }
+
+  // dopo un si' o un no alla richiesta fatta dalla Home di Samsung torna la home di Home TV (chi ha risposto era li', dove la
+  // richiesta compare); senza una scelta no: davanti puo' esserci un'altra app, e il telefono dice gia' cosa fare
+  function tornaDopoPermesso() {
+    if (!rem.tornaHome) return;
+    rem.tornaHome = false;
+    setTimeout(function () { apriHome('dopo il permesso'); }, 1500);
+  }
+
+  /* ---------------------------------------------------------- volume e muto senza permesso (UPnP)
+   * Il TV fa anche da lettore DLNA (porta 9197) e il suo RenderingControl cambia volume e muto senza chiedere niente
+   * (cosi' lo usano Home Assistant, Homey e altri). Serve finche' i tasti veri non hanno il permesso del TV: dal
+   * telefono volume e muto vanno lo stesso, anche dentro Netflix. Gli altri tasti vogliono il permesso.
+   */
+  var PORTA_UPNP = typeof HOMETV_PROVE_UPNP === 'number' ? HOMETV_PROVE_UPNP : 9197;
+  var RC_UPNP = 'urn:schemas-upnp-org:service:RenderingControl:1';
+  // stato: 'mai' (non ancora cercato), 'ok', 'errore' (si riprova dopo un minuto). Il volume si ricorda per 1,5 s: i tocchi
+  // di fila non rileggono il volume a ogni tocco, e se intanto lo si cambia col telecomando vero non torna indietro
+  var upnp = { stato: 'mai', errore: '', erroreAt: 0, host: '', controllo: '', cerca: false, volume: -1, volumeAt: 0,
+    inVolo: false, passi: 0, mutoInVolo: false };
+
+  // una domanda al lettore DLNA del TV: cb(errore, codice HTTP, testo)
+  function domandaUpnp(host, metodo, percorso, azione, corpo, cb) {
+    var fatto = false;
+    function fine(e, c, t) { if (!fatto) { fatto = true; cb(e, c, t); } }
+    try {
+      var testa = { 'Content-Type': 'text/xml; charset="utf-8"' };
+      if (azione) testa.SOAPAction = '"' + RC_UPNP + '#' + azione + '"';
+      if (corpo) testa['Content-Length'] = Buffer.byteLength(corpo);
+      var req = http.request({ host: host, port: PORTA_UPNP, path: percorso, method: metodo, headers: testa, agent: false }, function (res) {
+        var parti = [], n = 0;
+        res.on('data', function (d) { n += d.length; if (n <= 65536) parti.push(d); });
+        res.on('end', function () { fine(null, res.statusCode || 0, Buffer.concat(parti).toString('utf8')); });
+        res.on('error', function (e) { fine(e); });
+        res.on('aborted', function () { fine(new Error('risposta interrotta')); });
+      });
+      req.on('error', function (e) { fine(e); });
+      req.setTimeout(2500, function () { try { req.abort(); } catch (e) { /* niente */ } fine(new Error('nessuna risposta')); });
+      req.end(corpo || undefined);
+    } catch (e) { fine(e); }
+  }
+
+  function segnaUpnp(e, cosa) {
+    if (e) { upnp.stato = 'errore'; upnp.errore = String(cosa || '') + ': ' + (e.code || e.message); upnp.erroreAt = Date.now(); }
+    else { upnp.stato = 'ok'; upnp.errore = ''; }
+  }
+
+  // dove risponde il RenderingControl: la descrizione del lettore (/dmr) dice il suo indirizzo
+  function trovaUpnp(cb) {
+    if (upnp.controllo) { cb(null); return; }
+    var h = indirizziRemoto(), k = 0;
+    (function prova() {
+      if (k >= h.length) { cb(new Error('lettore DLNA non trovato')); return; }
+      var host = h[k++];
+      domandaUpnp(host, 'GET', '/dmr', '', '', function (e, c, t) {
+        if (e || c !== 200 || t.indexOf(RC_UPNP) === -1) { prova(); return; }
+        // il <controlURL> del <service> del RenderingControl (viene dopo il suo serviceType)
+        var m = /<controlURL>\s*([^<\s]+)\s*<\/controlURL>/i.exec(t.slice(t.indexOf(RC_UPNP)));
+        var u = (m ? m[1] : '/upnp/control/RenderingControl1').replace(/^https?:\/\/[^\/]+/i, '');
+        upnp.host = host;
+        upnp.controllo = u.charAt(0) === '/' ? u : '/' + u;
+        cb(null);
+      });
+    })();
+  }
+
+  function azioneUpnp(azione, argomenti, cb) {
+    trovaUpnp(function (e) {
+      if (e) { segnaUpnp(e, 'lettore'); cb(e); return; }
+      var corpo = '<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" ' +
+        's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:' + azione + ' xmlns:u="' + RC_UPNP + '">' +
+        '<InstanceID>0</InstanceID><Channel>Master</Channel>' + (argomenti || '') + '</u:' + azione + '></s:Body></s:Envelope>';
+      domandaUpnp(upnp.host, 'POST', upnp.controllo, azione, corpo, function (e2, c, t) {
+        if (!e2 && c !== 200) e2 = new Error('HTTP ' + c);
+        // dopo un errore il lettore si cerca di nuovo (il TV puo' aver cambiato indirizzo)
+        if (e2) upnp.controllo = '';
+        segnaUpnp(e2, azione);
+        cb(e2 || null, t);
+      });
+    });
+  }
+
+  function valoreUpnp(t, nome) {
+    var m = new RegExp('<' + nome + '>\\s*([^<\\s]*)\\s*</' + nome + '>').exec(t || '');
+    return m ? m[1] : '';
+  }
+
+  // volume e muto dal lettore DLNA? Non sulle altre TV, e dopo un errore solo un minuto dopo
+  function upnpUsabile() {
+    return (HAS_TIZEN || PROVE) && !ALTRA && (upnp.stato !== 'errore' || Date.now() - upnp.erroreAt > 60000);
+  }
+
+  // il volume su o giu' di un passo; i tocchi che arrivano mentre il TV risponde si sommano in un cambio solo
+  function volumeUpnp(passo, cb) {
+    upnp.passi += passo;
+    if (upnp.inVolo) { cb(null); return; }
+    upnp.inVolo = true;
+    function cambia(v) {
+      var nuovo = Math.max(0, Math.min(100, v + upnp.passi));
+      upnp.passi = 0;
+      azioneUpnp('SetVolume', '<DesiredVolume>' + nuovo + '</DesiredVolume>', function (e) {
+        upnp.inVolo = false;
+        upnp.volume = e ? -1 : nuovo;
+        upnp.volumeAt = Date.now();
+        cb(e);
+        if (!e && upnp.passi) volumeUpnp(0, function () {});
+      });
+    }
+    if (upnp.volume >= 0 && Date.now() - upnp.volumeAt < 1500) { cambia(upnp.volume); return; }
+    azioneUpnp('GetVolume', '', function (e, t) {
+      var v = parseInt(valoreUpnp(t, 'CurrentVolume'), 10);
+      if (!e && !isFinite(v)) { e = new Error('volume non letto'); segnaUpnp(e, 'GetVolume'); }
+      if (e) { upnp.inVolo = false; upnp.passi = 0; cb(e); return; }
+      cambia(v);
+    });
+  }
+
+  // muto acceso o spento, come il tasto del telecomando (un tocco alla volta: due insieme leggerebbero lo stesso stato)
+  function mutoUpnp(cb) {
+    if (upnp.mutoInVolo) { cb(null); return; }
+    upnp.mutoInVolo = true;
+    azioneUpnp('GetMute', '', function (e, t) {
+      if (e) { upnp.mutoInVolo = false; cb(e); return; }
+      var m = valoreUpnp(t, 'CurrentMute').toLowerCase(), muto = m === '1' || m === 'true';
+      azioneUpnp('SetMute', '<DesiredMute>' + (muto ? 0 : 1) + '</DesiredMute>', function (e2) { upnp.mutoInVolo = false; cb(e2 || null); });
+    });
   }
 
   /* ---------------------------------------------------------- telecomando sul telefono
@@ -2115,8 +2289,8 @@
   // la home o lo Store sono aperti sul TV (le azioni dello Store le fanno solo loro)
   function storeInAscolto() { return inAscolto() && (tel.dove === 'Home' || tel.dove === 'Store'); }
   function statoPerTelefono() {
-    return { ok: true, ascolta: inAscolto(), dove: tel.dove, tasti: rem.stato, tastiNota: notaRemoto(), campo: campoAttivo(), video: videoAttuale(),
-      sotto: sottoAttuale(), ver: tel.ver, storeVer: tel.storeVer };
+    return { ok: true, ascolta: inAscolto(), dove: tel.dove, tasti: rem.stato, tastiNota: notaRemoto(), volume: upnp.stato, campo: campoAttivo(),
+      video: videoAttuale(), sotto: sottoAttuale(), ver: tel.ver, storeVer: tel.storeVer };
   }
 
   // Continua a guardare dalle pagine (revisione d'insieme, punto 1): la home con la chiave (e le pagine delle prove) come
@@ -17222,7 +17396,7 @@
   function statoTelefono() {
     // abbinamenti: cresce a ogni telefono collegato, anche quando i telefoni sono gia' 6 (il piu' vecchio lascia il posto)
     return { attivo: tel.attivo, errore: tel.errore, porta: PORTA_TELEFONO, indirizzi: indirizziRete(), collegati: telefoni.length,
-      abbinamenti: tel.abbinamenti || 0, tasti: rem.stato };
+      abbinamenti: tel.abbinamenti || 0, tasti: rem.stato, tastiNota: notaRemoto() };
   }
 
   // i tasti valgono solo per qualche secondo (non si "recuperano" dopo minuti
@@ -17339,6 +17513,12 @@
       var k = body.tasto;
       if (!TASTI_TELEFONO[k]) return 'tasto sconosciuto';
       if (SOLO_TV[k]) {
+        // volume e muto senza il permesso del TV: dal lettore DLNA, che non chiede niente (se non risponde, come prima)
+        if (rem.stato !== 'ok' && (k === 'volSu' || k === 'volGiu' || k === 'muto') && upnpUsabile()) {
+          var vk = k, comeprima = function (e) { if (e && rem.stato !== 'negato' && rem.stato !== 'assente') tastoVero(vk); };
+          if (k === 'muto') mutoUpnp(comeprima); else volumeUpnp(k === 'volSu' ? 1 : -1, comeprima);
+          return '';
+        }
         if (rem.stato === 'negato' || rem.stato === 'assente') return 'non-disponibile';
         tastoVero(k);
         return '';
@@ -17553,6 +17733,11 @@
     }
     if (route === 'GET /stato') {
       if (!telefonoValido(u.query.t)) { rispondiTel(res, 401, { error: 'non collegato' }); return; }
+      // il telefono e' aperto: si cerca una volta il lettore DLNA del TV, cosi' sa subito se il volume va senza permesso
+      if (upnp.stato === 'mai' && !upnp.cerca && upnpUsabile()) {
+        upnp.cerca = true;
+        trovaUpnp(function (e) { upnp.cerca = false; segnaUpnp(e, 'lettore'); if (!e) cambiaStato(); });
+      }
       // con ?v= il telefono aspetta che cambi qualcosa (pagina, campo dove si scrive): lo sa subito
       if (u.query.v && parseInt(u.query.v, 10) === tel.ver) { attendiStato(req, res); return; }
       rispondiTel(res, 200, statoPerTelefono());
@@ -17602,7 +17787,8 @@
         var ascoltava = inAscolto();
         var errore = comandoDalTelefono(body);
         if (errore) { rispondiTel(res, 400, { error: errore, tasti: rem.stato, tastiNota: notaRemoto() }); return; }
-        rispondiTel(res, 200, { ok: true, ascolta: ascoltava, dove: tel.dove, tasti: rem.stato, tastiNota: notaRemoto(), coda: tel.inCoda });
+        rispondiTel(res, 200, { ok: true, ascolta: ascoltava, dove: tel.dove, tasti: rem.stato, tastiNota: notaRemoto(), volume: upnp.stato,
+          coda: tel.inCoda });
       });
       return;
     }
@@ -19395,9 +19581,10 @@
     '',
     '  function api(percorso, corpo, segnale) {',
     '    // anteprima: "?demo&tasti=mai" fa vedere il telecomando senza il permesso del TV ("&nota=senza-scelta": la richiesta',
-    '    // rimasta senza una scelta)',
+    '    // rimasta senza una scelta; "&volume=ok": il volume che va gia\' senza permesso)',
     '    if (DEMO) return Promise.resolve({ ok: true, ascolta: true, dove: \'Anteprima\', t: \'demo\',',
-    '      tasti: (/[?&]tasti=([a-z]+)/.exec(location.search) || [])[1] || \'ok\', tastiNota: (/[?&]nota=([a-z-]+)/.exec(location.search) || [])[1] || \'\' });',
+    '      tasti: (/[?&]tasti=([a-z]+)/.exec(location.search) || [])[1] || \'ok\', tastiNota: (/[?&]nota=([a-z-]+)/.exec(location.search) || [])[1] || \'\',',
+    '      volume: (/[?&]volume=([a-z]+)/.exec(location.search) || [])[1] || \'\' });',
     '    var opz = { cache: \'no-store\' };',
     '    if (segnale) opz.signal = segnale;',
     '    if (corpo) { opz.method = \'POST\'; opz.headers = { \'Content-Type\': \'text/plain\' }; opz.body = JSON.stringify(corpo); }',
@@ -19494,29 +19681,35 @@
     '    dot.className = \'dot \' + (j.ascolta || j.tasti === \'ok\' ? \'ok\' : \'no\');',
     '    n.textContent = \'Sul TV\';',
     '    s.textContent = j.ascolta ? (j.dove || \'Home\') : \'Un\\u2019altra app\';',
+    '    if (j.volume) volumeLibero = j.volume === \'ok\';',
     '    if (j.tasti) mostraPermesso(j.tasti, j.tastiNota);',
     '  }',
     '  // i tasti veri del TV (volume, canali, numeri...) vogliono il permesso del TV: finche\' manca, il telecomando dice come darlo',
-    '  // nota \'senza-scelta\': il TV ha aperto la richiesta ma nessuno ha scelto (forse sullo schermo non e\' comparsa)',
+    '  // nota \'senza-scelta\': il TV ha aperto la richiesta ma nessuno ha scelto (forse sullo schermo non e\' comparsa).',
+    '  // volumeLibero: volume e muto vanno gia\' senza permesso (dal lettore DLNA del TV)',
+    '  var volumeLibero = false;',
     '  function mostraPermesso(t, nota) {',
     '    var box = $(\'permesso\'), p = $(\'permesso-testo\'), b = $(\'chiedi-permesso\');',
     '    if (!box || !t) return;',
-    '    var senza = t === \'mai\' && nota === \'senza-scelta\';',
+    '    var senza = t === \'mai\' && nota === \'senza-scelta\', casa = nota === \'casa\';',
     '    box.hidden = t === \'ok\';',
     '    b.hidden = t === \'attesa\';',
     '    $(\'permesso-aiuto\').hidden = t !== \'negato\' && !senza;',
-    '    p.textContent = t === \'attesa\' ? \'Guarda il TV: dovrebbe comparire la richiesta di Home TV. Scegli Consenti col telecomando del TV (hai 30 secondi).\' :',
+    '    p.textContent = t === \'attesa\' && casa ? \'Premi la casetta (Home) sul telecomando del TV: la richiesta di Home TV compare sulla Home di Samsung.\' :',
+    '      t === \'attesa\' ? \'Guarda il TV: dovrebbe comparire la richiesta di Home TV. Scegli Consenti col telecomando del TV (hai 30 secondi).\' :',
+    '      t === \'mai\' && casa ? \'Il TV \\u00e8 rimasto su Home TV, dove la richiesta non compare. Premi la casetta (Home) sul telecomando del TV, poi tocca Chiedi di nuovo.\' :',
     '      senza ? \'Il TV ha aspettato la tua scelta ma non l\\u2019ha avuta. Tocca Chiedi di nuovo e guarda il TV.\' :',
     '      t === \'negato\' ? \'Il TV ha negato il permesso ai tasti dal telefono.\' :',
     '      t === \'assente\' ? \'Il TV non risponde ai tasti dal telefono.\' :',
+    '      volumeLibero ? \'Il volume va gi\\u00e0. Canali, numeri e gli altri tasti del televisore funzionano dopo il permesso del TV (una volta sola).\' :',
     '      \'Volume, canali, numeri e i tasti del televisore funzionano dopo il permesso del TV (una volta sola).\';',
-    '    b.textContent = t === \'mai\' && !senza ? \'Chiedi il permesso al TV\' : \'Chiedi di nuovo\';',
+    '    b.textContent = t === \'mai\' && !senza && !casa ? \'Chiedi il permesso al TV\' : \'Chiedi di nuovo\';',
     '  }',
     '  $(\'chiedi-permesso\').addEventListener(\'click\', function () {',
     '    invia({ tipo: \'permesso\' }).then(function (j) {',
     '      if (!j || j.error || j.__stato >= 400) return;',
-    '      mostraPermesso(\'attesa\');',
-    '      avviso(\'Sul TV scegli Consenti col telecomando del TV\', 5000);',
+    '      mostraPermesso(j.tasti || \'attesa\', j.tastiNota);',
+    '      avviso(j.tastiNota === \'casa\' ? \'Ora premi la casetta (Home) sul telecomando del TV\' : \'Sul TV scegli Consenti col telecomando del TV\', 5000);',
     '    });',
     '  });',
     '',

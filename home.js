@@ -45,7 +45,7 @@
 
   var $ = UI.$;
   var DEMO = UI.DEMO;
-  var VERSIONE = '1.3.18';
+  var VERSIONE = '1.3.19';
 
   /* ============================================================ dati */
 
@@ -1689,7 +1689,9 @@
     UI.service('/api/telefono/permesso', {}).then(function (t) {
       telStato = t;
       if (settingsOpen) drawSettings();
-      UI.toast('Sul TV compare una richiesta per "Home TV": scegli Consenti', 5000);
+      // il TV mostra la richiesta solo sulla sua Home: prima la casetta del telecomando
+      UI.toast(t && t.tastiNota === 'casa' ? 'Premi la casetta (Home) del telecomando: la richiesta di "Home TV" compare sulla Home di Samsung' :
+        'Sul TV compare una richiesta per "Home TV": scegli Consenti', 7000);
       setTimeout(function () { checkTelefono(); }, 8000);
       setTimeout(function () { checkTelefono(); }, 20000);
     }, function () { UI.toast('Il servizio del TV non risponde: ' + RIAPRI, 4000); });
@@ -1797,7 +1799,9 @@
             telStato = s;
             chiudiAbbina();
             if (settingsOpen) drawSettings();
-            UI.toast('Telefono collegato. Se il TV chiede di consentire Home TV, scegli Consenti', 6000);
+            // i tasti veri vogliono il permesso del TV, che lo chiede solo dalla sua Home: la casetta del telecomando
+            UI.toast(s.tasti === 'ok' || s.tasti === 'assente' ? 'Telefono collegato' :
+              'Telefono collegato. Per i tasti del TV: premi la casetta (Home) del telecomando, poi Consenti', 8000);
             setTimeout(function () { checkTelefono(); }, 15000);
           }
         }, function () {});
