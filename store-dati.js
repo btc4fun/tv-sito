@@ -22,7 +22,8 @@ var StoreDati = (function () {
   // le funzioni del servizio del TV che un'app puo' chiedere nel catalogo ("richiede": { video: 1 }): nome e versione
   var FUNZIONE = /^[a-z][a-z0-9]{1,23}$/, MAX_RICHIEDE = 8;
   // cambia quando cambia come si legge una voce: il catalogo gia' salvato si rilegge anche se il testo e' lo stesso
-  var LETTURA = 2;
+  // (3: il campo "sito" delle app ufficiali che si aprono come sito)
+  var LETTURA = 3;
   var TITOLI = { film: 'Film e serie', video: 'Video e musica', sport: 'Sport', giochi: 'Giochi', strumenti: 'Strumenti', altre: 'Altre app' };
   var MAX_APP = 200, MAX_MIE = 300, MAX_FONTI = 50, MAX_BYTE = 300000, TEMPO_MS = 8000;
   var VECCHIO_UFFICIALE = 10 * 60 * 1000;  // il catalogo ufficiale si riscarica dopo 10 minuti
@@ -124,6 +125,26 @@ var StoreDati = (function () {
     return p.protocollo === 'https' && !locale(p.host) && p.host !== sitoHome() ? u : '';
   }
 
+  // il sito di un'app ufficiale che si apre a tutto schermo come sito ("sito": un servizio senza pagina per il TV, come
+  // Disney+): solo un indirizzo https intero di un sito pubblico (mai locale, mai il sito della home, niente "utente@" e niente
+  // ancora), al massimo 300 caratteri. Lo legge solo il catalogo ufficiale: in uno privato non vale mai
+  function sitoApp(v) {
+    if (typeof v !== 'string' || !v || v.length > 300 || !/^https:\/\/[^\/?#]/i.test(v)) return '';
+    var u = assoluto(v, 'https://x.invalid/'), p = parti(u);
+    // (anche il dominio base diverso da quello della home: main.js tratta come "tuoi" tutti i siti di quel dominio base, e un
+    // altro *.github.io renderebbe tuoi tutti quelli di github.io)
+    return p && p.protocollo === 'https' && !locale(p.host) && dominioBase(p.host) !== dominioBase(sitoHome()) && u.indexOf('#') === -1 &&
+      u.length <= 300 ? u : '';
+  }
+  // il dominio base di un sito, come in main.js (dominioBase): l'ultimo pezzo e quello prima (co.uk e simili: tre)
+  function dominioBase(h) {
+    h = String(h || '').toLowerCase().replace(/:\d+$/, '');
+    if (/^[\d.]+$/.test(h) || h.indexOf(':') !== -1) return h;
+    var p = h.split('.');
+    if (p.length > 2 && p[p.length - 1].length === 2 && /^(co|com|net|org|gov|edu|ac|or|ne|go)$/.test(p[p.length - 2])) return p.slice(-3).join('.');
+    return p.length > 2 ? p.slice(-2).join('.') : h;
+  }
+
   /* ------------------------------------------------------------ controllo del catalogo */
 
   // solo testo, senza caratteri di controllo e non oltre max (i testi di un catalogo privato non sono fidati)
@@ -176,6 +197,13 @@ var StoreDati = (function () {
       ritirata: v.ritirata === true, evidenza: v.evidenza === true, permessi: perm
     };
     if (ric) out.richiede = ric; // solo se c'e': le liste salvate (Le mie app) non crescono per niente
+    // un'app ufficiale che si apre come sito (Apri va al sito, non nel riquadro): store.js e la home (protezioni dei siti). Un
+    // sito sbagliato nel catalogo ufficiale scarta la voce (mai la pagina di riserva al suo posto); nei privati non vale mai
+    if (stessoSito && v.sito !== undefined) {
+      var sito = sitoApp(v.sito);
+      if (!sito) return null;
+      out.sito = sito;
+    }
     return out;
   }
   function versioneFunzione(x) { return typeof x === 'number' && x >= 1 && x <= 999 && x % 1 === 0; }
@@ -245,6 +273,15 @@ var StoreDati = (function () {
         try { capacita = typeof ProfiloTV !== 'undefined' ? ProfiloTV.motore(window) : {}; } catch (e) { capacita = {}; }
       }
       for (var i = 0; i < v.requisiti.length; i++) if (capacita[v.requisiti[i]] !== true) return 'motore';
+    }
+    // un'app-sito: per ora solo sui Samsung (TizenBrew), dove main.js entra nelle pagine e le pagine hanno il DRM. L'app per
+    // Android lo nega alle pagine (la puntata non partirebbe), su LG e' da provare: altrove "Su questo TV non funziona ancora".
+    // Sul TV anche con lo user agent cambiato in TizenBrew: lo ricorda la pagina quando il servizio risponde, come UI.ON_TV
+    // (ui.js, hometv-sul-tv; revisione 47)
+    if (v.sito) {
+      var piatt = 'browser';
+      try { piatt = ProfiloTV.piattaforma(window, leggi('hometv-sul-tv') === true); } catch (e) { piatt = 'browser'; }
+      if (piatt !== 'tizen') return 'servizio';
     }
     var r = v.richiede, f = r ? funzioni() : null, vecchia = false;
     if (!f) return '';

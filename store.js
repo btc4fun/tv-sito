@@ -862,6 +862,38 @@
     UI.toast(testo, 4000);
     if (da === 'home') setTimeout(casa, 1500); else fattaLista(null);
   }
+  // un'app ufficiale che si apre a tutto schermo come sito (richiesta del 1/11: Disney+ non ha una pagina per il TV), con
+  // main.js come ogni sito (frecce, OK, puntatore del telefono) e le protezioni dei tuoi siti (la home lo dice al servizio).
+  // Prima di andare: il sito risponde? Lo chiede il servizio del TV (al massimo 2,5 s): una pagina che non arriva e' la
+  // pagina d'errore del browser del TV, dove Indietro chiude TizenBrew (31/10). Senza risposta, anche dal servizio fermo, si
+  // resta e lo si dice. replace: la Store non resta nella cronologia, e Indietro dalla prima pagina del sito torna alla home
+  var sitoGiro = 0, sitoTasti = null;
+  // un'apertura come sito che aspetta ancora il servizio si annulla quando succede altro (un'altra app dal telefono, Home o
+  // un link dal telefono): la sua risposta, arrivata dopo, non conta piu', e i suoi tasti escono dalla pila (revisione 46)
+  function annullaSito() {
+    sitoGiro++;
+    if (sitoTasti) { UI.popKeys(sitoTasti); sitoTasti = null; }
+  }
+  function apriSito(v, da) {
+    annullaSito();
+    var giro = sitoGiro;
+    // (Indietro mentre si aspetta: si lascia stare, come prima di aprire)
+    function tasti(a) { if (a === 'back') fine(null); }
+    function fine(va) {
+      if (giro !== sitoGiro) return;
+      annullaSito();
+      if (va === true) { location.replace(v.sito); return; }
+      appEl.hidden = true;
+      if (va === null) { if (da === 'home') casa(); else fattaLista(null); return; }
+      senzaApp(v.nome + ' non risponde: controlla la connessione a internet', da);
+    }
+    passo('apri');
+    mostraAttesa('Apro ' + v.nome + '…', elemWs(v));
+    sitoTasti = tasti;
+    UI.pushKeys(tasti);
+    UI.service('/api/raggiungibile?url=' + encodeURIComponent(v.sito) + '&tempo=2500').then(function (r) { fine(!!(r && r.ok === true)); },
+      function () { fine(false); });
+  }
   // aperta dalla home: le file dello Store (e il loro lavoro) si fanno solo se poi si torna nello Store
   function fattaLista(fila) {
     if (listaFatta) return;
@@ -886,7 +918,12 @@
         nonVa(p.perche).frase : 'senza il catalogo dello Store non si apre'), da);
       return;
     }
+    // da qui l'app chiesta prende il posto di quella aperta, anche di un'app-sito che aspetta il servizio. Una richiesta che
+    // non si apre (qui sopra) la lascia andare avanti, come un'app nel riquadro: niente "Apro..." rimasto a meta'
+    annullaSito();
     if (app) chiudiApp(true);
+    // un'app ufficiale che si apre come sito ("sito" nel catalogo: Disney+): niente riquadro
+    if (p.tipo === 'ws' && p.voce && p.voce.sito) { apriSito(p.voce, da); return; }
     var e = p.tipo === 'ws' ? elemWs(p.voce) : { tipo: 'mia', chiave: riquadro, voce: p.voce, nome: p.voce.nome, riquadro: riquadro, sito: p.sito };
     var x = app = { riquadro: riquadro, info: p, elem: e, da: da, pronta: false, seq: 0, attese: {}, backDiFila: 0, furti: [], finestra: 0,
       messaggi: 0, iframe: null, daScrivere: null, timerScrivi: null, annullato: 0, ancora: ancoraBuona(ancora) };
@@ -1286,11 +1323,12 @@
     },
     // un link o Home dal telefono con un'app aperta: prima si chiude l'app (cosi' salva i suoi dati)
     link: function (u) {
+      annullaSito();
       if (!app) { location.href = u; return; }
       chiudiApp(true);
       setTimeout(function () { location.href = u; }, 250);
     },
-    home: function () { if (app) chiudiApp(false, true); else casa(); }
+    home: function () { annullaSito(); if (app) chiudiApp(false, true); else casa(); }
   });
   window.addEventListener('resize', function () {
     UI.fitScreen();

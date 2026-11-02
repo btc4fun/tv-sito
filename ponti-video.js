@@ -231,6 +231,9 @@ var PontiVideo = (function () {
   // 15-25 Mbps e' quello degli streaming a pagamento (Jellyfin converte in HEVC col chip del Mac; l'HDR resta con jellyfin-ffmpeg)
   // Restano anche le scelte di prima, per le app di prima: 4K 80, 720p 8, e 1080p 20, che l'app usa ancora per le anteprime
   // nella scheda (un trailer 4K HDR accenderebbe l'HDR del TV sotto le scritte)
+  // la lettura in anticipo di un film a file sul Mac: 192 MB in memoria, circa 23 s di un 4K da 67 Mbps (12 s ai suoi picchi di
+  // 130). Un disco che rallenta (un download sullo stesso T7) o Jellyfin che tarda non arrivano al TV, se finiscono prima
+  var LETTURA_MAC = 192 << 20;
   var QUALITA = { orig: { mbps: 0, larg: 0 }, '4k40': { mbps: 40, larg: 3840 }, '4k25': { mbps: 25, larg: 3840 }, '4k15': { mbps: 15, larg: 3840 },
     '1080p8': { mbps: 8, larg: 1920 }, '4k': { mbps: 80, larg: 3840 }, '1080': { mbps: 20, larg: 1920 }, '720': { mbps: 8, larg: 1280 } };
   // la qualita' "Automatica", dal 70% della rete misurata: difende il 4K, che resta tale e cala solo di Mbps fino a 15;
@@ -281,11 +284,15 @@ var PontiVideo = (function () {
 
   /* ============================================================ il "fs" remoto: un file letto con le domande Range
    * open/read/close come quelli di Node, per la videoteca. Le letture grandi e di seguito (il film che passa) usano UNA
-   * domanda tenuta aperta, con al massimo 4 MB in memoria; le piccole (struttura, Cues, sottotitoli) una domanda breve
-   * di almeno 64 KB, tenuta per le letture vicine. Una lettura alla volta per file aperto. */
-  function fsRemoto(chiedi, dim, tempo) {
+   * domanda tenuta aperta, con al massimo "avanti" byte in memoria (4 MB sul TV; sul Mac molti di piu': una lettura in
+   * anticipo che copre i momenti in cui il disco o Jellyfin rallentano); le piccole (struttura, Cues, sottotitoli) una domanda
+   * breve di almeno 64 KB, tenuta per le letture vicine. Una lettura alla volta per file aperto. */
+  function fsRemoto(chiedi, dim, tempo, avanti) {
     var aperti = {}, prossimo = 1;
     tempo = tempo || 30000;
+    avanti = avanti > (4 << 20) ? avanti : 4 << 20;
+    // (la domanda riparte quando in memoria ne resta 1 MB sul TV, come prima; sul Mac quando manca un quarto, cosi' resta piena)
+    var riprendi = avanti > (4 << 20) ? avanti * 3 / 4 : 1 << 20;
     function chiudiFlusso(s) {
       var f = s.flusso;
       s.flusso = null;
@@ -316,7 +323,7 @@ var PontiVideo = (function () {
             if (f.morto) return;
             f.parti.push(d);
             f.len += d.length;
-            if (f.len > (4 << 20) && !f.pausa) { f.pausa = true; res.pause(); }
+            if (f.len > avanti && !f.pausa) { f.pausa = true; res.pause(); }
             sveglia(f);
           });
           res.on('end', function () { f.fine = true; sveglia(f); });
@@ -374,7 +381,7 @@ var PontiVideo = (function () {
           }
           f.len -= k;
           f.pos += k;
-          if (f.pausa && f.len < (1 << 20) && f.res) { f.pausa = false; f.res.resume(); }
+          if (f.pausa && f.len < riprendi && f.res) { f.pausa = false; f.res.resume(); }
           x.cb(null, k);
           return;
         }
@@ -996,7 +1003,7 @@ var PontiVideo = (function () {
           try { r.destroy(); } catch (e) {}
           cb(erroreRete('il server ha risposto ' + r.statusCode));
         });
-      }, dim, o.tempoLettura);
+      }, dim, o.tempoLettura, dalMac ? LETTURA_MAC : 0);
       var k = chiaveSorgente(id, msid), l = Object.keys(sorgenti);
       sorgenti[k] = { x: x, ms: ms, at: Date.now() };
       if (l.length >= 20) {
@@ -1485,6 +1492,13 @@ var PontiVideo = (function () {
         return;
       }
       if (resto === 'real4k-mac/apri' && get) { sessioneReal4k(String(q.app || ''), function (r) { rispondi(res, 200, r); }); return; }
+      // flusso/<id>: cosa fa adesso il film a file che si guarda (per il diario: il lettore si e' fermato perche' il server aspetta
+      // il disco o Jellyfin, o perche' i byte non passano nella rete). Solo dai film gia' aperti, nessuna domanda a Jellyfin
+      if ((m = /^flusso\/([0-9a-fA-F]{32})$/.exec(resto)) && get) {
+        var sf = sorgenti[chiaveSorgente(m[1].toLowerCase(), String(q.ms || '').toLowerCase())];
+        rispondi(res, 200, sf && sf.x ? vt.remoto.flusso(sf.x) || {} : {});
+        return;
+      }
       // file/<id>[/<nome.mkv>]: il nome col suo tipo nell'indirizzo, come per le chiavette (alcuni lettori dei TV lo guardano)
       if ((m = /^(file|info|sotto)\/([0-9a-fA-F]{32})(\/[^\/]{1,200})?$/.exec(resto)) && (m[1] === 'file' || !m[3]) && (get || (m[1] === 'file' && req.method === 'HEAD'))) {
         var id = m[2].toLowerCase(), cosa = m[1], ms = String(q.ms || '').toLowerCase();
@@ -1612,6 +1626,26 @@ var PontiVideo = (function () {
       v.dirErrore = num(b.dirErrore, 99);
       v.dirRichieste = num(b.dirRichieste, 100000);
       v.dirHttps = num(b.dirHttps, 100000);
+      // a pezzi (Real4K dal Mac): i pezzi, l'attesa del primo byte (media e massima, ms), i MB/s (minimi e medi), lo scarto tra
+      // audio e video nei pezzi e lo spostamento dell'audio del segmento iniziale (ms, con segno), il massimo di secondi davanti,
+      // le volte col TV pieno, il ritardo massimo della pagina (ms), le riprove dei pezzi; le fermate per causa, quelle con
+      // l'audio piu' avanti del video, le risincronizzazioni
+      v.pezzi = num(b.pezzi, 1000000);
+      v.msByte = num(b.msByte, 600000);
+      v.msByteMax = num(b.msByteMax, 600000);
+      v.mbsMin = num(b.mbsMin, 10000);
+      v.mbs = num(b.mbs, 10000);
+      v.scarto = num(b.scarto, 600000);
+      v.spostaAudio = isFinite(+b.spostaAudio) ? Math.max(-600000, Math.min(600000, Math.round(+b.spostaAudio))) : 0;
+      v.davantiMax = num(b.davantiMax, 86400);
+      v.quota = num(b.quota, 10000000);
+      v.ritardo = num(b.ritardo, 600000);
+      v.riprove = num(b.riprove, 1000000);
+      // (la riserva in memoria usata al massimo, MB; dopo i salti il tempo per ripartire, massimo e medio, ms)
+      v.riserva = num(b.riserva, 1000);
+      v.msSalto = num(b.msSalto, 600000);
+      v.msSaltoMedio = num(b.msSaltoMedio, 600000);
+      ['fJellyfin', 'fRete', 'fTv', 'fSalto', 'fFermo', 'fDisco', 'fAltro', 'soloVideo', 'risinc'].forEach(function (k) { v[k] = num(b[k], 100000); });
       return v;
     }
 

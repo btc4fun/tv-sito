@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.19';
+  var VERSION = '1.3.20';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -5375,6 +5375,9 @@
         }
         var fine = Math.min(dim, z + 1 + (scan ? 64 : 0)); // qualche byte in piu' per decidere l'ultimo blocco
         var lettura = inizio, sospeso = null, sospesoPos = 0, chiuso = false, fd = -1, nf = 0, inAttesa = false, fermataScan = false;
+        // cosa sta facendo adesso questa risposta (l'ultima del film): da quando aspetta il file (il disco, o Jellyfin per un file
+        // remoto) e da quando aspetta che il lettore prenda i byte (la rete). Lo chiede l'app quando il film si ferma (remoto.flusso)
+        var adesso = f.flusso = { legge: 0, aspetta: 0, ultimo: Date.now(), finito: false };
         // i blocchi di questa risposta si riusano: prima ogni lettura ne faceva uno nuovo, e durante un film restavano
         // +58-76 MB di Buffer morti finche' V8 non li raccoglieva. Un blocco torna libero solo quando la rete ha preso tutto
         // quello che e' partito da lui (il callback di res.write: sulla rete lenta i byte aspettano nella coda del socket,
@@ -5403,7 +5406,8 @@
           if (inAttesa) { inAttesa = false; res.removeListener('drain', riparti); finisci(); }
           else if (fs.remoto) finisci();
         }
-        function riparti() { inAttesa = false; giro(); }
+        function riparti() { inAttesa = false; adesso.aspetta = 0; giro(); }
+        function aspettaRete() { inAttesa = true; adesso.aspetta = Date.now(); res.once('drain', riparti); }
         req.on('close', staccato);
         res.on('close', staccato);
         // una pausa lunga non chiude la connessione (in Node 12 il server la chiude dopo 2 minuti di silenzio)
@@ -5414,6 +5418,7 @@
           giro();
         });
         function finisci(rotta) {
+          adesso.finito = true;
           if (fd >= 0) { fs.close(fd, function () {}); fd = -1; }
           if (chiuso) return;
           // meno byte di quelli promessi (file sparito, chiavetta staccata): si chiude la connessione, cosi' il lettore lo
@@ -5429,7 +5434,7 @@
               if (chiuso) { finisci(); return; }
               var avanti;
               try { avanti = pezzo(VUOTO); } catch (ex) { rotto(); return; }
-              if (!avanti) { inAttesa = true; res.once('drain', riparti); return; }
+              if (!avanti) { aspettaRete(); return; }
               giro();
             });
             return;
@@ -5437,11 +5442,14 @@
           if (lettura >= fine && !sospeso) { finisci(); return; }
           var n = Math.min(bloccoFile, fine - lettura);
           if (n <= 0) { manda(sospeso, sospesoPos, true); sospeso = null; finisci(); return; }
+          adesso.legge = Date.now();
           leggiIn(fs, fd, bloccoLibero(n), lettura, n, function (e3, b) {
+            adesso.legge = 0;
+            adesso.ultimo = Date.now();
             if (e3 || !b.length) { if (sospeso) manda(sospeso, sospesoPos, true); finisci(lettura <= z); return; }
             var avanti;
             try { avanti = pezzo(b); } catch (ex) { rotto(); return; }
-            if (!avanti) { inAttesa = true; res.once('drain', riparti); return; }
+            if (!avanti) { aspettaRete(); return; }
             giro();
           });
         }
@@ -6490,7 +6498,13 @@
               res.end(e.codice || 'errore');
             });
           },
-          sotto: function (x, num, da, cb, dopo) { apriF(x, function (e, f) { if (e) cb(e); else sottoF(f, num, da, cb, dopo); }); }
+          sotto: function (x, num, da, cb, dopo) { apriF(x, function (e, f) { if (e) cb(e); else sottoF(f, num, da, cb, dopo); }); },
+          // cosa fa adesso l'ultima risposta del film (per il diario, quando il lettore si ferma): da quanti ms aspetta il file e
+          // da quanti la rete, e da quanti non passa un byte. null se il film non e' aperto
+          flusso: function (x) {
+            var f = aperti[x.percorso], a = f && f.flusso, ora = Date.now();
+            return a ? { lettura: a.legge ? ora - a.legge : 0, attesa: a.aspetta ? ora - a.aspetta : 0, fermo: ora - a.ultimo, finito: a.finito } : null;
+          }
         },
         previsto: radici.length > 0, domain: o.domain || null, log: typeof o.log === 'function' ? o.log : null,
         asyncHooks: o.asyncHooks && typeof o.asyncHooks.createHook === 'function' && typeof o.asyncHooks.executionAsyncId === 'function' ? o.asyncHooks : null,
@@ -15604,6 +15618,9 @@
     // 15-25 Mbps e' quello degli streaming a pagamento (Jellyfin converte in HEVC col chip del Mac; l'HDR resta con jellyfin-ffmpeg)
     // Restano anche le scelte di prima, per le app di prima: 4K 80, 720p 8, e 1080p 20, che l'app usa ancora per le anteprime
     // nella scheda (un trailer 4K HDR accenderebbe l'HDR del TV sotto le scritte)
+    // la lettura in anticipo di un film a file sul Mac: 192 MB in memoria, circa 23 s di un 4K da 67 Mbps (12 s ai suoi picchi di
+    // 130). Un disco che rallenta (un download sullo stesso T7) o Jellyfin che tarda non arrivano al TV, se finiscono prima
+    var LETTURA_MAC = 192 << 20;
     var QUALITA = { orig: { mbps: 0, larg: 0 }, '4k40': { mbps: 40, larg: 3840 }, '4k25': { mbps: 25, larg: 3840 }, '4k15': { mbps: 15, larg: 3840 },
       '1080p8': { mbps: 8, larg: 1920 }, '4k': { mbps: 80, larg: 3840 }, '1080': { mbps: 20, larg: 1920 }, '720': { mbps: 8, larg: 1280 } };
     // la qualita' "Automatica", dal 70% della rete misurata: difende il 4K, che resta tale e cala solo di Mbps fino a 15;
@@ -15654,11 +15671,15 @@
 
     /* ============================================================ il "fs" remoto: un file letto con le domande Range
      * open/read/close come quelli di Node, per la videoteca. Le letture grandi e di seguito (il film che passa) usano UNA
-     * domanda tenuta aperta, con al massimo 4 MB in memoria; le piccole (struttura, Cues, sottotitoli) una domanda breve
-     * di almeno 64 KB, tenuta per le letture vicine. Una lettura alla volta per file aperto. */
-    function fsRemoto(chiedi, dim, tempo) {
+     * domanda tenuta aperta, con al massimo "avanti" byte in memoria (4 MB sul TV; sul Mac molti di piu': una lettura in
+     * anticipo che copre i momenti in cui il disco o Jellyfin rallentano); le piccole (struttura, Cues, sottotitoli) una domanda
+     * breve di almeno 64 KB, tenuta per le letture vicine. Una lettura alla volta per file aperto. */
+    function fsRemoto(chiedi, dim, tempo, avanti) {
       var aperti = {}, prossimo = 1;
       tempo = tempo || 30000;
+      avanti = avanti > (4 << 20) ? avanti : 4 << 20;
+      // (la domanda riparte quando in memoria ne resta 1 MB sul TV, come prima; sul Mac quando manca un quarto, cosi' resta piena)
+      var riprendi = avanti > (4 << 20) ? avanti * 3 / 4 : 1 << 20;
       function chiudiFlusso(s) {
         var f = s.flusso;
         s.flusso = null;
@@ -15689,7 +15710,7 @@
               if (f.morto) return;
               f.parti.push(d);
               f.len += d.length;
-              if (f.len > (4 << 20) && !f.pausa) { f.pausa = true; res.pause(); }
+              if (f.len > avanti && !f.pausa) { f.pausa = true; res.pause(); }
               sveglia(f);
             });
             res.on('end', function () { f.fine = true; sveglia(f); });
@@ -15747,7 +15768,7 @@
             }
             f.len -= k;
             f.pos += k;
-            if (f.pausa && f.len < (1 << 20) && f.res) { f.pausa = false; f.res.resume(); }
+            if (f.pausa && f.len < riprendi && f.res) { f.pausa = false; f.res.resume(); }
             x.cb(null, k);
             return;
           }
@@ -16369,7 +16390,7 @@
             try { r.destroy(); } catch (e) {}
             cb(erroreRete('il server ha risposto ' + r.statusCode));
           });
-        }, dim, o.tempoLettura);
+        }, dim, o.tempoLettura, dalMac ? LETTURA_MAC : 0);
         var k = chiaveSorgente(id, msid), l = Object.keys(sorgenti);
         sorgenti[k] = { x: x, ms: ms, at: Date.now() };
         if (l.length >= 20) {
@@ -16858,6 +16879,13 @@
           return;
         }
         if (resto === 'real4k-mac/apri' && get) { sessioneReal4k(String(q.app || ''), function (r) { rispondi(res, 200, r); }); return; }
+        // flusso/<id>: cosa fa adesso il film a file che si guarda (per il diario: il lettore si e' fermato perche' il server aspetta
+        // il disco o Jellyfin, o perche' i byte non passano nella rete). Solo dai film gia' aperti, nessuna domanda a Jellyfin
+        if ((m = /^flusso\/([0-9a-fA-F]{32})$/.exec(resto)) && get) {
+          var sf = sorgenti[chiaveSorgente(m[1].toLowerCase(), String(q.ms || '').toLowerCase())];
+          rispondi(res, 200, sf && sf.x ? vt.remoto.flusso(sf.x) || {} : {});
+          return;
+        }
         // file/<id>[/<nome.mkv>]: il nome col suo tipo nell'indirizzo, come per le chiavette (alcuni lettori dei TV lo guardano)
         if ((m = /^(file|info|sotto)\/([0-9a-fA-F]{32})(\/[^\/]{1,200})?$/.exec(resto)) && (m[1] === 'file' || !m[3]) && (get || (m[1] === 'file' && req.method === 'HEAD'))) {
           var id = m[2].toLowerCase(), cosa = m[1], ms = String(q.ms || '').toLowerCase();
@@ -16985,6 +17013,26 @@
         v.dirErrore = num(b.dirErrore, 99);
         v.dirRichieste = num(b.dirRichieste, 100000);
         v.dirHttps = num(b.dirHttps, 100000);
+        // a pezzi (Real4K dal Mac): i pezzi, l'attesa del primo byte (media e massima, ms), i MB/s (minimi e medi), lo scarto tra
+        // audio e video nei pezzi e lo spostamento dell'audio del segmento iniziale (ms, con segno), il massimo di secondi davanti,
+        // le volte col TV pieno, il ritardo massimo della pagina (ms), le riprove dei pezzi; le fermate per causa, quelle con
+        // l'audio piu' avanti del video, le risincronizzazioni
+        v.pezzi = num(b.pezzi, 1000000);
+        v.msByte = num(b.msByte, 600000);
+        v.msByteMax = num(b.msByteMax, 600000);
+        v.mbsMin = num(b.mbsMin, 10000);
+        v.mbs = num(b.mbs, 10000);
+        v.scarto = num(b.scarto, 600000);
+        v.spostaAudio = isFinite(+b.spostaAudio) ? Math.max(-600000, Math.min(600000, Math.round(+b.spostaAudio))) : 0;
+        v.davantiMax = num(b.davantiMax, 86400);
+        v.quota = num(b.quota, 10000000);
+        v.ritardo = num(b.ritardo, 600000);
+        v.riprove = num(b.riprove, 1000000);
+        // (la riserva in memoria usata al massimo, MB; dopo i salti il tempo per ripartire, massimo e medio, ms)
+        v.riserva = num(b.riserva, 1000);
+        v.msSalto = num(b.msSalto, 600000);
+        v.msSaltoMedio = num(b.msSaltoMedio, 600000);
+        ['fJellyfin', 'fRete', 'fTv', 'fSalto', 'fFermo', 'fDisco', 'fAltro', 'soloVideo', 'risinc'].forEach(function (k) { v[k] = num(b[k], 100000); });
         return v;
       }
 
@@ -17304,7 +17352,7 @@
   })();
   /* </ponti:generato> */
   /* <impronta:generato> l'impronta di videoteca.js e ponti-video.js (prove/incorpora_videoteca.py): non modificare qui */
-  var IMPRONTA_MAC = '936b42928d03ce0c';
+  var IMPRONTA_MAC = 'ce5858cee3b8eaf6';
   /* </impronta:generato> */
   var pontiVideo = PontiVideo.crea({ http: http, https: require('https'), dgram: require('dgram'), url: urlLib, crypto: require('crypto'),
     // Real4K dal Mac: il ponte del Mac apre una sessione solo se ha lo stesso codice del servizio

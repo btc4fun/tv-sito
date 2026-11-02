@@ -45,7 +45,7 @@
 
   var $ = UI.$;
   var DEMO = UI.DEMO;
-  var VERSIONE = '1.3.19';
+  var VERSIONE = '1.3.20';
 
   /* ============================================================ dati */
 
@@ -305,6 +305,17 @@
   }
   function mieApp() {
     return StoreDati.mie.app().map(function (a) { return appWebItem(StoreDati.perRiquadro(a.riquadro) || { riquadro: a.riquadro, voce: a.voce }, 'mia'); });
+  }
+  // le app ufficiali installate che si aprono come sito ("sito" nel catalogo: Disney+): per i siti valgono come i tuoi siti
+  // col blocco completo (main.js: video a tutto schermo come in un'app, niente link verso altri siti; le liste di filtri non
+  // le bloccano mai). Non sono riquadri del "+": vanno solo al servizio
+  function sitiDelloStore() {
+    var out = [];
+    StoreDati.ufficiale.installate().forEach(function (x) {
+      var p = StoreDati.perRiquadro('ws:' + x.id);
+      if (p && p.stato === 'ok' && p.voce && typeof p.voce.sito === 'string' && p.voce.sito) out.push({ url: p.voce.sito, blocco: 'completo' });
+    });
+    return out;
   }
   function primaFrase(t) {
     t = String(t || '');
@@ -1649,7 +1660,7 @@
     if (DEMO || !ripristinoFatto) return; // si sincronizza appena finito il ripristino
     var out = {
       url: opt('url'), nomeSito: opt('nomeSito'),
-      siti: altriSiti(), // gli altri tuoi siti: nei siti valgono come il tuo (main.js e liste di filtri)
+      siti: altriSiti().concat(sitiDelloStore()), // gli altri tuoi siti e le app che si aprono come sito: nei siti valgono come il tuo (main.js e liste di filtri)
       bloccoPubblicita: !!opt('bloccoPubblicita'), bloccoAvanzato: !!opt('bloccoAvanzato'), schermoInteroAutomatico: !!opt('schermoInteroAutomatico'),
       apriHomeAllAccensione: !!opt('apriHomeAllAccensione'),
       riprendiAltroSito: !!opt('riprendiAltroSito'), // Continua a guardare (la decide il servizio)
