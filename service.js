@@ -213,6 +213,9 @@
       out.fogliAdottati = !!(w.Document && 'adoptedStyleSheets' in w.Document.prototype) && typeof w.CSSStyleSheet === 'function';
       out.abort = typeof w.AbortController === 'function'; // Chromium 66
       out.puntatore = typeof w.PointerEvent === 'function'; // Chromium 55
+      // l'attivazione dell'utente dura qualche secondo dopo un tasto (Chromium 72, i TV dal 2020): prima vale solo nell'istante
+      // del tasto, e un campo che prende il fuoco un attimo dopo puo' non aprire la tastiera del TV (la lente dei siti, 22/11)
+      out.attivazione = !!(w.navigator && w.navigator.userActivation);
       out.proxy = typeof w.Proxy === 'function'; // Chromium 49
       // JavaScript moderno (classi, frecce, let, Map, Promise): Chromium 49, i TV dal 2018. Lo chiedono le app dello store
       // nei loro requisiti. Si prova dalle funzioni che ci sono, senza eval (i siti con CSP la vietano)
@@ -543,7 +546,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.23';
+  var VERSION = '1.3.24';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'

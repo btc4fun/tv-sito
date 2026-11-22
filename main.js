@@ -180,6 +180,9 @@
       out.fogliAdottati = !!(w.Document && 'adoptedStyleSheets' in w.Document.prototype) && typeof w.CSSStyleSheet === 'function';
       out.abort = typeof w.AbortController === 'function'; // Chromium 66
       out.puntatore = typeof w.PointerEvent === 'function'; // Chromium 55
+      // l'attivazione dell'utente dura qualche secondo dopo un tasto (Chromium 72, i TV dal 2020): prima vale solo nell'istante
+      // del tasto, e un campo che prende il fuoco un attimo dopo puo' non aprire la tastiera del TV (la lente dei siti, 22/11)
+      out.attivazione = !!(w.navigator && w.navigator.userActivation);
       out.proxy = typeof w.Proxy === 'function'; // Chromium 49
       // JavaScript moderno (classi, frecce, let, Map, Promise): Chromium 49, i TV dal 2018. Lo chiedono le app dello store
       // nei loro requisiti. Si prova dalle funzioni che ci sono, senza eval (i siti con CSP la vietano)
@@ -504,7 +507,7 @@
   ProfiloTV.ripara(window);
   var MOTORE = ProfiloTV.motore(window);
 
-  var VERSIONE = '1.3.23';
+  var VERSIONE = '1.3.24';
   var SERVIZIO = 'http://127.0.0.1:8090';
   var IN_FRAME = false;
   try { IN_FRAME = window.top !== window.self; } catch (e) { IN_FRAME = true; }
@@ -2257,6 +2260,12 @@
     'background:#15171c;color:#f4f5f7;font:500 24px/1.3 sans-serif;box-shadow:0 30px 80px rgba(0,0,0,.6)}' +
     '#hometv-pannello h2{margin:0 0 6px;font-size:30px;font-weight:700}' +
     '#hometv-pannello p{margin:0 0 18px;color:rgba(232,235,242,.62);font-size:21px}' +
+    '#hometv-cerca{position:fixed;left:50%;top:12%;z-index:2147483647;width:880px;max-width:86vw;margin-left:-440px;padding:30px 34px 24px;' +
+    'border-radius:28px;background:#15171c;color:#f4f5f7;font:500 24px/1.3 sans-serif;box-shadow:0 30px 90px rgba(0,0,0,.65);box-sizing:border-box}' +
+    '#hometv-cerca h2{margin:0 0 16px;font-size:30px;font-weight:700;letter-spacing:-.01em}' +
+    '#hometv-cerca input{display:block;width:100%;box-sizing:border-box;margin:0;padding:18px 24px;border:0;border-radius:999px;outline:none;' +
+    'background:#f4f5f7;color:#0b0c10;font:600 30px/1.2 sans-serif;box-shadow:0 0 0 4px rgba(59,130,246,.55)}' +
+    '#hometv-cerca p{margin:16px 6px 0;color:rgba(232,235,242,.6);font-size:20px}' +
     '#hometv-pannello div{padding:16px 22px;border-radius:999px;margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}' +
     '#hometv-pannello div.hometv-sel{background:linear-gradient(120deg,#19d3b7,#3b82f6 55%,#8b5cf6);color:#fff;box-shadow:0 10px 30px rgba(59,130,246,.4)}' +
     '#hometv-pannello span{float:right;opacity:.7}' +
@@ -7682,7 +7691,7 @@
     if (el.tagName === 'INPUT' && el.type === 'range') return true;
     // la lente (o "Cerca") di un sito: il campo vuoto accanto si sceglie senza clic (niente ricerca vuota); se no, dopo il
     // clic, il campo che compare prende il fuoco anche se il sito non glielo da'
-    if (primaDellaLente(el)) return true;
+    if (primaDellaLente(el, !daTelefono)) return true;
     // tutto il resto: un clic come col mouse, poi si guarda se si e' aperta una tendina
     var naviga = el.tagName === 'A' && /^https?:/i.test(el.href || '') && el.href.split('#')[0] !== location.href.split('#')[0] &&
       !el.hasAttribute('aria-haspopup') && !el.hasAttribute('aria-expanded');
@@ -8554,17 +8563,109 @@
     });
   }
   // prima del clic sulla lente: il campo vuoto accanto (allora niente clic), o la pagina nuova da ricordare
-  function primaDellaLente(el) {
+  function primaDellaLente(el, daTelecomando) {
     el = controlloDi(el);
     if (!sembraLente(el)) return false;
     var c = campoAccanto(el);
     if (c) { scegliCampo(c); return true; }
+    // TV vecchi: la casella di Home TV, aperta nell'istante del tasto (col telefono non serve la tastiera del TV). Non se
+    // nel modulo della lente c'e' gia' un testo scritto: allora la lente cerca, come sempre
+    if (daTelecomando && !MOTORE.attivazione && lenteVera(el) && !testoNelModulo(el) && apriCasellaCerca(el)) return true;
     var a = el.closest ? el.closest('a[href]') : null;
     if (a && /^https?:/i.test(a.href || '') && a.href.split('#')[0] !== location.href.split('#')[0]) {
       try { sessionStorage.setItem('hometv-dopo-lente', String(Date.now())); } catch (e) {}
     } else seguiLente(el);
     return false;
   }
+  /* La lente sui TV vecchi (richiesta del 22/11: "deve funzionare su qualsiasi TV"). Dove l'attivazione del tasto vale
+   * solo nell'istante (Chromium prima del 72: ProfiloTV, attivazione), il campo che il sito mostra un attimo dopo l'OK puo'
+   * prendere il fuoco senza che si apra la tastiera del TV. Li' l'OK sulla lente apre subito la casella di Home TV "Cerca
+   * su ...", col fuoco dato nello stesso istante del tasto, e la tastiera si apre sempre. Alla conferma (OK, Fatto o
+   * Invio dal telefono) si preme la lente del sito, il testo va nel suo campo e si cerca; se la lente porta a una pagina
+   * di ricerca, il testo la segue (dopoLaLente). Indietro chiude la casella. */
+  var casella = null;
+  // per la casella solo una lente vera: lei stessa o la sua icona lo dicono (non chi la contiene, come una scheda dentro i
+  // risultati di una ricerca), piccola e con poco testo
+  function lenteVera(el) {
+    var r = el.getBoundingClientRect(), t = testoBreve(el), i, d;
+    if (r.width > 420 || r.height > 160 || t.length > 20) return false;
+    if (RE_LENTE.test(nomiDi(el)) || (el.tagName === 'A' && RE_LENTE.test(el.getAttribute('href') || '')) || (t && RE_LENTE.test(t))) return true;
+    try { d = el.querySelectorAll('svg, i, img, use, span'); } catch (e) { d = []; }
+    for (i = 0; i < d.length && i < 12; i++) {
+      if (RE_LENTE.test(nomiDi(d[i])) || RE_LENTE.test(d[i].getAttribute('href') || d[i].getAttribute('xlink:href') || d[i].getAttribute('src') || '')) return true;
+    }
+    return !t && sembraLente(el); // un'icona senza testo: basta chi la contiene da vicino
+  }
+  function apriCasellaCerca(lente) {
+    chiudiCasellaCerca(false);
+    var dove = contenitore() || document.body;
+    if (!dove) return false;
+    var box = document.createElement('div'), h = document.createElement('h2'), campo = document.createElement('input'), p = document.createElement('p');
+    var nome = 'Cerca su ' + HOST.replace(/^www\./, '');
+    box.id = 'hometv-cerca';
+    h.textContent = nome;
+    campo.id = 'hometv-cerca-campo';
+    campo.type = 'search';
+    campo.setAttribute('autocomplete', 'off');
+    campo.setAttribute('spellcheck', 'false');
+    campo.setAttribute('enterkeyhint', 'search');
+    campo.setAttribute('aria-label', nome);
+    p.textContent = 'Scrivi con la tastiera del TV o dal telefono \u00b7 OK cerca \u00b7 Indietro chiude';
+    box.appendChild(h);
+    box.appendChild(campo);
+    box.appendChild(p);
+    dove.appendChild(box);
+    casella = { box: box, campo: campo, lente: lente };
+    // OK o Fatto (col testo), Invio dal telefono (premiInvio): si cerca
+    ascoltaSicuro(campo, 'keydown', function (ev) {
+      if ((ev.keyCode === 13 || ev.keyCode === 65376) && String(campo.value || '').replace(/\s+/g, '')) {
+        try { ev.preventDefault(); } catch (e) {}
+        confermaCasella();
+      }
+    });
+    try { campo.focus(); } catch (e) { chiudiCasellaCerca(false); return false; }
+    pianificaCampo();
+    return true;
+  }
+  function chiudiCasellaCerca(allaLente) {
+    if (!casella) return;
+    var c = casella;
+    casella = null;
+    try { if (c.box.parentNode) c.box.parentNode.removeChild(c.box); } catch (e) {}
+    if (allaLente && c.lente && c.lente.isConnected) setFocus(c.lente, true);
+    pianificaCampo();
+  }
+  function confermaCasella() {
+    if (!casella) return;
+    var t = String(casella.campo.value || '').replace(/^\s+|\s+$/g, '').slice(0, 500), lente = casella.lente;
+    chiudiCasellaCerca(false);
+    if (t) cercaConLente(lente, t);
+  }
+  // il testo nella ricerca del sito: si preme la lente, si aspetta il campo, lo si riempie e si cerca
+  function cercaConLente(lente, t) {
+    var a = lente.closest ? lente.closest('a[href]') : null;
+    if (a && /^https?:/i.test(a.href || '') && a.href.split('#')[0] !== location.href.split('#')[0]) {
+      try { sessionStorage.setItem('hometv-testo-dopo', JSON.stringify({ t: t, invio: true, at: Date.now(), host: location.host })); } catch (e) {}
+      cliccaDavvero(lente);
+      return;
+    }
+    var radice = lente.isConnected ? radiceDi(lente) : document, prima = campiVisibili(radice);
+    if (lente.isConnected) cliccaDavvero(lente);
+    aspettaCampo(prima, radice, false, false, function (c) {
+      c = c || trovaCampoRicerca();
+      if (!c) { toast('Non trovo la ricerca del sito: prova dal telefono, con Scrivi sul TV', 4500); return; }
+      scriviIn(c, t, true);
+    });
+  }
+  function casellaAperta() { return !!casella && casella.box.isConnected; }
+  function testoNelModulo(lente) {
+    var form = lente.closest ? lente.closest('form') : null, l, i;
+    if (!form) return false;
+    try { l = form.querySelectorAll('input, textarea'); } catch (e) { return false; }
+    for (i = 0; i < l.length; i++) if (campoDiTesto(l[i]) && String(l[i].value || '').replace(/\s+/g, '')) return true;
+    return false;
+  }
+
   // testo dal telefono senza un campo scelto: si apre la ricerca del sito e il testo ci arriva. Mentre si apre, il testo
   // piu' recente aspetta (le lettere arrivano una alla volta, poi Invio)
   var ricercaInApertura = 0, testoInAttesa = null, senzaLenteA = 0;
@@ -8938,6 +9039,12 @@
 
     if (tendina) return tastoTendina(azione);
 
+    // la casella "Cerca su ..." (TV vecchi): Indietro la chiude, su e giu' non portano via il fuoco
+    if (casellaAperta()) {
+      if (azione === 'indietro' || azione === 'stop') { chiudiCasellaCerca(true); return true; }
+      if (azione === 'su' || azione === 'giu') { try { casella.campo.focus(); } catch (e) {} return true; }
+    }
+
     if (pannelloAperto()) {
       if (azione === 'su') pannelloSel = Math.max(0, pannelloSel - 1);
       else if (azione === 'giu') pannelloSel = Math.min(voci.length - 1, pannelloSel + 1);
@@ -8995,7 +9102,11 @@
         if (fsEl) { playPausa(); break; } // a schermo intero (lettore in un riquadro): play/pausa
         // la cosa evidenziata; ma se il sito ha spostato lui la selezione su un suo pulsante, quello
         var scelto = corrente && corrente.isConnected ? corrente : null;
-        if (a && a !== document.body && a !== document.documentElement && a !== scelto && a.tagName !== 'IFRAME' &&
+        // TV vecchi: la lente dentro la parte "shadow" di un componente (li' il fuoco e' del componente) apre anche lei la
+        // casella "Cerca su ..."
+        var inOmbra = MOTORE.attivazione ? null : attivoVero();
+        if (inOmbra && inOmbra !== a && inOmbra.nodeType === 1 && sembraLente(inOmbra)) scelto = inOmbra;
+        else if (a && a !== document.body && a !== document.documentElement && a !== scelto && a.tagName !== 'IFRAME' &&
           !(scelto && a.contains(scelto)) && a.matches && a.matches(SEL_NAV) &&
           areaVisibile(a) < window.innerWidth * window.innerHeight * 0.5) {
           scelto = a;
@@ -9063,7 +9174,15 @@
   // subito alla pressione. Nel lettore TV, nei riquadri, nelle caselle e nei nostri elenchi OK resta subito
   var okGiu = 0, okTimer = null, keyupOk = false;
   try { keyupOk = localStorage.getItem('hometv-keyup-ok') === '1'; } catch (e) {}
-  function okAlRilascio() { return keyupOk && !IN_FRAME && !fsEl && !tendina && !pannelloAperto() && !campoDiTesto(attivoVero()); }
+  function okAlRilascio() { return keyupOk && !IN_FRAME && !fsEl && !tendina && !pannelloAperto() && !campoDiTesto(attivoVero()) && !okSullaLente(); }
+  // sui TV vecchi l'OK sulla lente vale subito, alla pressione: li' il rilascio del tasto non conta come tasto premuto da te,
+  // e la casella "Cerca su ..." aperta al rilascio potrebbe non aprire la tastiera del TV (22/11)
+  function okSullaLente() {
+    if (MOTORE.attivazione) return false;
+    var a = attivoVero(), c = corrente && corrente.isConnected ? corrente : a;
+    if (a && a !== document.body && a !== c && a.matches && a.matches(SEL_NAV)) c = a;
+    try { return !!c && c.nodeType === 1 && sembraLente(controlloDi(c)); } catch (e) { return false; }
+  }
   function okSu() { okGiu = 0; clearTimeout(okTimer); okTimer = null; }
 
   window.addEventListener('keydown', function (ev) {

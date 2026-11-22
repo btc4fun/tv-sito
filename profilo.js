@@ -161,6 +161,9 @@ var ProfiloTV = (function () {
     out.fogliAdottati = !!(w.Document && 'adoptedStyleSheets' in w.Document.prototype) && typeof w.CSSStyleSheet === 'function';
     out.abort = typeof w.AbortController === 'function'; // Chromium 66
     out.puntatore = typeof w.PointerEvent === 'function'; // Chromium 55
+    // l'attivazione dell'utente dura qualche secondo dopo un tasto (Chromium 72, i TV dal 2020): prima vale solo nell'istante
+    // del tasto, e un campo che prende il fuoco un attimo dopo puo' non aprire la tastiera del TV (la lente dei siti, 22/11)
+    out.attivazione = !!(w.navigator && w.navigator.userActivation);
     out.proxy = typeof w.Proxy === 'function'; // Chromium 49
     // JavaScript moderno (classi, frecce, let, Map, Promise): Chromium 49, i TV dal 2018. Lo chiedono le app dello store
     // nei loro requisiti. Si prova dalle funzioni che ci sono, senza eval (i siti con CSP la vietano)
