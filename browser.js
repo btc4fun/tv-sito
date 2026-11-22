@@ -32,7 +32,7 @@
   var stage = $('stage'), searchEl = $('search'), input = $('q'), homeBtn = $('homebtn');
   var favsEl = $('favs'), histEl = $('history'), countEl = $('hist-count');
   var tabsEl = $('tabs'), tabsBlocco = $('tabs-blocco'), tabsCount = $('tabs-count');
-  var btnSchede = $('btn-schede'), btnNuova = $('btn-nuova'), nSchede = $('n-schede');
+  var btnSchede = $('btn-schede'), btnNuova = $('btn-nuova'), btnChiudi = $('btn-chiudi'), nSchede = $('n-schede');
   var galEl = $('galleria'), galGriglia = $('g-griglia'), galConta = $('g-conta'), galVista = $('g-vista');
 
   /* ============================================================ dati */
@@ -157,6 +157,28 @@
   var NUOVA_HTML = '<div class="g-card g-nuova"><div class="g-img">' +
     '<svg viewBox="0 0 48 48" aria-hidden="true"><path d="M22 10h4v12h12v4H26v12h-4V26H10v-4h12z"/></svg></div>' +
     '<div class="g-testo"><strong>Nuova scheda</strong><span>Cerca o scrivi un indirizzo</span></div></div>';
+  // tutte le schede chiuse in un colpo (richiesta del 22/11): l'ultima carta della galleria, e il tondo con la X accanto a + 
+  var CHIUDI_HTML = '<div class="g-card g-nuova g-chiudi"><div class="g-img">' +
+    '<svg viewBox="0 0 48 48" aria-hidden="true"><path d="M13.4 10.6 24 21.2l10.6-10.6 2.8 2.8L26.8 24l10.6 10.6-2.8 2.8L24 26.8 13.4 37.4l-2.8-2.8L21.2 24 10.6 13.4z"/></svg></div>' +
+    '<div class="g-testo"><strong>Chiudi tutte</strong><span>Tutte le schede aperte</span></div></div>';
+  function chiudiTutte() {
+    if (!schede.length) return;
+    UI.openSheet({
+      title: schede.length === 1 ? 'Chiudere la scheda aperta?' : 'Chiudere tutte le ' + schede.length + ' schede?',
+      subtitle: 'Preferiti e cronologia restano.',
+      items: [
+        { label: 'Chiudi tutte', action: function () {
+          cambiaScheda({ azione: 'chiudiTutte' }).then(function () {
+            if (gal) chiudiGalleria(true);
+            draw(false);
+            focusArea('search');
+            UI.toast('Schede chiuse');
+          });
+        } },
+        { label: 'Annulla' }
+      ]
+    });
+  }
 
   function favHTML(p) {
     var host = UI.hostOf(p.url);
@@ -199,6 +221,8 @@
     tabsBlocco.hidden = !schede.length;
     tabsCount.textContent = schede.length ? schede.length + (schede.length === 1 ? ' scheda' : ' schede') + ' \u00b7 tieni premuto OK per chiuderle' : '';
     nSchede.textContent = schede.length ? String(schede.length) : '';
+    btnChiudi.hidden = !schede.length;
+    if (cur && cur.area === 'chiudi' && btnChiudi.hidden) focusArea('nuova');
     if (gal) disegnaGalleria();
     html = '';
     for (var i = 0; i < preferiti.length; i++) html += favHTML(preferiti[i]);
@@ -240,6 +264,7 @@
     if (area === 'search') return searchEl;
     if (area === 'schede') return btnSchede;
     if (area === 'nuova') return btnNuova;
+    if (area === 'chiudi') return btnChiudi.hidden ? null : btnChiudi;
     if (area === 'tab') return tabsEl.children[i];
     if (area === 'fav') return favsEl.children[i];
     var rows = histEl.querySelectorAll('.h-row');
@@ -281,9 +306,9 @@
     if (!cur) return;
     var a = cur.area, i = cur.i;
     if (a === 'top') { if (dir === 'down') focusArea('search'); return; }
-    // la riga della ricerca: la casella, poi i pulsanti Schede e + (nuova scheda)
-    if (a === 'search' || a === 'schede' || a === 'nuova') {
-      var riga = ['search', 'schede', 'nuova'], k = riga.indexOf(a);
+    // la riga della ricerca: la casella, poi i pulsanti Schede, + (nuova scheda) e X (chiudi tutte, se ci sono schede)
+    if (a === 'search' || a === 'schede' || a === 'nuova' || a === 'chiudi') {
+      var riga = btnChiudi.hidden ? ['search', 'schede', 'nuova'] : ['search', 'schede', 'nuova', 'chiudi'], k = riga.indexOf(a);
       if (dir === 'left' && k > 0) focusArea(riga[k - 1]);
       else if (dir === 'right' && k < riga.length - 1) focusArea(riga[k + 1]);
       else if (dir === 'up') focusArea('top');
@@ -368,7 +393,7 @@
   function disegnaGalleria() {
     var html = '';
     for (var i = 0; i < schede.length; i++) html += cardHTML(schede[i]);
-    galGriglia.innerHTML = html + NUOVA_HTML;
+    galGriglia.innerHTML = html + NUOVA_HTML + (schede.length ? CHIUDI_HTML : '');
     galConta.textContent = schede.length ? '\u00b7 ' + schede.length : '';
     selezionaCarta(gal.i);
   }
@@ -386,6 +411,7 @@
     UI.setTransform(galGriglia, 'translate3d(0,' + (-gal.y) + 'px,0)');
   }
   function apriCarta(i) {
+    if (i === schede.length + 1) { chiudiTutte(); return; }
     if (i >= schede.length) { nuovaScheda(); return; }
     riapriScheda(schede[i]);
   }
@@ -571,6 +597,7 @@
     if (cur.area === 'search') { try { input.focus(); } catch (e) {} return; }
     if (cur.area === 'schede') { apriGalleria(); return; }
     if (cur.area === 'nuova') { nuovaScheda(); return; }
+    if (cur.area === 'chiudi') { chiudiTutte(); return; }
     if (cur.area === 'tab') { riapriScheda(schede[cur.i]); return; }
     if (cur.area === 'fav') {
       if (cur.el.getAttribute('data-add')) { aggiungiSito(); return; }
@@ -647,6 +674,7 @@
   homeBtn.addEventListener('click', goHome);
   btnSchede.addEventListener('click', function () { focusArea('schede'); apriGalleria(); });
   btnNuova.addEventListener('click', function () { nuovaScheda(); });
+  btnChiudi.addEventListener('click', function () { focusArea('chiudi'); chiudiTutte(); });
   // galleria: col mouse o col puntatore del telefono si sceglie e si apre; tasto destro (o tocco lungo) per le opzioni
   function cartaDi(t) {
     while (t && t !== galEl && !(t.classList && t.classList.contains('g-card'))) t = t.parentNode;
@@ -705,6 +733,8 @@
     testo: function (t, invio) { input.value = t; if (invio) submit(); },
     link: function (u) { go(u, UI.hostOf(u)); },
     schede: function (nuova) { if (nuova) nuovaScheda(); else apriGalleria(); },
+    // schede chiuse dal telefono: si ridisegna
+    schedeCambiate: function () { carica(false); },
     home: goHome
   });
 })();

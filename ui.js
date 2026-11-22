@@ -723,6 +723,9 @@ var UI = (function () {
       } else if (e.tipo === 'video') {
         // la barra del video sul telefono (vai, salta, play, pausa): lo Store la passa all'app aperta (l'app Video)
         if (gestori.video) gestori.video(e);
+      } else if (e.tipo === 'schedeCambiate') {
+        // schede del browser chiuse dal telefono (22/11): la pagina che le mostra si ridisegna
+        if (gestori.schedeCambiate) gestori.schedeCambiate();
       } else if (e.tipo === 'schede' || e.tipo === 'nuovaScheda') {
         // le schede del browser (dal telefono): la galleria, o una scheda nuova
         if (sheetKeys) closeSheet();

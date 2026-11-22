@@ -504,7 +504,7 @@
   ProfiloTV.ripara(window);
   var MOTORE = ProfiloTV.motore(window);
 
-  var VERSIONE = '1.3.22';
+  var VERSIONE = '1.3.23';
   var SERVIZIO = 'http://127.0.0.1:8090';
   var IN_FRAME = false;
   try { IN_FRAME = window.top !== window.self; } catch (e) { IN_FRAME = true; }
@@ -1300,15 +1300,40 @@
   }
   // si esce dal sito: un attimo ai riquadri, poi la pagina si svuota subito prima di andare (anche di quello che il sito
   // ha scritto intanto)
+  // (22/11: l'uscita arrivava a 1,5 s e sul TV sembrava tutto piu' lento. Ora 120 ms ai riquadri e al massimo 0,6 s in
+  // tutto: database e cache gia' chiesti finiscono anche dopo, e quelli rimasti li toglie l'arrivo dopo, per nome)
   function esciSenzaMemoria(vai) {
     if (!senzaMemoria || IN_FRAME) { vai(); return; }
-    var fatto = false;
-    function va() { if (!fatto) { fatto = true; vai(); } }
+    var fatto = false, da = Date.now();
+    function va() { if (fatto) return; fatto = true; riferisciMemoria({ q: 'uscita', esito: 'svuotato', ms: Date.now() - da }); vai(); }
     svuotaRiquadri(window);
-    setTimeout(function () { svuotaPerUscita(va); }, 200);
-    setTimeout(va, 1500); // mai bloccati qui
+    setTimeout(function () { svuotaPerUscita(va); }, 120);
+    setTimeout(va, 600); // mai bloccati qui
   }
-  if (memoriaDelSito() === 'ricarica') return;
+  /* Diagnosi (22/11, "se esco e rientro la memoria rimane"): ogni pagina dice al servizio cosa ha deciso (sito senza
+   * memoria o no, visita nuova o la stessa, quante voci e cookie ha tolto, se si e' ricaricata) e quanto dura l'uscita.
+   * Le ultime si leggono da 8091/tv (campo memoriaSiti): cosi' sul TV vero si vede perche' un sito ricorda */
+  function riferisciMemoria(e) {
+    if (VISITA === null) return; // servizio muto o vecchio: niente da dire
+    try {
+      e.host = HOST; e.cima = cimaHost(); e.senza = SENZA_MEMORIA; e.riquadro = IN_FRAME;
+      var corpo = JSON.stringify(e), u = SERVIZIO + '/api/visita/esito';
+      if (navigator.sendBeacon && navigator.sendBeacon(u, corpo)) return;
+      (origFetchListe || window.fetch)(u, { method: 'POST', body: corpo })['catch'](function () {});
+    } catch (x) {}
+  }
+  var vistaPrima = null;
+  try { vistaPrima = localStorage.getItem('hometv-visita'); } catch (e) {}
+  var esitoAvvio = memoriaDelSito();
+  // le pagine (e i riquadri che hanno tolto qualcosa): una riga per pagina, dopo il caricamento (la ricarica subito)
+  (function () {
+    var e = { q: 'entrata', esito: dentroCasa() || MEMORIA_DI_SERVIZI.test(HOST) ? 'escluso' : !SENZA_MEMORIA ? 'ricorda' :
+      esitoAvvio === 'ricarica' ? 'ricarica' : vistaPrima === VISITA ? 'stessa-visita' : 'svuotato' };
+    if (IN_FRAME && e.esito !== 'ricarica' && esitoAvvio !== 'tolta') return;
+    if (esitoAvvio === 'ricarica') { riferisciMemoria(e); return; }
+    setTimeout(function () { riferisciMemoria(e); }, 1500);
+  })();
+  if (esitoAvvio === 'ricarica') return;
 
   // Arrivati da un altro sito (pubblicita' al click, reindirizzamenti) su una pagina
   // che le liste conoscono come pubblicitaria: la si ferma subito e si torna indietro.

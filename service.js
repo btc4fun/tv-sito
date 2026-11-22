@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.22';
+  var VERSION = '1.3.23';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -654,7 +654,9 @@
     // siti senza memoria (richiesta del 22/11): il numero della visita ai siti e se il sito chiesto e' un'app sito che
     // riparte da zero. Il numero lo cambia la home quando si apre (e un sito quando il telefono manda un link): un sito
     // senza memoria che lo vede cambiato riparte da zero. Nessun dato, solo un numero e un si'/no
-    'GET /api/visita': true
+    'GET /api/visita': true,
+    // la diagnosi dei siti senza memoria (22/11): cosa ha deciso ogni pagina (solo nomi dei siti e numeri)
+    'POST /api/visita/esito': true
   };
   // la visita nuova la apre solo la home (POST /api/visita con la sua chiave) o il servizio quando consegna un link del
   // telefono: un sito non puo' far ripartire da zero un altro sito mentre lo usi
@@ -680,6 +682,27 @@
       if (h && (h === host || visti.stessoSito(h, host))) return true;
     }
     return false;
+  }
+  // le ultime 20 decisioni delle pagine (main.js, riferisciMemoria): lette da 8091/tv, campo memoriaSiti
+  var esitiMemoria = [];
+  function annotaEsitoMemoria(b) {
+    if (!b || typeof b !== 'object') return;
+    var nome = function (h) { h = String(h || '').toLowerCase(); return /^[a-z0-9.\-:\[\]]{1,120}$/.test(h) ? h : ''; };
+    var numero = function (n) { n = Number(n); return isFinite(n) && n >= 0 ? Math.min(Math.round(n), 999999) : 0; };
+    // i nomi dei siti solo per quelli senza memoria (le app sito che ripartono da zero): 8091/tv si legge da tutta la rete di
+    // casa, e gli altri siti visitati non sono affari suoi
+    var senza = b.senza === true;
+    esitiMemoria.push({ t: Date.now(), q: b.q === 'uscita' ? 'uscita' : 'entrata', esito: String(b.esito || '').replace(/[^a-z-]/g, '').slice(0, 20),
+      host: senza ? nome(b.host) : '', cima: senza ? nome(b.cima) : '', senza: senza, riquadro: b.riquadro === true, ms: numero(b.ms), visita: visitaSiti });
+    if (esitiMemoria.length > 20) esitiMemoria.splice(0, esitiMemoria.length - 20);
+  }
+  function statoMemoriaSiti() {
+    var siti = [];
+    if (typeof prefs.url === 'string' && prefs.url) siti.push({ host: hostLink(prefs.url), memoria: prefs.memoriaSito === 'ricorda' ? 'ricorda' : 'cancella', principale: true });
+    (Array.isArray(prefs.siti) ? prefs.siti : []).forEach(function (x) {
+      if (x && typeof x.url === 'string') siti.push({ host: hostLink(x.url), memoria: x.memoria === 'cancella' ? 'cancella' : 'ricorda' });
+    });
+    return { visita: visitaSiti, siti: siti.slice(0, 20), esiti: esitiMemoria.slice() };
   }
   function rispostaVisita(query) {
     return { visita: visitaSiti, senzaMemoria: visitaSenza || senzaMemoria(query && (query.cima || query.host)) };
@@ -1477,6 +1500,10 @@
       return;
     }
     if (route === 'GET /api/visita') { sendJson(req, res, 200, rispostaVisita(url.query), true); return; }
+    if (route === 'POST /api/visita/esito') {
+      readBody(req, 4096).then(function (b) { annotaEsitoMemoria(b); sendJson(req, res, 200, { ok: true }, true); })['catch'](fail(req, res, 400, true));
+      return;
+    }
     if (route === 'POST /api/visita') {
       readBody(req).then(function (b) {
         sendJson(req, res, 200, { visita: nuovaVisita(b.senzaMemoria === true) });
@@ -1986,7 +2013,10 @@
 
   function inviaRemoto(msg) {
     if (!rem.pronto || !rem.sock) {
-      if (rem.stato === 'negato' || rem.stato === 'assente') return false;
+      // senza il si' del TV un tasto non chiede il permesso: lo chiede solo "Chiedi il permesso" (dalla Home di Samsung,
+      // vedi aspettaCasa). Con Home TV davanti il TV rifiuta subito e il tasto si perdeva: sul TV di casa 22 richieste
+      // rifiutate in 1-3 s, a raffica, e il telefono piu' lento (22/11). Col si' ci si ricollega (col codice del TV)
+      if (rem.stato !== 'ok') return false;
       rem.coda.push({ msg: msg, at: Date.now() });
       if (rem.coda.length > 4) rem.coda.shift();
       apriRemoto();
@@ -17602,14 +17632,16 @@
     if (tipo === 'tasto') {
       var k = body.tasto;
       if (!TASTI_TELEFONO[k]) return 'tasto sconosciuto';
+      // I tasti del TV (volume, canali, la casetta...) e quelli di Home TV non si mescolano (22/11): i tasti del TV vanno al
+      // TV solo col suo permesso, e senza il telefono lo dice (non si chiede il permesso a ogni tasto); quelli di Home TV
+      // vanno sempre alle pagine di Home TV
       if (SOLO_TV[k]) {
-        // volume e muto senza il permesso del TV: dal lettore DLNA, che non chiede niente (se non risponde, come prima)
+        // volume e muto senza il permesso del TV: dal lettore DLNA, che non chiede niente
         if (rem.stato !== 'ok' && (k === 'volSu' || k === 'volGiu' || k === 'muto') && upnpUsabile()) {
-          var vk = k, comeprima = function (e) { if (e && rem.stato !== 'negato' && rem.stato !== 'assente') tastoVero(vk); };
-          if (k === 'muto') mutoUpnp(comeprima); else volumeUpnp(k === 'volSu' ? 1 : -1, comeprima);
+          if (k === 'muto') mutoUpnp(function () {}); else volumeUpnp(k === 'volSu' ? 1 : -1, function () {});
           return '';
         }
-        if (rem.stato === 'negato' || rem.stato === 'assente') return 'non-disponibile';
+        if (rem.stato !== 'ok') return 'non-disponibile';
         tastoVero(k);
         return '';
       }
@@ -17626,7 +17658,9 @@
         if (remotoUsabile()) apriRemoto();
         return '';
       }
-      if (rem.stato === 'ok' || rem.stato === 'mai' || rem.stato === 'attesa') { tastoVero(k); return ''; }
+      // nessuna pagina di Home TV ascolta: col permesso e' un tasto vero (un'altra app sul TV); senza, aspetta la pagina
+      // che si sta aprendo (prima andava al canale del permesso, che lo perdeva)
+      if (rem.stato === 'ok' && tastoVero(k)) return '';
       aggiungiEvento({ tipo: 'tasto', tasto: k });
     } else if (tipo === 'testo') {
       var t = testo(body.testo, 500), invio = body.invio !== false;
@@ -17665,6 +17699,7 @@
       // dal telefono (richiesta del 22/11): una scheda chiusa (la x o il tocco lungo) o tutte insieme
       var rc = cambiaSchede(tipo === 'chiudiSchede' ? { azione: 'chiudiTutte' } : { azione: 'chiudi', id: testo(body.id, 40) });
       if (!rc.ok) return 'scheda non trovata';
+      aggiungiEvento({ tipo: 'schedeCambiate' }); // il browser del TV, se e' aperto, si ridisegna (ui.js, browser.js)
     } else if (tipo === 'scheda') {
       // una scheda scelta sul telefono: il TV la apre, e da li' la scheda segue le pagine in cui navighi
       if (!cambiaSchede({ azione: 'apri', id: testo(body.id, 40) }).ok || !schedaAttiva()) return 'scheda non trovata';
@@ -17823,6 +17858,7 @@
           p.ultimeFini = traccia.fini.slice(); } catch (e) { annotaErrore('tv traccia', e); }
         try { p.custode = statoCustode(); } catch (e) { annotaErrore('tv custode', e); }
         try { p.telecomando = statoRemoto(); } catch (e) { annotaErrore('tv telecomando', e); }
+        try { p.memoriaSiti = statoMemoriaSiti(); } catch (e) { annotaErrore('tv memoria siti', e); }
         try { p.scatolaNera = statoDiagnosi(); } catch (e) { annotaErrore('tv scatola nera', e); }
         try { rispondiTel(res, 200, p); } catch (e) { annotaErrore('tv risposta', e); }
       });
@@ -19139,6 +19175,10 @@
     '  .invia { height: 48px; padding: 0 18px; border-radius: 14px; background: var(--text); color: #0b0c10; font-weight: 700; flex: none; }',
     '  .invia:disabled { opacity: .3; }',
     '  .nota { font-size: 12px; color: var(--text-2); margin: 10px 2px 0; line-height: 1.4; }',
+    '  body.tv-senza-permesso [data-tasto=sorgente], body.tv-senza-permesso [data-tasto=homeTv], body.tv-senza-permesso [data-tasto=spegni],',
+    '  body.tv-senza-permesso [data-tasto=menuTv], body.tv-senza-permesso [data-tasto=info], body.tv-senza-permesso [data-tasto=esci],',
+    '  body.tv-senza-permesso [data-tasto=guida], body.tv-senza-permesso [data-tasto=listaCanali], body.tv-senza-permesso [data-tasto^=canale],',
+    '  body.tv-senza-permesso [data-tasto^=n], body.tv-senza-permesso:not(.volume-libero) [data-tasto^=vol], body.tv-senza-permesso:not(.volume-libero) [data-tasto=muto] { opacity: .42; }',
     '  .lista-schede { max-height: 56vh; overflow-y: auto; -webkit-overflow-scrolling: touch; font-size: 14px; color: var(--text-2); }',
     '  .riga-scheda { display: flex; align-items: center; gap: 12px; width: 100%; padding: 9px; margin-bottom: 8px; border-radius: 14px;',
     '    background: rgba(255, 255, 255, .06); text-align: left; color: var(--text); }',
@@ -19800,6 +19840,9 @@
     '  var volumeLibero = false;',
     '  function mostraPermesso(t, nota) {',
     '    var box = $(\'permesso\'), p = $(\'permesso-testo\'), b = $(\'chiedi-permesso\');',
+    // i tasti che sono solo del TV (canali, sorgente, la casetta...) si vedono attenuati finche' manca il permesso: cosi' si
+    // capisce cosa comanda Home TV e cosa il televisore (22/11). Volume e muto no, se vanno gia' dal lettore del TV
+    '    if (t) { document.body.classList.toggle(\'tv-senza-permesso\', t !== \'ok\'); document.body.classList.toggle(\'volume-libero\', !!volumeLibero); }',
     '    if (!box || !t) return;',
     '    var senza = t === \'mai\' && nota === \'senza-scelta\', casa = nota === \'casa\';',
     '    box.hidden = t === \'ok\';',
@@ -20598,9 +20641,7 @@
     '      l.appendChild(box);',
     '    });',
     '  }',
-    '  $(\'apri-schede\').addEventListener(\'click\', function () {',
-    '    apriFoglio(\'foglio-schede\');',
-    '    $(\'lista-schede\').textContent = \'Carico le schede\\u2026\';',
+    '  function caricaSchede() {',
     '    if (DEMO) {',
     '      mostraSchede({ attiva: \'a\', schede: [{ id: \'a\', titolo: \'Che tempo fa oggi\', url: \'https://meteo.example/oggi\' },',
     '        { id: \'b\', titolo: \'Pasta al pomodoro: la ricetta\', url: \'https://ricette.example/pasta\' }] });',
@@ -20610,6 +20651,11 @@
     '      if (j.__stato === 401) { perso(); return; }',
     '      mostraSchede(j);',
     '    }, function () { $(\'lista-schede\').textContent = \'Non trovo il TV: riprova.\'; });',
+    '  }',
+    '  $(\'apri-schede\').addEventListener(\'click\', function () {',
+    '    apriFoglio(\'foglio-schede\');',
+    '    $(\'lista-schede\').textContent = \'Carico le schede\\u2026\';',
+    '    caricaSchede();',
     '  });',
     '  $(\'schede-tv\').addEventListener(\'click\', function () { chiudiFogli(); invia({ tipo: \'schede\' }); });',
     '  /* ---------------------------------------------------- lo Store: come sul TV. L\'elenco (con gli stati e i colori) lo manda il',
