@@ -546,7 +546,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.24';
+  var VERSION = '1.3.25';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -1804,6 +1804,122 @@
     var maschera = crypto.randomBytes(4);
     for (var i = 0; i < lung; i++) dati[i] = dati[i] ^ maschera[i % 4];
     return Buffer.concat([testa, maschera, dati]);
+  }
+
+  // ------------------------------------------------ l'ispettore di TizenBrew non deve fermare le pagine (R29)
+  // TizenBrew apre lo strumento di sviluppo dell'app (CDP) per mettere main.js nelle pagine, lascia acceso Debugger.enable
+  // e non riprende mai: un "debugger" in un sito (i lettori dei film coi trucchi contro gli strumenti di sviluppo) ferma
+  // tutta la pagina per sempre, riquadri, tasti e rete compresi (provato il 22/11, prove/test_debugger_tizenbrew.py).
+  // main.js toglie quello del codice creato al volo; per quello scritto negli script e per eval qui si dice alla
+  // connessione di TizenBrew stessa di non fermarsi (setSkipAllPauses, coi due nomi del parametro: "skipped" sui motori
+  // vecchi, "skip" sui nuovi; breakpoint spenti) e di ripartire se e' ferma. Deve essere la sua: la pausa la chiede ogni
+  // client che ha Debugger acceso, e un secondo client lo accettano solo i Chromium dal 63.
+  // TizenBrew e i servizi dei moduli girano nello stesso Node: la connessione e' tra quelle di questo processo, quella che
+  // va (da piu' di 2 s) a un indirizzo del TV stesso, su una porta dove /json/version risponde come uno strumento di
+  // sviluppo. I comandi hanno numeri alti: chrome-remote-interface (la libreria di TizenBrew) scarta le risposte che non
+  // aspetta. Mai fuori dal TV vero (nelle prove: HOMETV_PROVE_ISPETTORE della sabbiera)
+  var ispettore = { attivo: false, conn: [], trovate: 0, invii: 0, ultimo: 0, errore: '', id: 1900000000 };
+  var PORTE_NON_ISPETTORE = { 8001: 1, 8002: 1, 8081: 1, 9197: 1, 26101: 1 };
+  function avviaIspettore() {
+    var prova = typeof HOMETV_PROVE_ISPETTORE !== 'undefined';
+    if (ispettore.attivo || (prova ? HOMETV_PROVE_ISPETTORE !== true : !HAS_TIZEN || PROVE || ALTRA)) return;
+    if (typeof process === 'undefined' || !process || typeof process._getActiveHandles !== 'function') {
+      ispettore.errore = 'il servizio non vede le sue connessioni';
+      return;
+    }
+    ispettore.attivo = true;
+    // nelle prove si puo' partire piu' tardi (la pagina gia' ferma quando la si trova: riparte col resume)
+    var dopo = typeof HOMETV_PROVE_ISPETTORE_DOPO === 'number' ? HOMETV_PROVE_ISPETTORE_DOPO : 0;
+    setTimeout(function () {
+      var t = setInterval(function () {
+        try { giroIspettore(); } catch (e) { ispettore.errore = String(e && e.message || e).slice(0, 160); }
+      }, 2500);
+      if (t && t.unref) t.unref();
+    }, dopo);
+  }
+  function indirizziDelTv() {
+    var l = { '127.0.0.1': 1, '::1': 1 };
+    try {
+      var ifs = require('os').networkInterfaces();
+      Object.keys(ifs).forEach(function (n) {
+        (ifs[n] || []).forEach(function (a) { if (a && a.address) l[String(a.address).replace(/^::ffff:/, '')] = 1; });
+      });
+    } catch (e) {}
+    return l;
+  }
+  function giroIspettore() {
+    var ora = Date.now(), maniglie = process._getActiveHandles(), nostri = indirizziDelTv(), tenute = [];
+    for (var i = 0; i < maniglie.length; i++) {
+      var s = maniglie[i];
+      if (!s || typeof s.remotePort !== 'number' || s.server || s._server || s.hometvProva || s.destroyed || s.writable === false) continue;
+      var host = String(s.remoteAddress || '').replace(/^::ffff:/, '');
+      if (!nostri[host] || PORTE_NON_ISPETTORE[s.remotePort] || s.localPort === PORT || s.localPort === PORTA_TELEFONO) continue;
+      var c = null;
+      for (var j = 0; j < ispettore.conn.length; j++) if (ispettore.conn[j].s === s) { c = ispettore.conn[j]; break; }
+      if (!c) c = { s: s, host: host, porta: s.remotePort, da: ora, stato: 'nuova', ultimo: 0, prove: 0, provata: 0 };
+      tenute.push(c);
+      // una porta che non ha risposto (TV occupato) si riprova ancora due volte, ogni 30 s
+      if (ora - c.da >= 2000 && (c.stato === 'nuova' || c.stato === 'no' && c.prove < 3 && ora - c.provata >= 30000)) provaIspettore(c);
+      else if (c.stato === 'si' && ora - c.ultimo >= 5000) mandaIspettore(c);
+    }
+    ispettore.conn = tenute;
+  }
+  // la porta e' quella dello strumento di sviluppo? (una richiesta a parte: sulla connessione di TizenBrew mai niente
+  // finche' non lo si sa)
+  function provaIspettore(c) {
+    c.stato = 'prova';
+    c.prove++;
+    c.provata = Date.now();
+    var fatto = false;
+    function fine(si) {
+      if (fatto) return;
+      fatto = true;
+      c.stato = si ? 'si' : 'no';
+      if (si) { ispettore.trovate++; mandaIspettore(c); }
+    }
+    try {
+      var r = http.get({ host: c.host, port: c.porta, path: '/json/version', agent: false }, function (res) {
+        var b = '';
+        res.setEncoding('utf8');
+        res.on('data', function (d) { if (b.length < 8000) b += d; });
+        res.on('end', function () {
+          var j = null;
+          try { j = JSON.parse(b); } catch (e) {}
+          fine(!!(j && typeof j === 'object' && (j['Protocol-Version'] || j['WebKit-Version'])));
+        });
+        res.on('error', function () { fine(false); });
+      });
+      r.on('socket', function (so) { try { so.hometvProva = true; } catch (e) {} });
+      r.on('error', function () { fine(false); });
+      r.setTimeout(1500, function () { try { r.abort(); } catch (e) {} fine(false); });
+    } catch (e) { fine(false); }
+  }
+  function mandaIspettore(c) {
+    var comandi = [
+      { method: 'Debugger.setSkipAllPauses', params: { skip: true } },
+      { method: 'Debugger.setSkipAllPauses', params: { skipped: true } },
+      { method: 'Debugger.setBreakpointsActive', params: { active: false } },
+      { method: 'Debugger.resume', params: {} }
+    ];
+    try {
+      for (var k = 0; k < comandi.length; k++) {
+        if (++ispettore.id > 2100000000) ispettore.id = 1900000001;
+        comandi[k].id = ispettore.id;
+        c.s.write(frameWs(JSON.stringify(comandi[k])));
+      }
+      c.ultimo = ispettore.ultimo = Date.now();
+      ispettore.invii++;
+    } catch (e) {
+      c.stato = 'no';
+      ispettore.errore = 'invio: ' + String(e && e.message || e).slice(0, 120);
+    }
+  }
+  // per 8091/tv: se la connessione di TizenBrew c'e' e le si e' scritto (niente indirizzi: solo porte e numeri)
+  function statoIspettore() {
+    var l = [];
+    ispettore.conn.forEach(function (c) { if (c.stato === 'si') l.push(c.porta); });
+    return { attivo: ispettore.attivo, connessioni: l, trovate: ispettore.trovate, invii: ispettore.invii,
+      ultimoSecondiFa: ispettore.ultimo ? Math.round((Date.now() - ispettore.ultimo) / 1000) : null, errore: ispettore.errore };
   }
 
   function chiudiRemoto() {
@@ -17862,6 +17978,7 @@
         try { p.custode = statoCustode(); } catch (e) { annotaErrore('tv custode', e); }
         try { p.telecomando = statoRemoto(); } catch (e) { annotaErrore('tv telecomando', e); }
         try { p.memoriaSiti = statoMemoriaSiti(); } catch (e) { annotaErrore('tv memoria siti', e); }
+        try { p.ispettore = statoIspettore(); } catch (e) { annotaErrore('tv ispettore', e); }
         try { p.scatolaNera = statoDiagnosi(); } catch (e) { annotaErrore('tv scatola nera', e); }
         try { rispondiTel(res, 200, p); } catch (e) { annotaErrore('tv risposta', e); }
       });
@@ -19102,6 +19219,8 @@
     // liste di filtri: quelle salvate subito, poi (con calma) si guarda se aggiornarle
     adbCarica();
     adbPianifica(PROVE ? 300 : 20000);
+    // l'ispettore di TizenBrew non deve fermare le pagine (solo sul TV vero, o nella sabbiera che lo chiede)
+    avviaIspettore();
     if (HAS_TIZEN) {
       refreshApps()['catch'](function (e) { log('elenco app: ' + e.message); });
       powerState(function () {}); // subito chi e' il TV (modello, risoluzione) per il profilo

@@ -16,6 +16,69 @@
   // una sola volta per pagina (il segnale non compare tra le proprieta' della finestra)
   if (window.__hometvAttivo) return;
   try { Object.defineProperty(window, '__hometvAttivo', { value: true, enumerable: false }); } catch (e) { return; }
+  // L'istruzione "debugger" fermerebbe tutta la pagina, riquadri compresi (R29, provato il 22/11 con un client come
+  // TizenBrew): TizenBrew tiene acceso l'ispettore (Debugger.enable) e non riprende mai, e i lettori dei siti di film
+  // usano spesso trucchi contro gli strumenti di sviluppo che la chiamano di continuo. Qui il codice creato al volo
+  // (Function e il costruttore delle funzioni, setTimeout e setInterval con un testo) arriva senza quell'istruzione.
+  // Restano quella scritta negli script della pagina e quella di eval (sostituito, eval perderebbe le variabili di chi
+  // lo chiama): le riprende il servizio sui TV che lo permettono (riprendiPause in service.js)
+  function senzaDebugger() {
+    var F = window.Function;
+    if (typeof F !== 'function' || F.prototype.constructor !== F) return;
+    var ID = /[A-Za-z0-9_$]/, SPAZIO = /\s/;
+    // toglie le istruzioni "debugger" da un testo di codice, lasciando stare testi tra virgolette e commenti
+    function togli(s) {
+      var out = '', da = 0, i = 0, n = s.length, c, j, k;
+      while (i < n) {
+        c = s.charAt(i);
+        if (c === '"' || c === "'" || c === '`') {
+          for (j = i + 1; j < n && s.charAt(j) !== c; j++) { if (s.charAt(j) === '\\') j++; }
+          i = j + 1; continue;
+        }
+        if (c === '/' && s.charAt(i + 1) === '/') { j = s.indexOf('\n', i); i = j < 0 ? n : j; continue; }
+        if (c === '/' && s.charAt(i + 1) === '*') { j = s.indexOf('*/', i + 2); i = j < 0 ? n : j + 2; continue; }
+        if (c === 'd' && s.substr(i, 8) === 'debugger' && !(i > 0 && ID.test(s.charAt(i - 1))) && !ID.test(s.charAt(i + 8))) {
+          for (k = i - 1; k >= 0 && SPAZIO.test(s.charAt(k)); k--) {}
+          for (j = i + 8; j < n && SPAZIO.test(s.charAt(j)); j++) {}
+          // non x.debugger ne' { debugger: 1 }; con il ; dopo resta un'istruzione vuota, senza (a capo, }, fine) la si mette
+          if (s.charAt(k) !== '.' && s.charAt(j) !== ':') {
+            out += s.slice(da, i) + (s.charAt(j) === ';' ? '        ' : ';       ');
+            da = i + 8;
+          }
+          i += 8; continue;
+        }
+        i++;
+      }
+      return da ? out + s.slice(da) : s;
+    }
+    // solo i testi veri (un TrustedScript passa com'e')
+    function pulito(x) { return typeof x === 'string' && x.indexOf('debugger') >= 0 ? togli(x) : x; }
+    var W = function Function(corpo) {
+      var a = [].slice.call(arguments);
+      if (a.length) a[a.length - 1] = pulito(a[a.length - 1]);
+      return F.apply(this, a);
+    };
+    try {
+      W.prototype = F.prototype;
+      Object.defineProperty(F.prototype, 'constructor', { value: comeOriginale(W, 'Function'), writable: true, configurable: true, enumerable: false });
+      Object.defineProperty(window, 'Function', { value: W, writable: true, configurable: true, enumerable: false });
+    } catch (e) {}
+    function timer(nome) {
+      var orig = window[nome];
+      if (typeof orig !== 'function') return;
+      var w = function (codice) {
+        if (typeof codice !== 'string' || codice.indexOf('debugger') < 0) return orig.apply(window, arguments);
+        var a = [].slice.call(arguments);
+        a[0] = togli(codice);
+        return orig.apply(window, a);
+      };
+      try { Object.defineProperty(w, 'name', { value: nome, configurable: true }); } catch (e) {}
+      try { window[nome] = comeOriginale(w, nome); } catch (e) {}
+    }
+    timer('setTimeout');
+    timer('setInterval');
+  }
+  senzaDebugger();
   /* <profilo:generato> copia di tv-sito/profilo.js (prove/incorpora_profilo.py): non modificare qui */
   /*
    * Home TV - PROFILO DEL TV.
@@ -507,7 +570,7 @@
   ProfiloTV.ripara(window);
   var MOTORE = ProfiloTV.motore(window);
 
-  var VERSIONE = '1.3.24';
+  var VERSIONE = '1.3.25';
   var SERVIZIO = 'http://127.0.0.1:8090';
   var IN_FRAME = false;
   try { IN_FRAME = window.top !== window.self; } catch (e) { IN_FRAME = true; }
