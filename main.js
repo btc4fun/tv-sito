@@ -570,7 +570,7 @@
   ProfiloTV.ripara(window);
   var MOTORE = ProfiloTV.motore(window);
 
-  var VERSIONE = '1.3.25';
+  var VERSIONE = '1.3.26';
   var SERVIZIO = 'http://127.0.0.1:8090';
   var IN_FRAME = false;
   try { IN_FRAME = window.top !== window.self; } catch (e) { IN_FRAME = true; }
@@ -1388,6 +1388,65 @@
       (origFetchListe || window.fetch)(u, { method: 'POST', body: corpo })['catch'](function () {});
     } catch (x) {}
   }
+  /* Diagnosi per i TV lontani (22/11, il TV dell'amico: il sito senza copertine, la ricerca che non si apre, il film che
+   * si sente ma non si vede). Ogni pagina dice al servizio il motore, gli errori del sito, i suoi file che non arrivano,
+   * cosa ha deciso per i video e per la lente. Il servizio tiene solo quelle dei tuoi siti; si leggono dal telefono in
+   * 8091/diagnosi. Al massimo 30 righe per pagina */
+  var diagContate = 0, diagFile = 0, diagVideoContati = 0;
+  function diagnosi(e) {
+    if (VISITA === null || diagContate >= 30) return; // servizio muto o vecchio
+    diagContate++;
+    try {
+      e.host = HOST; e.cima = cimaHost(); e.riquadro = IN_FRAME; e.senza = SENZA_MEMORIA;
+      var corpo = JSON.stringify(e), u = SERVIZIO + '/api/diagnosi';
+      if (navigator.sendBeacon && navigator.sendBeacon(u, corpo)) return;
+      (origFetchListe || window.fetch)(u, { method: 'POST', body: corpo })['catch'](function () {});
+    } catch (x) {}
+  }
+  function hostDiIndirizzo(u) {
+    var m = /^[a-z][a-z0-9+.\-]*:\/\/([^\/?#:]+)/i.exec(String(u || ''));
+    return m ? m[1].toLowerCase() : '';
+  }
+  function diagVideo(v, scelta, perche) {
+    if (++diagVideoContati > 8) return;
+    var r = { width: 0, height: 0 };
+    try { r = v.getBoundingClientRect(); } catch (e) {}
+    diagnosi({ q: 'video', scelta: scelta, perche: perche || '', w: Math.round(r.width), h: Math.round(r.height), sw: window.innerWidth,
+      sh: window.innerHeight, audio: !v.muted && v.volume > 0, durata: v.duration });
+  }
+  // gli errori del sito (un pezzo del suo codice che il motore del TV non capisce) e i suoi file che non arrivano
+  ascoltaSicuro(window, 'error', function (ev) {
+    var t = ev && ev.target;
+    if (t && t !== window && t.tagName) {
+      if ((t.tagName === 'SCRIPT' || t.tagName === 'LINK') && ++diagFile <= 6) {
+        diagnosi({ q: 'file', tipo: t.tagName === 'SCRIPT' ? 'script' : 'stile', da: hostDiIndirizzo(t.src || t.href) });
+      }
+      return;
+    }
+    var m = String(ev && ev.message || '');
+    if (!m || m.indexOf(MAGIA) !== -1) return;
+    diagnosi({ q: 'errore', msg: m.slice(0, 200), da: hostDiIndirizzo(ev.filename), riga: ev.lineno || 0 });
+  }, true);
+  ascoltaSicuro(window, 'unhandledrejection', function (ev) {
+    var r = ev && ev.reason, m = '';
+    try { m = String(r && (r.message || r) || ''); } catch (e) {}
+    if (m && m.indexOf(MAGIA) === -1) diagnosi({ q: 'promessa', msg: m.slice(0, 200) });
+  });
+  // la pagina: il motore del TV e cosa sa fare (le cose dei siti nuovi che i TV vecchi non conoscono)
+  if (!IN_FRAME) setTimeout(function () {
+    if (!sitoApp() && !SENZA_MEMORIA) return; // solo i tuoi siti
+    var ua = navigator.userAgent || '', ch = /Chrom(?:e|ium)\/(\d+)/.exec(ua), tz = /Tizen ?(\d+(?:\.\d+)?)/.exec(ua);
+    // senza Chrome/N nel nome del browser (molti TV): il motore dalla versione di Tizen
+    var DA_TIZEN = { '3.0': 47, '4.0': 56, '5.0': 63, '5.5': 69, '6.0': 76, '6.5': 85, '7.0': 94, '8.0': 108, '9.0': 120 };
+    var sup = function (p, v) { try { return !!(window.CSS && CSS.supports && CSS.supports(p, v)); } catch (e) { return false; } };
+    // la sintassi nuova (?. e ??, Chromium 80): un SyntaxError vuol dire che il motore non la conosce; se il sito vieta
+    // Function (la sua CSP) non si sa (null, il servizio lo scarta)
+    var nuovo = function (codice) { try { new Function(codice); return true; } catch (e) { return e && e.name === 'SyntaxError' ? false : null; } };
+    diagnosi({ q: 'pagina', motore: ch ? Number(ch[1]) : tz && DA_TIZEN[tz[1]] || 0, tizen: tz ? tz[1] : '', sw: window.innerWidth, sh: window.innerHeight,
+      attivazione: !!MOTORE.attivazione,
+      css: { minmax: sup('width', 'min(1px, 2px)'), clamp: sup('width', 'clamp(1px, 2px, 3px)'), aspetto: sup('aspect-ratio', '1'),
+        inset: sup('inset', '0'), variabili: sup('--x', '0'), gap: sup('gap', '1px'), punto: nuovo('return a?.b'), doppio: nuovo('return a ?? b') } });
+  }, 2500);
   var vistaPrima = null;
   try { vistaPrima = localStorage.getItem('hometv-visita'); } catch (e) {}
   var esitoAvvio = memoriaDelSito();
@@ -2272,7 +2331,8 @@
   var CSS_FS =
     '.hometv-fs-hide{visibility:hidden!important}' +
     '.hometv-fs-anc{transform:none!important;filter:none!important;perspective:none!important;contain:none!important;will-change:auto!important;overflow:visible!important;visibility:visible!important;clip-path:none!important;' +
-    'zoom:1!important;backdrop-filter:none!important;-webkit-mask:none!important;mask:none!important}' +
+    'zoom:1!important;backdrop-filter:none!important;-webkit-mask:none!important;mask:none!important;opacity:1!important}' +
+    '.hometv-fs-mostra{display:block!important}' +
     '.hometv-fs{position:fixed!important;left:0!important;top:0!important;right:auto!important;bottom:auto!important;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;min-width:0!important;min-height:0!important;margin:0!important;padding:0!important;border:0!important;transform:none!important;z-index:2147483646!important;background:#000!important;visibility:visible!important;opacity:1!important}' +
     'video.hometv-fs{object-fit:contain!important}' +
     'video.hometv-fs.hometv-fmt-riempi{object-fit:cover!important}video.hometv-fs.hometv-fmt-allarga{object-fit:fill!important}' +
@@ -3719,6 +3779,7 @@
     esciSchermoIntero(true);
     fsEl = el;
     classeFs(el, 'hometv-fs');
+    if (senzaDisplay(el)) classeFs(el, 'hometv-fs-mostra');
     var nodo = el, livello = 0;
     while (nodo && nodo !== document.body && nodo !== document.documentElement) {
       var radice = nodo.parentNode;
@@ -3737,7 +3798,10 @@
       }
       var padre = contenitoreDi(nodo);
       if (!padre) break;
-      if (padre !== document.body && padre !== document.documentElement) classeFs(padre, 'hometv-fs-anc');
+      if (padre !== document.body && padre !== document.documentElement) {
+        classeFs(padre, 'hometv-fs-anc');
+        if (senzaDisplay(padre)) classeFs(padre, 'hometv-fs-mostra');
+      }
       nodo = padre;
       livello++;
     }
@@ -3751,7 +3815,10 @@
       try { el.focus(); el.contentWindow.focus(); } catch (e) {}
     }
     if (IN_FRAME) {
-      try { window.parent.postMessage({ hometv: 'playing', manuale: !!manuale, src: srcDi(el) }, '*'); } catch (e) {}
+      try {
+        window.parent.postMessage({ hometv: 'playing', manuale: !!manuale, src: srcDi(el),
+          audio: el.tagName === 'VIDEO' ? !el.muted && el.volume > 0 : null, durata: el.tagName === 'VIDEO' ? el.duration : null }, '*');
+      } catch (e) {}
     } else if (el.tagName !== 'VIDEO') {
       toast('Schermo intero. Indietro per uscire', 2500);
     }
@@ -3765,8 +3832,8 @@
       try { classati[i][0].classList.remove(classati[i][1]); } catch (e) {}
     }
     classati = [];
-    var resti = document.querySelectorAll('.hometv-fs, .hometv-fs-anc, .hometv-fs-hide, .hometv-fs-cc');
-    for (var j = 0; j < resti.length; j++) resti[j].classList.remove('hometv-fs', 'hometv-fs-anc', 'hometv-fs-hide', 'hometv-fs-cc');
+    var resti = document.querySelectorAll('.hometv-fs, .hometv-fs-anc, .hometv-fs-hide, .hometv-fs-cc, .hometv-fs-mostra');
+    for (var j = 0; j < resti.length; j++) resti[j].classList.remove('hometv-fs', 'hometv-fs-anc', 'hometv-fs-hide', 'hometv-fs-cc', 'hometv-fs-mostra');
     document.documentElement.classList.remove('hometv-fs-on');
     var prima = fsEl;
     staccaLettore();
@@ -3815,14 +3882,23 @@
     // il trailer che parte (lo sfondo della pagina del film) non va a schermo intero da solo; il film vero che parte
     // mentre il trailer e' a schermo intero prende il suo posto
     var trailer = eTrailer(v) && !trailerVoluto(v);
-    if (trailer) return;
+    if (trailer) { diagVideo(v, 'no', 'trailer'); return; }
     if (fsEl && fsEl !== v && eTrailer(fsEl)) { esciSchermoIntero(true); fermaTrailer(v); }
     // nel browser solo se l'hai fatto partire tu (come un browser normale); YouTube ha il suo lettore per la TV
-    if (fsEl || !CFG.schermoInteroAutomatico || uscitoDa(v, true) || (!sitoApp() && !appenaPremuto) || suYoutube()) return;
-    if (areaVisibile(v) < 200 * 150) return;
+    if (fsEl || !CFG.schermoInteroAutomatico || uscitoDa(v, true) || (!sitoApp() && !appenaPremuto) || suYoutube()) {
+      diagVideo(v, 'no', fsEl ? 'gia-a-schermo-intero' : !CFG.schermoInteroAutomatico ? 'automatico-spento' : uscitoDa(v, true) ? 'uscito-a-mano' :
+        suYoutube() ? 'youtube' : 'non-scelto');
+      return;
+    }
+    // il film che si sente ma non si vede (22/11, TV vecchio dell'amico): il sito lo mostra minuscolo o per niente (il suo
+    // lettore, o il riquadro che lo contiene, resta a zero). Lungo, con l'audio, appena scelto (o sul tuo sito): a schermo
+    // intero lo stesso. Le anteprime mute e i video brevi restano dove sono
+    var piccolo = areaVisibile(v) < 200 * 150;
+    if (piccolo && !filmConAudio(v, appenaPremuto)) { diagVideo(v, 'no', 'piccolo'); return; }
     // le anteprime mute partono anche solo passandoci sopra: serve un OK (o Play) appena
     // premuto, oppure che sia proprio il video della pagina (una puntata, un film)
-    if (v.muted && !appenaPremuto && v !== videoZittito && !videoPrincipale(v)) return;
+    if (v.muted && !appenaPremuto && v !== videoZittito && !videoPrincipale(v)) { diagVideo(v, 'no', 'muto'); return; }
+    diagVideo(v, 'schermo-intero', piccolo ? 'piccolo-con-audio' : '');
     entraSchermoIntero(v, appenaPremuto);
     if (v.muted && fsEl === v) offriAudio(v);
   }
@@ -3830,6 +3906,13 @@
   // un clic vero (mouse o tocco) vale come un OK appena premuto
   ascoltaSicuro(document, 'click', function (ev) { if (ev.isTrusted) { ultimoOk = Date.now(); premutoAiRiquadri(); if (ev.target && ev.target.nodeType === 1) segnaScelto(ev.target); } }, true);
 
+  // un film appena scelto, che si sente: con l'audio, lungo (o di durata ancora ignota), non in ripetizione
+  function filmConAudio(v, appenaPremuto) {
+    return !v.muted && v.volume > 0 && !v.loop && !(v.duration < 300) && (appenaPremuto || sitoApp());
+  }
+  function senzaDisplay(el) {
+    try { return window.getComputedStyle(el).display === 'none'; } catch (e) { return false; }
+  }
   // il video "vero" della pagina, non un'anteprima o uno sfondo: lungo, non in ripetizione, grande
   function videoPrincipale(v) {
     if (v.loop || !(v.duration >= 300)) return false;
@@ -4042,7 +4125,15 @@
       if (!d.manuale) {
         if (fsEl || !CFG.schermoInteroAutomatico || (!sitoApp() && Date.now() - ultimoOk >= 10000) || frame.__hometvAd ||
           uscitoDa(frame, false) || eAd(frame.src, 'frame')) return;
-        if (areaVisibile(frame) < window.innerWidth * window.innerHeight * 0.25) return;
+        var quota = areaVisibile(frame) / Math.max(1, window.innerWidth * window.innerHeight);
+        // il lettore minuscolo o a zero (il sito non riesce a mostrarlo, 22/11): se il suo video si sente ed e' lungo, va
+        // a schermo intero lo stesso
+        if (quota < 0.25 && !(d.audio === true && !(Number(d.durata) < 300))) {
+          diagnosi({ q: 'riquadro', scelta: 'no', perche: 'piccolo', area: Math.round(quota * 100), audio: d.audio === true, durata: d.durata });
+          return;
+        }
+        diagnosi({ q: 'riquadro', scelta: 'schermo-intero', perche: quota < 0.25 ? 'piccolo-con-audio' : '', area: Math.round(quota * 100),
+          audio: d.audio === true, durata: d.durata });
       }
       entraSchermoIntero(frame, d.manuale);
     } else if (d.hometv === 'esci' && dalLettore) {
@@ -8617,10 +8708,18 @@
   }
   // la lente (o il "Cerca") e' stata premuta col telecomando o toccata dal telefono: se il sito mostra un campo senza
   // dargli il fuoco, glielo si da' qui. Se la lente porta a una pagina di ricerca, lo si fa li' (dopoLaLente)
-  function seguiLente(da) {
+  function seguiLente(da, daTelecomando) {
     var prima = campiVisibili(radiceDi(da));
     aspettaCampo(prima, radiceDi(da), true, false, function (c) {
-      if (!c) return;
+      if (!c) {
+        // il sito non mostra nessun campo (22/11, TV dell'amico: la sua ricerca non compare): la casella di Home TV. Col
+        // tasto appena premuto (meno di 2 s fa) la tastiera del TV si apre anche qui, dove il tasto vale qualche secondo
+        var casellaSi = !!(daTelecomando && da && da.isConnected && !casellaAperta() && !campoDiTesto(attivoVero()) &&
+          lenteVera(da) && !testoNelModulo(da) && apriCasellaCerca(da));
+        diagnosi({ q: 'lente', azione: casellaSi ? 'casella' : 'niente', attivazione: !!MOTORE.attivazione });
+        return;
+      }
+      diagnosi({ q: 'lente', azione: 'campo', attivazione: !!MOTORE.attivazione });
       if (!campoDiTesto(attivoVero())) scegliCampo(c);
       else pianificaCampo(); // il fuoco gliel'ha dato il sito: dentro una parte "shadow" la pagina non lo sente
     });
@@ -8630,14 +8729,18 @@
     el = controlloDi(el);
     if (!sembraLente(el)) return false;
     var c = campoAccanto(el);
-    if (c) { scegliCampo(c); return true; }
+    if (c) { scegliCampo(c); diagnosi({ q: 'lente', azione: 'campo-accanto', attivazione: !!MOTORE.attivazione }); return true; }
     // TV vecchi: la casella di Home TV, aperta nell'istante del tasto (col telefono non serve la tastiera del TV). Non se
     // nel modulo della lente c'e' gia' un testo scritto: allora la lente cerca, come sempre
-    if (daTelecomando && !MOTORE.attivazione && lenteVera(el) && !testoNelModulo(el) && apriCasellaCerca(el)) return true;
+    if (daTelecomando && !MOTORE.attivazione && lenteVera(el) && !testoNelModulo(el) && apriCasellaCerca(el)) {
+      diagnosi({ q: 'lente', azione: 'casella', attivazione: false });
+      return true;
+    }
     var a = el.closest ? el.closest('a[href]') : null;
     if (a && /^https?:/i.test(a.href || '') && a.href.split('#')[0] !== location.href.split('#')[0]) {
       try { sessionStorage.setItem('hometv-dopo-lente', String(Date.now())); } catch (e) {}
-    } else seguiLente(el);
+      diagnosi({ q: 'lente', azione: 'pagina-di-ricerca', attivazione: !!MOTORE.attivazione });
+    } else seguiLente(el, daTelecomando);
     return false;
   }
   /* La lente sui TV vecchi (richiesta del 22/11: "deve funzionare su qualsiasi TV"). Dove l'attivazione del tasto vale
@@ -8716,11 +8819,38 @@
     if (lente.isConnected) cliccaDavvero(lente);
     aspettaCampo(prima, radice, false, false, function (c) {
       c = c || trovaCampoRicerca();
-      if (!c) { toast('Non trovo la ricerca del sito: prova dal telefono, con Scrivi sul TV', 4500); return; }
+      if (!c) {
+        var dove = indirizzoDiRicerca(t);
+        diagnosi({ q: 'lente', azione: dove ? 'indirizzo' : 'nessuna-ricerca' });
+        if (dove) { toast('Cerco \u00ab' + t.slice(0, 40) + '\u00bb', 2500); location.href = dove; return; }
+        toast('Non trovo la ricerca del sito: prova dal telefono, con Scrivi sul TV', 4500);
+        return;
+      }
       scriviIn(c, t, true);
     });
   }
   function casellaAperta() { return !!casella && casella.box.isConnected; }
+  // la ricerca del sito non si mostra (TV vecchi, 22/11): la sua pagina dei risultati, dal modulo di ricerca della pagina
+  // (anche nascosto), se no /search?q= dello stesso sito
+  var NOMI_RICERCA = /^(q|s|query|search|keyword|keywords|term|k|cerca|ricerca)$/i;
+  function indirizzoDiRicerca(t) {
+    var moduli, i, j, campi, f, azione;
+    try { moduli = document.querySelectorAll('form'); } catch (e) { moduli = []; }
+    for (i = 0; i < moduli.length; i++) {
+      f = moduli[i];
+      if (String(f.getAttribute('method') || 'get').toLowerCase() !== 'get') continue;
+      try { campi = f.querySelectorAll('input'); } catch (e) { continue; }
+      for (j = 0; j < campi.length; j++) {
+        var n = campi[j].getAttribute('name') || '', tipo = String(campi[j].getAttribute('type') || 'text').toLowerCase();
+        if (!n || !(tipo === 'search' || (tipo === 'text' && NOMI_RICERCA.test(n)))) continue;
+        azione = f.action || location.href;
+        if (!/^https?:/i.test(azione)) continue;
+        return azione.split('#')[0].split('?')[0] + '?' + encodeURIComponent(n) + '=' + encodeURIComponent(t);
+      }
+    }
+    if (!/^https?:$/.test(location.protocol) || paginaDiCasa()) return '';
+    return location.protocol + '//' + location.host + '/search?q=' + encodeURIComponent(t);
+  }
   function testoNelModulo(lente) {
     var form = lente.closest ? lente.closest('form') : null, l, i;
     if (!form) return false;

@@ -546,7 +546,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.25';
+  var VERSION = '1.3.26';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -659,7 +659,9 @@
     // senza memoria che lo vede cambiato riparte da zero. Nessun dato, solo un numero e un si'/no
     'GET /api/visita': true,
     // la diagnosi dei siti senza memoria (22/11): cosa ha deciso ogni pagina (solo nomi dei siti e numeri)
-    'POST /api/visita/esito': true
+    'POST /api/visita/esito': true,
+    // la diagnosi delle pagine dei tuoi siti (22/11, il TV dell'amico): errori del sito, video, lente. Solo testo pulito
+    'POST /api/diagnosi': true
   };
   // la visita nuova la apre solo la home (POST /api/visita con la sua chiave) o il servizio quando consegna un link del
   // telefono: un sito non puo' far ripartire da zero un altro sito mentre lo usi
@@ -706,6 +708,73 @@
       if (x && typeof x.url === 'string') siti.push({ host: hostLink(x.url), memoria: x.memoria === 'cancella' ? 'cancella' : 'ricorda' });
     });
     return { visita: visitaSiti, siti: siti.slice(0, 20), esiti: esitiMemoria.slice() };
+  }
+  // la diagnosi delle pagine (22/11, il TV dell'amico: il sito senza copertine, la ricerca che non si apre, il film che si
+  // sente ma non si vede): il motore, gli errori del sito, i suoi file che non arrivano, cosa ha deciso Home TV per i
+  // video e la lente. Solo le pagine dei tuoi siti (il sito di base e quelle del +, anche col nome cambiato): degli altri
+  // siti niente, perche' 8091 si legge da tutta la rete di casa. Le ultime 80, in 8091/diagnosi (telefono) e 8091/tv
+  var vociPagine = [];
+  function sitoMio(host) {
+    host = String(host || '').toLowerCase();
+    if (!host || !/^[a-z0-9.\-:\[\]]{1,253}$/.test(host)) return false;
+    var siti = [], i, h;
+    if (typeof prefs.url === 'string' && prefs.url) siti.push(prefs.url);
+    (Array.isArray(prefs.siti) ? prefs.siti : []).forEach(function (x) { if (x && typeof x.url === 'string') siti.push(x.url); });
+    for (i = 0; i < siti.length; i++) {
+      try { h = String(urlLib.parse(siti[i]).hostname || '').toLowerCase(); } catch (e) { h = ''; }
+      if (h && (h === host || visti.stessoSito(h, host))) return true;
+    }
+    return false;
+  }
+  function annotaPagina(b) {
+    if (!b || typeof b !== 'object') return;
+    var nome = function (h) { h = String(h || '').toLowerCase(); return /^[a-z0-9.\-:\[\]]{1,120}$/.test(h) ? h : ''; };
+    var host = nome(b.host), cima = nome(b.cima) || host;
+    // il tuo sito che ha cambiato nome: lo dice la visita aperta dal suo riquadro (visitaSenza)
+    if (!sitoMio(cima) && !(visitaSenza && b.senza === true)) return;
+    var parola = function (s, n) { return String(s == null ? '' : s).replace(/[^A-Za-z0-9\-]/g, '').slice(0, n || 24); };
+    var testo = function (s, n) { return String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f<>&"'`\\]/g, ' ').slice(0, n || 200); };
+    var numero = function (n) { n = Number(n); return isFinite(n) ? Math.max(-1, Math.min(Math.round(n), 99999999)) : -1; };
+    var e = { t: Date.now(), q: parola(b.q, 12), host: host, cima: cima, riquadro: b.riquadro === true };
+    ['scelta', 'perche', 'azione', 'tipo'].forEach(function (k) { if (b[k] != null && b[k] !== '') e[k] = parola(b[k], 32); });
+    ['w', 'h', 'sw', 'sh', 'durata', 'riga', 'area', 'motore'].forEach(function (k) { if (b[k] != null) e[k] = numero(b[k]); });
+    ['audio', 'attivazione'].forEach(function (k) { if (typeof b[k] === 'boolean') e[k] = b[k]; });
+    if (b.tizen != null) e.tizen = String(b.tizen).replace(/[^0-9.]/g, '').slice(0, 8);
+    if (b.msg != null) e.msg = testo(b.msg, 200);
+    if (b.da != null) { var da = nome(b.da); e.da = !da ? '' : sitoMio(da) ? da : 'altro sito'; }
+    if (b.css && typeof b.css === 'object') {
+      e.css = {};
+      Object.keys(b.css).slice(0, 12).forEach(function (k) { if (typeof b.css[k] === 'boolean') e.css[parola(k, 16)] = b.css[k]; });
+    }
+    vociPagine.push(e);
+    if (vociPagine.length > 80) vociPagine.splice(0, vociPagine.length - 80);
+  }
+  function statoPagine() { return { versione: VERSION, voci: vociPagine.slice() }; }
+  // la stessa cosa, da leggere dal telefono: una pagina semplice, tutto il testo ripulito
+  function paginaDiagnosi() {
+    var esc = function (s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); };
+    var due = function (n) { return (n < 10 ? '0' : '') + n; };
+    var ora = function (t) { var d = new Date(t); return due(d.getHours()) + ':' + due(d.getMinutes()) + ':' + due(d.getSeconds()); };
+    var COSA = { pagina: 'Pagina', errore: 'Errore del sito', promessa: 'Errore del sito', file: 'File che non arriva',
+      video: 'Video', riquadro: 'Lettore in un riquadro', lente: 'Lente' };
+    var righe = vociPagine.slice().reverse().map(function (e) {
+      var d = [];
+      Object.keys(e).forEach(function (k) {
+        if (k === 't' || k === 'q' || k === 'css' || e[k] === '' || e[k] === false && k === 'riquadro') return;
+        d.push(k + ' ' + e[k]);
+      });
+      if (e.css) d.push('css ' + Object.keys(e.css).map(function (k) { return k + (e.css[k] ? ' si' : ' NO'); }).join(', '));
+      return '<tr><td>' + ora(e.t) + '</td><td>' + esc(COSA[e.q] || e.q) + '</td><td>' + esc(d.join(' \u00b7 ')) + '</td></tr>';
+    }).join('');
+    return '<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">' +
+      '<title>Home TV: diagnosi</title><style>body{font:15px/1.4 sans-serif;margin:14px;background:#111;color:#eee}' +
+      'table{border-collapse:collapse;width:100%}td{border-top:1px solid #333;padding:6px 4px;vertical-align:top;word-break:break-word}' +
+      'td:first-child{white-space:nowrap;color:#999}h1{font-size:19px}p{color:#bbb}</style></head><body>' +
+      '<h1>Home TV ' + esc(VERSION) + ': diagnosi delle pagine</h1>' +
+      '<p>Fai uno screenshot di questa pagina e mandalo a chi ti segue con Home TV. Ci sono solo i tuoi siti (quello di base e ' +
+      'quelli del +), niente altro. Le righe pi&ugrave; nuove sono in alto.</p>' +
+      (righe ? '<table>' + righe + '</table>' : '<p>Ancora niente: apri il tuo sito sul TV, prova la ricerca o un film, poi ricarica questa pagina.</p>') +
+      '</body></html>';
   }
   function rispostaVisita(query) {
     return { visita: visitaSiti, senzaMemoria: visitaSenza || senzaMemoria(query && (query.cima || query.host)) };
@@ -1503,6 +1572,10 @@
       return;
     }
     if (route === 'GET /api/visita') { sendJson(req, res, 200, rispostaVisita(url.query), true); return; }
+    if (route === 'POST /api/diagnosi') {
+      readBody(req, 4096).then(function (b) { annotaPagina(b); sendJson(req, res, 200, { ok: true }, true); })['catch'](fail(req, res, 400, true));
+      return;
+    }
     if (route === 'POST /api/visita/esito') {
       readBody(req, 4096).then(function (b) { annotaEsitoMemoria(b); sendJson(req, res, 200, { ok: true }, true); })['catch'](fail(req, res, 400, true));
       return;
@@ -1818,7 +1891,7 @@
   // va (da piu' di 2 s) a un indirizzo del TV stesso, su una porta dove /json/version risponde come uno strumento di
   // sviluppo. I comandi hanno numeri alti: chrome-remote-interface (la libreria di TizenBrew) scarta le risposte che non
   // aspetta. Mai fuori dal TV vero (nelle prove: HOMETV_PROVE_ISPETTORE della sabbiera)
-  var ispettore = { attivo: false, conn: [], trovate: 0, invii: 0, ultimo: 0, errore: '', id: 1900000000 };
+  var ispettore = { attivo: false, spento: false, conn: [], trovate: 0, invii: 0, chiuse: 0, ultimo: 0, errore: '', id: 1900000000 };
   var PORTE_NON_ISPETTORE = { 8001: 1, 8002: 1, 8081: 1, 9197: 1, 26101: 1 };
   function avviaIspettore() {
     var prova = typeof HOMETV_PROVE_ISPETTORE !== 'undefined';
@@ -1848,6 +1921,7 @@
     return l;
   }
   function giroIspettore() {
+    if (ispettore.spento) return;
     var ora = Date.now(), maniglie = process._getActiveHandles(), nostri = indirizziDelTv(), tenute = [];
     for (var i = 0; i < maniglie.length; i++) {
       var s = maniglie[i];
@@ -1870,15 +1944,39 @@
     c.stato = 'prova';
     c.prove++;
     c.provata = Date.now();
-    var fatto = false;
-    function fine(si) {
-      if (fatto) return;
-      fatto = true;
+    rispondeIspettore(c.host, c.porta, function (si) {
       c.stato = si ? 'si' : 'no';
-      if (si) { ispettore.trovate++; mandaIspettore(c); }
+      if (!si) return;
+      ispettore.trovate++;
+      try { c.s.once('close', function () { chiusaIspettore(c); }); } catch (e) {}
+      mandaIspettore(c);
+    });
+  }
+  // La connessione di TizenBrew si chiude: normale quando l'app si chiude o riparte (lo strumento di sviluppo sparisce o
+  // cambia porta). Se pero' si chiude entro 2 s da un invio e lo strumento di sviluppo risponde ancora, puo' averla chiusa
+  // lui per i nostri comandi: senza connessione TizenBrew non mette piu' main.js nelle pagine finche' non lo si riapre,
+  // quindi da qui in poi non si scrive piu' a nessuna connessione (fino al riavvio del servizio) e 8091/tv lo dice
+  function chiusaIspettore(c) {
+    ispettore.chiuse++;
+    var dopo = c.ultimo ? Date.now() - c.ultimo : -1;
+    if (dopo < 0 || dopo > 2000) return;
+    rispondeIspettore(c.host, c.porta, function (vivo) {
+      if (!vivo) return;
+      ispettore.spento = true;
+      ispettore.conn = [];
+      ispettore.errore = 'TizenBrew scollegato ' + dopo + ' ms dopo un invio, con lo strumento di sviluppo ancora acceso: non si scrive piu\'';
+      log('ispettore: ' + ispettore.errore);
+    });
+  }
+  function rispondeIspettore(host, porta, fatto) {
+    var finito = false;
+    function fine(si) {
+      if (finito) return;
+      finito = true;
+      fatto(si);
     }
     try {
-      var r = http.get({ host: c.host, port: c.porta, path: '/json/version', agent: false }, function (res) {
+      var r = http.get({ host: host, port: porta, path: '/json/version', agent: false }, function (res) {
         var b = '';
         res.setEncoding('utf8');
         res.on('data', function (d) { if (b.length < 8000) b += d; });
@@ -1895,6 +1993,7 @@
     } catch (e) { fine(false); }
   }
   function mandaIspettore(c) {
+    if (ispettore.spento) return;
     var comandi = [
       { method: 'Debugger.setSkipAllPauses', params: { skip: true } },
       { method: 'Debugger.setSkipAllPauses', params: { skipped: true } },
@@ -1918,7 +2017,7 @@
   function statoIspettore() {
     var l = [];
     ispettore.conn.forEach(function (c) { if (c.stato === 'si') l.push(c.porta); });
-    return { attivo: ispettore.attivo, connessioni: l, trovate: ispettore.trovate, invii: ispettore.invii,
+    return { attivo: ispettore.attivo, spento: ispettore.spento, connessioni: l, trovate: ispettore.trovate, invii: ispettore.invii, chiuse: ispettore.chiuse,
       ultimoSecondiFa: ispettore.ultimo ? Math.round((Date.now() - ispettore.ultimo) / 1000) : null, errore: ispettore.errore };
   }
 
@@ -17979,9 +18078,17 @@
         try { p.telecomando = statoRemoto(); } catch (e) { annotaErrore('tv telecomando', e); }
         try { p.memoriaSiti = statoMemoriaSiti(); } catch (e) { annotaErrore('tv memoria siti', e); }
         try { p.ispettore = statoIspettore(); } catch (e) { annotaErrore('tv ispettore', e); }
+        try { p.pagine = statoPagine(); } catch (e) { annotaErrore('tv pagine', e); }
         try { p.scatolaNera = statoDiagnosi(); } catch (e) { annotaErrore('tv scatola nera', e); }
         try { rispondiTel(res, 200, p); } catch (e) { annotaErrore('tv risposta', e); }
       });
+      return;
+    }
+    // la diagnosi delle pagine dei tuoi siti, da leggere dal telefono (22/11, il TV dell'amico)
+    if (route === 'GET /diagnosi') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY',
+        'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'" });
+      res.end(paginaDiagnosi());
       return;
     }
     if (route === 'GET /stato') {
