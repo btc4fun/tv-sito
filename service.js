@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.21';
+  var VERSION = '1.3.22';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -658,8 +658,14 @@
   };
   // la visita nuova la apre solo la home (POST /api/visita con la sua chiave) o il servizio quando consegna un link del
   // telefono: un sito non puo' far ripartire da zero un altro sito mentre lo usi
-  var visitaSiti = 'v' + Date.now().toString(36), visiteContate = 0;
-  function nuovaVisita() { visitaSiti = 'v' + Date.now().toString(36) + '-' + (++visiteContate); return visitaSiti; }
+  var visitaSiti = 'v' + Date.now().toString(36), visiteContate = 0, visitaSenza = false;
+  // senza: la visita comincia da un'app sito senza memoria (la home lo dice quando la apre): vale per qualunque indirizzo
+  // prenda il sito (un sito che cambia nome, o che rimanda a un altro indirizzo), fino alla prossima pagina della home
+  function nuovaVisita(senza) {
+    visitaSiti = 'v' + Date.now().toString(36) + '-' + (++visiteContate);
+    visitaSenza = senza === true;
+    return visitaSiti;
+  }
   // le app sito che ripartono da zero a ogni apertura: il tuo sito di base (memoriaSito 'ricorda' per tenerla), quelle del
   // "+" solo se scelto ('cancella'). Lo stesso sito anche se cambia la fine del nome (visti.stessoSito). host: il nome
   // della pagina in cima (per un riquadro, quella che lo contiene)
@@ -676,7 +682,7 @@
     return false;
   }
   function rispostaVisita(query) {
-    return { visita: visitaSiti, senzaMemoria: senzaMemoria(query && (query.cima || query.host)) };
+    return { visita: visitaSiti, senzaMemoria: visitaSenza || senzaMemoria(query && (query.cima || query.host)) };
   }
   // Quello che i siti hanno bisogno di sapere (niente nome, preferiti, app nascoste).
   var PREFS_PUBBLICHE = ['url', 'bloccoPubblicita', 'bloccoAvanzato', 'schermoInteroAutomatico', 'apriHomeAllAccensione',
@@ -1472,8 +1478,9 @@
     }
     if (route === 'GET /api/visita') { sendJson(req, res, 200, rispostaVisita(url.query), true); return; }
     if (route === 'POST /api/visita') {
-      try { req.resume(); } catch (e) { /* niente corpo da leggere */ }
-      sendJson(req, res, 200, { visita: nuovaVisita() });
+      readBody(req).then(function (b) {
+        sendJson(req, res, 200, { visita: nuovaVisita(b.senzaMemoria === true) });
+      })['catch'](fail(req, res, 400));
       return;
     }
     // la home riceve tutto (anche la copia di riserva delle sue scelte), i siti solo il necessario
@@ -17654,6 +17661,10 @@
       var ascoltavaSchede = inAscolto();
       aggiungiEvento({ tipo: tipo });
       if (!ascoltavaSchede) apriHome('schede dal telefono');
+    } else if (tipo === 'chiudiScheda' || tipo === 'chiudiSchede') {
+      // dal telefono (richiesta del 22/11): una scheda chiusa (la x o il tocco lungo) o tutte insieme
+      var rc = cambiaSchede(tipo === 'chiudiSchede' ? { azione: 'chiudiTutte' } : { azione: 'chiudi', id: testo(body.id, 40) });
+      if (!rc.ok) return 'scheda non trovata';
     } else if (tipo === 'scheda') {
       // una scheda scelta sul telefono: il TV la apre, e da li' la scheda segue le pagine in cui navighi
       if (!cambiaSchede({ azione: 'apri', id: testo(body.id, 40) }).ok || !schedaAttiva()) return 'scheda non trovata';
@@ -18597,7 +18608,7 @@
     var h = String(query.host || '').toLowerCase().replace(/^\[|\]$/g, '');
     if (!/^[a-z0-9.\-:]{1,253}$/.test(h)) { sendJson(req, res, 400, { error: 'host non valido' }, true); return; }
     // con le liste anche il numero della visita (siti senza memoria): il sito lo sa nella stessa attesa, prima di partire
-    var testa = inByte('{"blocco":' + blocco + ',"visita":' + JSON.stringify(visitaSiti) + ',"senzaMemoria":' + senzaMemoria(query.cima || h) +
+    var testa = inByte('{"blocco":' + blocco + ',"visita":' + JSON.stringify(visitaSiti) + ',"senzaMemoria":' + (visitaSenza || senzaMemoria(query.cima || h)) +
       ',"sicuri":' + JSON.stringify(adbSicuri()) +
       (adb.dati && blocco ? ',' : ',"ver":""}'));
     var corpo = adb.dati && blocco ? adbRisposta(h) : [], lung = testa.length, i;
@@ -19214,6 +19225,15 @@
     '  .app-novita { padding: 12px 14px; border-radius: 14px; background: var(--surface); font-size: 13px; line-height: 1.45; color: var(--text-2); }',
     '  .app-novita b { color: var(--text); }',
     '  .schede-azioni { display: flex; gap: 10px; }',
+    '  .scheda-box { position: relative; margin-bottom: 8px; }',
+    '  .scheda-box .riga-scheda { margin-bottom: 0; padding-right: 52px; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }',
+    '  .chiudi-scheda { position: absolute; right: 6px; top: 50%; width: 40px; height: 40px; margin-top: -20px; border-radius: 12px;',
+    '    display: flex; align-items: center; justify-content: center; color: var(--text-2); font-size: 18px; background: transparent; }',
+    '  .chiudi-scheda:active { background: rgba(255, 255, 255, .1); }',
+    '  .menu-scheda { display: flex; gap: 8px; margin-top: 6px; }',
+    '  .menu-scheda button { flex: 1; height: 42px; border-radius: 12px; font-weight: 600; font-size: 14px; background: rgba(255, 255, 255, .08); color: var(--text); }',
+    '  .menu-scheda .rosso { background: rgba(229, 72, 77, .18); color: #ff8a8e; }',
+    '  #chiudi-tutte.conferma { border-color: rgba(229, 72, 77, .8); background: rgba(229, 72, 77, .18); color: #ff8a8e; }',
     '  .schede-azioni .secondario { flex: 1; }',
     '  .video-tv { padding: 10px 14px 14px; }',
     '  .video-tv.chiuso { padding-bottom: 12px; }',
@@ -19629,6 +19649,7 @@
     '    <button id="schede-tv" class="secondario">Mostra sul TV</button>',
     '    <button id="nuova-scheda" class="secondario">Nuova scheda</button>',
     '  </div>',
+    '  <button id="chiudi-tutte" class="secondario" hidden>Chiudi tutte le schede</button>',
     '</div>',
     '',
     '<div id="foglio-video" class="foglio su" hidden role="dialog" aria-label="Riproduci un video sul TV">',
@@ -19739,7 +19760,7 @@
     '      aggiornaStato(j);',
     '      if (corpo.tipo === \'link\' && j.ascolta === false) avviso(\'Apro la home sul TV e poi il link\\u2026\', 3000);',
     '      else if (corpo.tipo === \'riproduci\') { /* lo dice riproduciSulTv */ }',
-    '      else if (j.ascolta === false && j.tasti !== \'ok\' && corpo.tipo !== \'home\' && Date.now() - ultimoAvvisoApp > 6000) {',
+    '      else if (j.ascolta === false && j.tasti !== \'ok\' && corpo.tipo !== \'home\' && !/^chiudiSched/.test(corpo.tipo) && Date.now() - ultimoAvvisoApp > 6000) {',
     '        ultimoAvvisoApp = Date.now();',
     '        avviso(j.tasti === \'attesa\' ? \'Sul TV scegli Consenti: cos\\u00ec il telefono funziona ovunque.\' :',
     '          \'Sul TV \\u00e8 aperta un\\u2019altra app: premi Home qui sotto per tornare alla tua home.\', 4500);',
@@ -20476,13 +20497,40 @@
     '  /* ---------------------------------------------------- schede del browser: l\'elenco qui, la galleria sul TV */',
     '',
     '  function ospite(u) { var m = /^https?:\\/\\/([^\\/?#]+)/i.exec(u || \'\'); return m ? m[1].replace(/^www\\./, \'\') : \'\'; }',
+    '  // chiudere una o tutte le schede (richiesta del 22/11): poi l\'elenco si rifa\' con quello che dice il TV',
+    '  function rileggiSchede() {',
+    '    if (DEMO) return;',
+    '    api(\'/schede?t=\' + encodeURIComponent(token)).then(function (j) { if (j.__stato === 401) { perso(); return; } mostraSchede(j); }, function () {});',
+    '  }',
+    '  function chiudiScheda(id) {',
+    '    if (DEMO) { avviso(\'Scheda chiusa\', 1600); return; }',
+    '    invia({ tipo: \'chiudiScheda\', id: id }).then(function (k) { if (k && !k.error && !(k.__stato >= 400)) avviso(\'Scheda chiusa\', 1600); rileggiSchede(); });',
+    '  }',
+    '  var confermaTutte = null;',
+    '  $(\'chiudi-tutte\').addEventListener(\'click\', function () {',
+    '    var b = $(\'chiudi-tutte\');',
+    '    if (!confermaTutte) {',
+    '      b.className = \'secondario conferma\';',
+    '      b.textContent = \'Tocca di nuovo per chiuderle tutte\';',
+    '      confermaTutte = setTimeout(function () { confermaTutte = null; b.className = \'secondario\'; b.textContent = \'Chiudi tutte le schede\'; }, 3500);',
+    '      return;',
+    '    }',
+    '    clearTimeout(confermaTutte);',
+    '    confermaTutte = null;',
+    '    b.className = \'secondario\';',
+    '    b.textContent = \'Chiudi tutte le schede\';',
+    '    if (DEMO) { mostraSchede({ schede: [] }); return; }',
+    '    invia({ tipo: \'chiudiSchede\' }).then(function (k) { if (k && !k.error && !(k.__stato >= 400)) avviso(\'Schede chiuse\', 1600); rileggiSchede(); });',
+    '  });',
     '  function mostraSchede(j) {',
     '    var l = $(\'lista-schede\'), lista = (j && j.schede) || [];',
     '    while (l.firstChild) l.removeChild(l.firstChild);',
+    '    $(\'chiudi-tutte\').hidden = lista.length < 2;',
     '    if (!lista.length) { l.textContent = \'Nessuna scheda aperta: con "Nuova scheda" ne apri una.\'; return; }',
     '    lista.forEach(function (x) {',
-    '      var r = document.createElement(\'button\'), testi = document.createElement(\'div\');',
-    '      var b = document.createElement(\'b\'), sp = document.createElement(\'span\'), h = ospite(x.url);',
+    '      var box = document.createElement(\'div\'), r = document.createElement(\'button\'), testi = document.createElement(\'div\');',
+    '      var b = document.createElement(\'b\'), sp = document.createElement(\'span\'), h = ospite(x.url), via = document.createElement(\'button\');',
+    '      box.className = \'scheda-box\';',
     '      r.className = \'riga-scheda\' + (x.id === j.attiva ? \' attiva\' : \'\');',
     '      if (/^https?:\\/\\//i.test(x.img || \'\')) {',
     '        var im = document.createElement(\'img\');',
@@ -20500,11 +20548,54 @@
     '      testi.appendChild(b);',
     '      testi.appendChild(sp);',
     '      r.appendChild(testi);',
-    '      r.addEventListener(\'click\', function () {',
+    '      via.className = \'chiudi-scheda\';',
+    '      via.setAttribute(\'aria-label\', \'Chiudi la scheda\');',
+    '      via.textContent = \'\\u2715\';',
+    '      via.addEventListener(\'click\', function (ev) { ev.stopPropagation(); chiudiScheda(x.id); });',
+    '      // il tocco lungo: il menu della scheda (apri sul TV, chiudi)',
+    '      var tieni = null, mosso = false, x0 = 0, y0 = 0, lungo = false;',
+    '      function menu() {',
+    '        lungo = true;',
+    '        if (box.querySelector(\'.menu-scheda\')) return;',
+    '        try { if (navigator.vibrate) navigator.vibrate(15); } catch (e) {}',
+    '        var m = document.createElement(\'div\'), apri = document.createElement(\'button\'), chiudi = document.createElement(\'button\'), annulla = document.createElement(\'button\');',
+    '        m.className = \'menu-scheda\';',
+    '        apri.textContent = \'Apri sul TV\';',
+    '        chiudi.textContent = \'Chiudi la scheda\';',
+    '        chiudi.className = \'rosso\';',
+    '        annulla.textContent = \'Annulla\';',
+    '        apri.addEventListener(\'click\', function () { m.parentNode.removeChild(m); apriSulTv(); });',
+    '        chiudi.addEventListener(\'click\', function () { chiudiScheda(x.id); });',
+    '        annulla.addEventListener(\'click\', function () { m.parentNode.removeChild(m); });',
+    '        m.appendChild(apri);',
+    '        m.appendChild(chiudi);',
+    '        m.appendChild(annulla);',
+    '        box.appendChild(m);',
+    '      }',
+    '      function apriSulTv() {',
     '        chiudiFogli();',
     '        invia({ tipo: \'scheda\', id: x.id }).then(function (k) { if (k && !k.error && !(k.__stato >= 400)) avviso(\'Apro la scheda sul TV\', 2000); });',
+    '      }',
+    '      r.addEventListener(\'touchstart\', function (ev) {',
+    '        var t = ev.touches && ev.touches[0];',
+    '        mosso = false; lungo = false; x0 = t ? t.clientX : 0; y0 = t ? t.clientY : 0;',
+    '        clearTimeout(tieni);',
+    '        tieni = setTimeout(menu, 550);',
+    '      }, { passive: true });',
+    '      r.addEventListener(\'touchmove\', function (ev) {',
+    '        var t = ev.touches && ev.touches[0];',
+    '        if (t && (Math.abs(t.clientX - x0) > 10 || Math.abs(t.clientY - y0) > 10)) { mosso = true; clearTimeout(tieni); }',
+    '      }, { passive: true });',
+    '      r.addEventListener(\'touchend\', function () { clearTimeout(tieni); });',
+    '      r.addEventListener(\'touchcancel\', function () { clearTimeout(tieni); });',
+    '      r.addEventListener(\'contextmenu\', function (ev) { ev.preventDefault(); menu(); });',
+    '      r.addEventListener(\'click\', function () {',
+    '        if (lungo) { lungo = false; return; } // il tocco lungo ha aperto il menu: niente apertura',
+    '        apriSulTv();',
     '      });',
-    '      l.appendChild(r);',
+    '      box.appendChild(r);',
+    '      box.appendChild(via);',
+    '      l.appendChild(box);',
     '    });',
     '  }',
     '  $(\'apri-schede\').addEventListener(\'click\', function () {',

@@ -504,7 +504,7 @@
   ProfiloTV.ripara(window);
   var MOTORE = ProfiloTV.motore(window);
 
-  var VERSIONE = '1.3.21';
+  var VERSIONE = '1.3.22';
   var SERVIZIO = 'http://127.0.0.1:8090';
   var IN_FRAME = false;
   try { IN_FRAME = window.top !== window.self; } catch (e) { IN_FRAME = true; }
@@ -1216,15 +1216,15 @@
     var m = /^(https?:\/\/[^\/?#]+)/i.exec(document.referrer || '');
     return !!m && m[1].toLowerCase() === (location.protocol + '//' + location.host).toLowerCase();
   }
-  // una ricarica sola ogni 30 s, qualsiasi cosa faccia il sito
+  // al massimo una ricarica per visita su ogni sito, qualsiasi cosa faccia il sito (niente giri senza fine)
   function puoRicaricare() {
-    var prima = 0;
-    try { prima = +sessionStorage.getItem('hometv-ricaricato') || 0; } catch (e) {}
-    return !(Date.now() - prima < 30000);
+    var gia = null;
+    try { gia = sessionStorage.getItem('hometv-ricaricato'); } catch (e) { return false; }
+    return gia !== VISITA;
   }
   function ricaricaUnaVolta(perche) {
     if (!puoRicaricare()) return false;
-    try { sessionStorage.setItem('hometv-ricaricato', String(Date.now())); } catch (e) {}
+    try { sessionStorage.setItem('hometv-ricaricato', VISITA); } catch (e) { return false; }
     log('sito senza memoria: ' + perche + ', la pagina riparte pulita');
     try { location.reload(); } catch (e) { return false; }
     return true;
@@ -1245,32 +1245,34 @@
     var vista = null, pulito = false;
     try { vista = localStorage.getItem('hometv-visita'); pulito = localStorage.getItem('hometv-pulito') === '1'; } catch (e) { senzaMemoria = false; return ''; }
     if (vista === VISITA) return ''; // gia' svuotato in questa visita
+    // un riquadro che lo sa solo adesso (dalla pagina di sopra) e all'ultima uscita era stato svuotato: quello che c'e' l'ha
+    // scritto lui in questa visita, si lascia
+    if (dopo && pulito) {
+      try { localStorage.setItem('hometv-visita', VISITA); localStorage.setItem('hometv-pulito', '0'); } catch (e) {}
+      return '';
+    }
     // da un'altra pagina di questa stessa origine (il sito ha cancellato lui la sua memoria, o il servizio e' ripartito):
     // la visita e' la stessa, non si tocca niente
     if (!IN_FRAME && stessaOrigineDa()) { try { localStorage.setItem('hometv-visita', VISITA); } catch (e) {} return ''; }
     // a meta' visita da un altro sottodominio dello stesso sito: si svuota solo la memoria di questa origine, prima del
     // sito; niente cookie (sono di tutto il sito, gia' a posto) e niente ricarica
     var meta = !IN_FRAME && dalloStessoSito(), sporco = !pulito && !IN_FRAME && !meta, cookie = 0, tolte = 0;
-    tolte = svuotaMemoria(sporco ? function (db) {
-      // database trovati solo adesso (il conto e' in sottofondo): via anche i cookie, e la pagina riparte pulita
-      if (db && !cookie && !tolte) { svuotaCookie(true); ricaricaUnaVolta(db + ' database'); }
-    } : null);
+    tolte = svuotaMemoria(null);
     try {
       localStorage.setItem('hometv-visita', VISITA);
       if (!meta) localStorage.setItem('hometv-pulito', '0');
     } catch (e) {}
-    // all'ultima uscita il sito non si e' svuotato (TV spento qui, o la prima volta): anche i cookie, e la pagina si
+    // all'ultima uscita il sito non si e' svuotato (TV spento qui, il tasto Home del TV, o la prima volta): anche i cookie,
+    // compresi quelli protetti che la pagina non vede (la memoria che il sito tiene sul suo server), e la pagina si
     // ricarica una volta, pulita (il server l'aveva preparata coi cookie vecchi), quando anche i database sono andati
     if (sporco) {
       cookie = nomiCookie().length;
-      if (cookie || tolte) {
-        svuotaCookie(true);
-        // (si ferma la pagina solo se si ricarica davvero: col freno delle ricariche si va avanti, gia' pulita)
-        if (puoRicaricare()) {
-          try { window.stop(); } catch (e) {}
-          svuotaMemoria(function () { ricaricaUnaVolta('tolte ' + tolte + ' voci e ' + cookie + ' cookie'); });
-          return 'ricarica';
-        }
+      svuotaCookie(true);
+      // (si ferma la pagina solo se si ricarica davvero: col freno delle ricariche si va avanti, gia' pulita)
+      if (puoRicaricare()) {
+        try { window.stop(); } catch (e) {}
+        svuotaMemoria(function () { ricaricaUnaVolta('tolte ' + tolte + ' voci e ' + cookie + ' cookie'); });
+        return 'ricarica';
       }
     }
     if (tolte && DEBUG) log('sito senza memoria: tolte ' + tolte + ' voci');
@@ -3484,10 +3486,11 @@
     if (el.__hometvTrailerA && ora - el.__hometvTrailerA < 1500) return el.__hometvTrailer;
     var si = false;
     if (el.tagName === 'VIDEO') {
-      // in ripetizione, o detto nei nomi o nell'indirizzo, o corto e muto fuori dal lettore del sito. Mai un video di 10
-      // minuti o piu', e mai solo perche' parte muto da solo (tanti lettori veri lo fanno)
+      // muto in ripetizione, o detto nei nomi o nell'indirizzo, o corto e muto fuori dal lettore del sito. Mai un video di
+      // 10 minuti o piu', mai uno che va con l'audio solo perche' e' in ripetizione, e mai solo perche' parte muto da solo
+      // (tanti lettori veri lo fanno)
       var d = el.duration, lungo = isFinite(d) && d >= 600, corto = isFinite(d) && d > 0 && d < 240, lettore = dentroUnLettore(el);
-      si = !lungo && ((el.loop && !lettore) || RE_TRAILER.test(el.currentSrc || el.src || '') || RE_TRAILER.test(nomiTrailer(el)) ||
+      si = !lungo && ((el.loop && el.muted && !lettore) || RE_TRAILER.test(el.currentSrc || el.src || '') || RE_TRAILER.test(nomiTrailer(el)) ||
         (corto && el.muted && !lettore));
     } else if (el.tagName === 'IFRAME') {
       // un riquadro di YouTube (o Vimeo) su un sito che non e' YouTube: sui siti dei film e' il trailer. Non se il nostro
@@ -8477,14 +8480,14 @@
   }
   // un campo di ricerca vuoto accanto alla lente (la lente e' il pulsante "invia" del campo): si sceglie il campo, non si
   // manda una ricerca vuota
+  // (solo nello stesso modulo: un campo vicino di un'altra ricerca aperta non conta)
   function campoAccanto(lente) {
-    var c = campiVisibili(radiceDi(lente)), rl = lente.getBoundingClientRect(), form = lente.closest ? lente.closest('form') : null;
+    var form = lente.closest ? lente.closest('form') : null;
+    if (!form) return null;
+    var c = campiVisibili(radiceDi(lente));
     for (var i = 0; i < c.length; i++) {
       var el = c[i];
-      if (String(el.value || '').replace(/\s+/g, '') || !sembraRicerca(el)) continue;
-      if (form && form.contains(el)) return el;
-      var r = el.getBoundingClientRect();
-      if (distanza(r, rl) < 120 && Math.abs((r.top + r.bottom) / 2 - (rl.top + rl.bottom) / 2) < 60) return el;
+      if (form.contains(el) && sembraRicerca(el) && !String(el.value || '').replace(/\s+/g, '')) return el;
     }
     return null;
   }

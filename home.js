@@ -45,7 +45,7 @@
 
   var $ = UI.$;
   var DEMO = UI.DEMO;
-  var VERSIONE = '1.3.21';
+  var VERSIONE = '1.3.22';
 
   /* ============================================================ dati */
 
@@ -852,6 +852,15 @@
       var url = item.url;
       if (!UI.validUrl(url)) { editLink(item); return; }
       UI.toast('Apro ' + item.name + '…');
+      // un'app sito senza memoria (richiesta del 22/11): il servizio sa che questa visita riparte da zero, qualunque
+      // indirizzo prenda il sito (cambia nome, rimanda altrove). Al massimo 0,6 s di attesa
+      if (item.memoria === 'cancella' && !DEMO) {
+        var partito = false;
+        var vai = function () { if (partito) return; partito = true; location.href = url; };
+        setTimeout(vai, 600);
+        UI.service('/api/visita', { senzaMemoria: true }).then(vai, vai);
+        return;
+      }
       location.href = url;
       return;
     }
