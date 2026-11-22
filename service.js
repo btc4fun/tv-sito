@@ -546,7 +546,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.26';
+  var VERSION = '1.3.27';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'

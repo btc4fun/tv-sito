@@ -570,7 +570,7 @@
   ProfiloTV.ripara(window);
   var MOTORE = ProfiloTV.motore(window);
 
-  var VERSIONE = '1.3.26';
+  var VERSIONE = '1.3.27';
   var SERVIZIO = 'http://127.0.0.1:8090';
   var IN_FRAME = false;
   try { IN_FRAME = window.top !== window.self; } catch (e) { IN_FRAME = true; }
@@ -7845,7 +7845,7 @@
     if (el.tagName === 'INPUT' && el.type === 'range') return true;
     // la lente (o "Cerca") di un sito: il campo vuoto accanto si sceglie senza clic (niente ricerca vuota); se no, dopo il
     // clic, il campo che compare prende il fuoco anche se il sito non glielo da'
-    if (primaDellaLente(el, !daTelefono)) return true;
+    if (primaDellaLente(el, !daTelefono, daTelefono)) return true;
     // tutto il resto: un clic come col mouse, poi si guarda se si e' aperta una tendina
     var naviga = el.tagName === 'A' && /^https?:/i.test(el.href || '') && el.href.split('#')[0] !== location.href.split('#')[0] &&
       !el.hasAttribute('aria-haspopup') && !el.hasAttribute('aria-expanded');
@@ -8085,7 +8085,7 @@
     premutoAiRiquadri();
     segnaScelto(el);
     // la lente di un sito toccata dal telefono: come col telecomando (primaDellaLente)
-    if (primaDellaLente(el)) return;
+    if (primaDellaLente(el, false, true)) return;
     var libero = lanciaMouse(el, 'pointerdown', x, y, true);
     if (libero) libero = lanciaMouse(el, 'mousedown', x, y, true);
     if (libero) fuocoDalClic(el);
@@ -8725,7 +8725,7 @@
     });
   }
   // prima del clic sulla lente: il campo vuoto accanto (allora niente clic), o la pagina nuova da ricordare
-  function primaDellaLente(el, daTelecomando) {
+  function primaDellaLente(el, daTelecomando, daTelefono) {
     el = controlloDi(el);
     if (!sembraLente(el)) return false;
     var c = campoAccanto(el);
@@ -8740,7 +8740,9 @@
     if (a && /^https?:/i.test(a.href || '') && a.href.split('#')[0] !== location.href.split('#')[0]) {
       try { sessionStorage.setItem('hometv-dopo-lente', String(Date.now())); } catch (e) {}
       diagnosi({ q: 'lente', azione: 'pagina-di-ricerca', attivazione: !!MOTORE.attivazione });
-    } else seguiLente(el, daTelecomando);
+      // la casella se il sito non mostra niente: col telecomando, e anche dal telefono (22/11 sera: l'amico tocca la lente col
+      // puntatore del telefono; li' la tastiera e' quella del telefono, che vede la casella come ogni campo)
+    } else seguiLente(el, daTelecomando || daTelefono);
     return false;
   }
   /* La lente sui TV vecchi (richiesta del 22/11: "deve funzionare su qualsiasi TV"). Dove l'attivazione del tasto vale
@@ -8887,7 +8889,22 @@
       ricercaInApertura = 0;
       var x = testoInAttesa;
       testoInAttesa = null;
-      if (!c) { if (x && x.invio) toast('Non trovo la ricerca del sito: aprila col telecomando, poi scrivi', 4000); return; }
+      if (!c) {
+        // la ricerca del sito non si mostra (22/11 sera, TV dell'amico): col testo finito si va ai risultati del sito; mentre
+        // si scrive, la casella di Home TV prende il testo arrivato fin qui (le lettere dopo vanno li')
+        if (x && x.invio) {
+          var dove = indirizzoDiRicerca(x.t);
+          diagnosi({ q: 'lente', azione: dove ? 'indirizzo-dal-telefono' : 'nessuna-ricerca' });
+          if (dove) { toast('Cerco \u00ab' + x.t.slice(0, 40) + '\u00bb', 2500); location.href = dove; }
+          else toast('Non trovo la ricerca del sito: aprila col telecomando, poi scrivi', 4000);
+          return;
+        }
+        if (lente.isConnected && !casellaAperta() && lenteVera(lente) && apriCasellaCerca(lente)) {
+          if (x && x.t) { try { casella.campo.value = x.t; } catch (e) {} pianificaCampo(); }
+          diagnosi({ q: 'lente', azione: 'casella-dal-telefono' });
+        }
+        return;
+      }
       scegliCampo(c);
       if (x) scriviIn(c, x.t, x.invio);
     }
