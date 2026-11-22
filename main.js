@@ -2333,6 +2333,10 @@
     '.hometv-fs-anc{transform:none!important;filter:none!important;perspective:none!important;contain:none!important;will-change:auto!important;overflow:visible!important;visibility:visible!important;clip-path:none!important;' +
     'zoom:1!important;backdrop-filter:none!important;-webkit-mask:none!important;mask:none!important;opacity:1!important}' +
     '.hometv-fs-mostra{display:block!important}' +
+    '.hometv-mostra{visibility:visible!important;opacity:1!important;max-height:none!important;clip-path:none!important;transform:none!important;' +
+    'pointer-events:auto!important}div.hometv-mostra,form.hometv-mostra,section.hometv-mostra,header.hometv-mostra,nav.hometv-mostra,' +
+    'dialog.hometv-mostra,li.hometv-mostra,label.hometv-mostra,span.hometv-mostra{display:block!important;height:auto!important;overflow:visible!important}' +
+    'input.hometv-mostra,textarea.hometv-mostra{display:inline-block!important;min-width:320px!important;min-height:36px!important;height:auto!important}' +
     '.hometv-fs{position:fixed!important;left:0!important;top:0!important;right:auto!important;bottom:auto!important;width:100vw!important;height:100vh!important;max-width:none!important;max-height:none!important;min-width:0!important;min-height:0!important;margin:0!important;padding:0!important;border:0!important;transform:none!important;z-index:2147483646!important;background:#000!important;visibility:visible!important;opacity:1!important}' +
     'video.hometv-fs{object-fit:contain!important}' +
     'video.hometv-fs.hometv-fmt-riempi{object-fit:cover!important}video.hometv-fs.hometv-fmt-allarga{object-fit:fill!important}' +
@@ -8708,17 +8712,26 @@
   }
   // la lente (o il "Cerca") e' stata premuta col telecomando o toccata dal telefono: se il sito mostra un campo senza
   // dargli il fuoco, glielo si da' qui. Se la lente porta a una pagina di ricerca, lo si fa li' (dopoLaLente)
-  function seguiLente(da, daTelecomando) {
+  function seguiLente(da, daTelecomando, daTelefono) {
     var prima = campiVisibili(radiceDi(da));
     aspettaCampo(prima, radiceDi(da), true, false, function (c) {
       if (!c) {
-        // il sito non mostra nessun campo (22/11, TV dell'amico: la sua ricerca non compare): la casella di Home TV. Col
-        // tasto appena premuto (meno di 2 s fa) la tastiera del TV si apre anche qui, dove il tasto vale qualche secondo
-        var casellaSi = !!(daTelecomando && da && da.isConnected && !casellaAperta() && !campoDiTesto(attivoVero()) &&
-          lenteVera(da) && !testoNelModulo(da) && apriCasellaCerca(da));
-        diagnosi({ q: 'lente', azione: casellaSi ? 'casella' : 'niente', attivazione: !!MOTORE.attivazione });
+        if (!(daTelecomando || daTelefono) || !da || !da.isConnected || campoDiTesto(attivoVero())) return;
+        // il sito ha creato il suo campo di ricerca ma non lo mostra (sui TV vecchi lo nasconde il suo stile): lo si mostra,
+        // ed e' quello vero, con la ricerca vera del sito
+        var vero = campoNascostoDiRicerca(da);
+        if (vero && mostraCampoNascosto(vero)) {
+          scegliCampo(vero);
+          suggerisciOk(daTelecomando);
+          diagnosi({ q: 'lente', azione: 'campo-mostrato', n: contaCampiRicerca(), attivazione: !!MOTORE.attivazione });
+          return;
+        }
+        // nessun campo di ricerca nella pagina: la casella di Home TV, che alla conferma scrive nella ricerca del sito
+        var casellaSi = !casellaAperta() && lenteVera(da) && !testoNelModulo(da) && apriCasellaCerca(da);
+        diagnosi({ q: 'lente', azione: casellaSi ? 'casella' : 'niente', n: contaCampiRicerca(), attivazione: !!MOTORE.attivazione });
         return;
       }
+      suggerisciOk(daTelecomando);
       diagnosi({ q: 'lente', azione: 'campo', attivazione: !!MOTORE.attivazione });
       if (!campoDiTesto(attivoVero())) scegliCampo(c);
       else pianificaCampo(); // il fuoco gliel'ha dato il sito: dentro una parte "shadow" la pagina non lo sente
@@ -8729,20 +8742,20 @@
     el = controlloDi(el);
     if (!sembraLente(el)) return false;
     var c = campoAccanto(el);
-    if (c) { scegliCampo(c); diagnosi({ q: 'lente', azione: 'campo-accanto', attivazione: !!MOTORE.attivazione }); return true; }
-    // TV vecchi: la casella di Home TV, aperta nell'istante del tasto (col telefono non serve la tastiera del TV). Non se
-    // nel modulo della lente c'e' gia' un testo scritto: allora la lente cerca, come sempre
-    if (daTelecomando && !MOTORE.attivazione && lenteVera(el) && !testoNelModulo(el) && apriCasellaCerca(el)) {
-      diagnosi({ q: 'lente', azione: 'casella', attivazione: false });
+    if (c) {
+      scegliCampo(c);
+      suggerisciOk(daTelecomando);
+      diagnosi({ q: 'lente', azione: 'campo-accanto', attivazione: !!MOTORE.attivazione });
       return true;
     }
+    // si preme sempre la lente vera del sito, anche sui TV vecchi (richiesta del 22/11 sera: "deve aprire il box vero"): il suo
+    // campo prende il fuoco (seguiLente), e se il sito lo crea senza mostrarlo lo si mostra. Dove l'attivazione del tasto
+    // vale solo nell'istante (Chromium prima del 72) la tastiera del TV si apre con un altro OK sul campo: lo si dice
     var a = el.closest ? el.closest('a[href]') : null;
     if (a && /^https?:/i.test(a.href || '') && a.href.split('#')[0] !== location.href.split('#')[0]) {
       try { sessionStorage.setItem('hometv-dopo-lente', String(Date.now())); } catch (e) {}
       diagnosi({ q: 'lente', azione: 'pagina-di-ricerca', attivazione: !!MOTORE.attivazione });
-      // la casella se il sito non mostra niente: col telecomando, e anche dal telefono (22/11 sera: l'amico tocca la lente col
-      // puntatore del telefono; li' la tastiera e' quella del telefono, che vede la casella come ogni campo)
-    } else seguiLente(el, daTelecomando || daTelefono);
+    } else seguiLente(el, daTelecomando, daTelefono);
     return false;
   }
   /* La lente sui TV vecchi (richiesta del 22/11: "deve funzionare su qualsiasi TV"). Dove l'attivazione del tasto vale
@@ -8820,11 +8833,10 @@
     var radice = lente.isConnected ? radiceDi(lente) : document, prima = campiVisibili(radice);
     if (lente.isConnected) cliccaDavvero(lente);
     aspettaCampo(prima, radice, false, false, function (c) {
-      c = c || trovaCampoRicerca();
+      // la ricerca vera del sito, anche se non si mostra: il testo va li' e cerca il sito (mai indirizzi indovinati)
+      c = c || trovaCampoRicerca() || campoNascostoDiRicerca(lente);
       if (!c) {
-        var dove = indirizzoDiRicerca(t);
-        diagnosi({ q: 'lente', azione: dove ? 'indirizzo' : 'nessuna-ricerca' });
-        if (dove) { toast('Cerco \u00ab' + t.slice(0, 40) + '\u00bb', 2500); location.href = dove; return; }
+        diagnosi({ q: 'lente', azione: 'nessuna-ricerca', n: contaCampiRicerca() });
         toast('Non trovo la ricerca del sito: prova dal telefono, con Scrivi sul TV', 4500);
         return;
       }
@@ -8832,26 +8844,75 @@
     });
   }
   function casellaAperta() { return !!casella && casella.box.isConnected; }
-  // la ricerca del sito non si mostra (TV vecchi, 22/11): la sua pagina dei risultati, dal modulo di ricerca della pagina
-  // (anche nascosto), se no /search?q= dello stesso sito
-  var NOMI_RICERCA = /^(q|s|query|search|keyword|keywords|term|k|cerca|ricerca)$/i;
-  function indirizzoDiRicerca(t) {
-    var moduli, i, j, campi, f, azione;
-    try { moduli = document.querySelectorAll('form'); } catch (e) { moduli = []; }
-    for (i = 0; i < moduli.length; i++) {
-      f = moduli[i];
-      if (String(f.getAttribute('method') || 'get').toLowerCase() !== 'get') continue;
-      try { campi = f.querySelectorAll('input'); } catch (e) { continue; }
-      for (j = 0; j < campi.length; j++) {
-        var n = campi[j].getAttribute('name') || '', tipo = String(campi[j].getAttribute('type') || 'text').toLowerCase();
-        if (!n || !(tipo === 'search' || (tipo === 'text' && NOMI_RICERCA.test(n)))) continue;
-        azione = f.action || location.href;
-        if (!/^https?:/i.test(azione)) continue;
-        return azione.split('#')[0].split('?')[0] + '?' + encodeURIComponent(n) + '=' + encodeURIComponent(t);
+  /* Il campo di ricerca vero del sito che il sito ha creato ma non mostra (22/11 sera: sul TV vecchio dell'amico il box
+   * della ricerca non compare). Si sceglie quello della ricerca (nei nomi, o di tipo search), in testata, nel menu o in una
+   * finestra di ricerca, mai i filtri di un elenco (l'archivio). Non quelli che si vedono gia' */
+  var RE_FILTRI = /filtr|filter|archiv|sort|ordina|newsletter|login|accedi/i;
+  var RE_ZONA_RICERCA = /search|cerca|ricerca|modal|overlay|dialog|popup|header|navbar/i;
+  function campoNascostoDiRicerca(lente) {
+    var radici = [document].concat(radiciAperte()), migliore = null, punti = 1, k, i, l, el, p, d, s, nomi;
+    for (k = 0; k < radici.length; k++) {
+      try { l = radici[k].querySelectorAll('input, textarea'); } catch (e) { continue; }
+      for (i = 0; i < l.length && i < 300; i++) {
+        el = l[i];
+        if (!campoDiTesto(el) || String(el.type).toLowerCase() === 'password' || (el.id && el.id.indexOf('hometv-') === 0)) continue;
+        if (!sembraRicerca(el) || davveroVisibile(el)) continue;
+        s = el.type === 'search' ? 2 : 1;
+        for (p = el.parentNode, d = 0; p && p.nodeType === 1 && d < 10; p = p.parentNode, d++) {
+          nomi = (p.id || '') + ' ' + (typeof p.className === 'string' ? p.className : '') + ' ' + (p.getAttribute('role') || '');
+          if (RE_FILTRI.test(nomi)) { s -= 9; break; }
+          if (/^(HEADER|NAV|DIALOG)$/.test(p.tagName) || RE_ZONA_RICERCA.test(nomi)) s += 2;
+        }
+        if (lente && radiceDi(lente) === radici[k]) s += 1;
+        if (s > punti) { punti = s; migliore = el; }
       }
     }
-    if (!/^https?:$/.test(location.protocol) || paginaDiCasa()) return '';
-    return location.protocol + '//' + location.host + '/search?q=' + encodeURIComponent(t);
+    return migliore;
+  }
+  // si vede davvero: nello schermo e non tagliato o coperto (un contenitore alto zero col resto nascosto lo lascia "visibile"
+  // per le misure, ma nel suo punto c'e' altro)
+  function davveroVisibile(el) {
+    if (!campoSiVede(el)) return false;
+    var r = el.getBoundingClientRect(), radice = radiceDi(el), h = null;
+    try { h = (radice && radice.elementFromPoint ? radice : document).elementFromPoint(r.left + r.width / 2, r.top + Math.min(r.height / 2, 12)); } catch (e) {}
+    return !!h && (h === el || el.contains(h));
+  }
+  function campoSiVede(el) {
+    var r = el.getBoundingClientRect();
+    return r.width >= 20 && r.height >= 10 && r.bottom > 0 && r.top < window.innerHeight && r.right > 0 && r.left < window.innerWidth && siVede(el);
+  }
+  function contaCampiRicerca() {
+    var l, n = 0, i;
+    try { l = document.querySelectorAll('input, textarea'); } catch (e) { return 0; }
+    for (i = 0; i < l.length && i < 300; i++) if (campoDiTesto(l[i]) && sembraRicerca(l[i]) && !(l[i].id && l[i].id.indexOf('hometv-') === 0)) n++;
+    return n;
+  }
+  // lo si mostra: lui e i contenitori che lo nascondono (spenti, invisibili, trasparenti, alti zero), finche' resta il campo
+  // dove si scrive; poi tornano come li ha fatti il sito
+  var mostrati = [];
+  function mostraCampoNascosto(el) {
+    var p, d, cs, r;
+    togliMostrati();
+    for (p = el, d = 0; p && p.nodeType === 1 && p !== document.body && p !== document.documentElement && d < 14; p = contenitoreDi(p), d++) {
+      try { cs = window.getComputedStyle(p); } catch (e) { break; }
+      r = p.getBoundingClientRect();
+      if (p === el || cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) < 0.05 || r.width < 2 || r.height < 2) {
+        p.classList.add('hometv-mostra');
+        mostrati.push(p);
+      }
+    }
+    if (!davveroVisibile(el)) { togliMostrati(); return false; }
+    ascoltaSicuro(el, 'blur', function () { setTimeout(function () { if (attivoVero() !== el && !casellaAperta()) togliMostrati(); }, 400); });
+    return true;
+  }
+  function togliMostrati() {
+    for (var i = 0; i < mostrati.length; i++) try { mostrati[i].classList.remove('hometv-mostra'); } catch (e) {}
+    mostrati = [];
+  }
+  // sui TV dove il tasto vale solo nell'istante (Chromium prima del 72) il campo che il sito mostra dopo l'OK prende il
+  // fuoco, ma la tastiera del TV si apre con un altro OK: lo si dice (col telefono si scrive dal telefono)
+  function suggerisciOk(daTelecomando) {
+    if (daTelecomando && !MOTORE.attivazione) toast('Premi OK per scrivere con la tastiera del TV', 4000);
   }
   function testoNelModulo(lente) {
     var form = lente.closest ? lente.closest('form') : null, l, i;
@@ -8892,11 +8953,19 @@
       if (!c) {
         // la ricerca del sito non si mostra (22/11 sera, TV dell'amico): col testo finito si va ai risultati del sito; mentre
         // si scrive, la casella di Home TV prende il testo arrivato fin qui (le lettere dopo vanno li')
+        // la ricerca vera del sito, che il sito non mostra: col testo finito il testo va li' e cerca; mentre si scrive la si
+        // mostra e ci si scrive
+        var vero = campoNascostoDiRicerca(lente);
+        if (vero && x && x.invio) { diagnosi({ q: 'lente', azione: 'campo-nascosto-dal-telefono' }); scriviIn(vero, x.t, true); return; }
+        if (vero && mostraCampoNascosto(vero)) {
+          scegliCampo(vero);
+          if (x && x.t) scriviIn(vero, x.t, false);
+          diagnosi({ q: 'lente', azione: 'campo-mostrato-dal-telefono' });
+          return;
+        }
         if (x && x.invio) {
-          var dove = indirizzoDiRicerca(x.t);
-          diagnosi({ q: 'lente', azione: dove ? 'indirizzo-dal-telefono' : 'nessuna-ricerca' });
-          if (dove) { toast('Cerco \u00ab' + x.t.slice(0, 40) + '\u00bb', 2500); location.href = dove; }
-          else toast('Non trovo la ricerca del sito: aprila col telecomando, poi scrivi', 4000);
+          diagnosi({ q: 'lente', azione: 'nessuna-ricerca', n: contaCampiRicerca() });
+          toast('Non trovo la ricerca del sito: aprila col telecomando, poi scrivi', 4000);
           return;
         }
         if (lente.isConnected && !casellaAperta() && lenteVera(lente) && apriCasellaCerca(lente)) {

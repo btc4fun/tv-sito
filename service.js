@@ -737,7 +737,7 @@
     var numero = function (n) { n = Number(n); return isFinite(n) ? Math.max(-1, Math.min(Math.round(n), 99999999)) : -1; };
     var e = { t: Date.now(), q: parola(b.q, 12), host: host, cima: cima, riquadro: b.riquadro === true };
     ['scelta', 'perche', 'azione', 'tipo'].forEach(function (k) { if (b[k] != null && b[k] !== '') e[k] = parola(b[k], 32); });
-    ['w', 'h', 'sw', 'sh', 'durata', 'riga', 'area', 'motore'].forEach(function (k) { if (b[k] != null) e[k] = numero(b[k]); });
+    ['w', 'h', 'sw', 'sh', 'durata', 'riga', 'area', 'motore', 'n'].forEach(function (k) { if (b[k] != null) e[k] = numero(b[k]); });
     ['audio', 'attivazione'].forEach(function (k) { if (typeof b[k] === 'boolean') e[k] = b[k]; });
     if (b.tizen != null) e.tizen = String(b.tizen).replace(/[^0-9.]/g, '').slice(0, 8);
     if (b.msg != null) e.msg = testo(b.msg, 200);
