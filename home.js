@@ -45,7 +45,7 @@
 
   var $ = UI.$;
   var DEMO = UI.DEMO;
-  var VERSIONE = '1.3.20';
+  var VERSIONE = '1.3.21';
 
   /* ============================================================ dati */
 
@@ -99,6 +99,9 @@
   var DEFAULTS = {
     tema: 'notte', luce: 'vivace', categorie: true, nome: '', ricerca: 'google',
     nomeSito: 'Il mio sito', url: '',
+    // la memoria del tuo sito (richiesta del 22/11): di base riparte da zero a ogni apertura (niente cookie, niente
+    // "Continua a guardare" del sito); 'ricorda' la tiene come un browser. Gli altri siti del "+" scelgono da se'
+    memoriaSito: 'cancella',
     bloccoPubblicita: true, bloccoAvanzato: false, schermoInteroAutomatico: true, apriHomeAllAccensione: true,
     chiudiAppNascoste: true, // il custode delle app nel servizio: chiude quelle che il TV tiene aperte di nascosto
     riprendiAltroSito: false, // Continua a guardare: ogni sito tiene le sue schede (acceso: anche da un altro sito)
@@ -246,15 +249,22 @@
     var nomi = prefs.nomiApp || {};
     return { key: 'app:' + a.id, kind: 'app', id: a.id, name: nomi[a.id] || a.name, nomeVero: a.name, icon: a.icon || '', cat: categoria(a.name) };
   }
-  function sitoItem() { return { key: 'sito', kind: 'sito', name: opt('nomeSito') || 'Il mio sito', url: opt('url') }; }
+  function sitoItem() { return { key: 'sito', kind: 'sito', name: opt('nomeSito') || 'Il mio sito', url: opt('url'), memoria: memoriaDi(null) }; }
   // gli altri tuoi siti (aggiunti col "+"): uguali al tuo sito, ognuno col suo nome, il suo link e il suo blocco della
   // pubblicita' (completo come il tuo sito, o normale come il browser), quanti ne vuoi
   function altriSiti() {
     return Array.isArray(prefs.siti) ? prefs.siti.filter(function (s) { return s && s.id && typeof s.url === 'string'; }) : [];
   }
   function bloccoDi(s) { return s && s.blocco === 'completo' ? 'completo' : 'normale'; }
+  // la memoria di un sito (richiesta del 22/11): 'cancella' = riparte da zero a ogni apertura, 'ricorda' = come un browser.
+  // I siti del "+" ricordano se non si sceglie altro; il tuo sito di base riparte da zero (memoriaSito)
+  function memoriaDi(s) { return s ? (s.memoria === 'cancella' ? 'cancella' : 'ricorda') : (opt('memoriaSito') === 'ricorda' ? 'ricorda' : 'cancella'); }
+  var TESTO_MEMORIA = {
+    cancella: 'Niente cookie n\u00e9 memoria: a ogni apertura il sito riparte da zero (niente accessi, niente Continua a guardare del sito)',
+    ricorda: 'Ricorda accessi, scelte e Continua a guardare del sito, come un browser'
+  };
   function altroSitoItem(s) {
-    return { key: 'sito:' + s.id, kind: 'sito', sid: s.id, name: s.nome || UI.hostOf(s.url) || 'Sito', url: s.url, blocco: bloccoDi(s) };
+    return { key: 'sito:' + s.id, kind: 'sito', sid: s.id, name: s.nome || UI.hostOf(s.url) || 'Sito', url: s.url, blocco: bloccoDi(s), memoria: memoriaDi(s) };
   }
   function webItem() { return { key: 'web', kind: 'web', name: 'Browser' }; }
   // <solo-completa>
@@ -703,7 +713,8 @@
     var chips = chip('OK', 'Apri') + chip('OK', 'Tieni premuto per le opzioni');
     if (it.kind === 'sito') {
       return [it.sid ? 'Un tuo sito' : 'Il tuo sito', it.name, UI.validUrl(it.url) ? UI.hostOf(it.url) +
-        (it.sid ? ' · ' + (it.blocco === 'completo' ? 'Blocco completo' : 'Blocco normale') : '') :
+        (it.sid ? ' · ' + (it.blocco === 'completo' ? 'Blocco completo' : 'Blocco normale') : '') +
+        (it.memoria === 'cancella' ? ' · Riparte da zero' : '') :
         'Il link non è ancora impostato: mandalo dal telefono o tieni premuto OK', chips];
     }
     if (it.kind === 'aggiungi') {
@@ -1016,6 +1027,11 @@
       if (item.sid) {
         items.push({ label: 'Blocco della pubblicit\u00e0', value: item.blocco === 'completo' ? 'Completo' : 'Normale',
           action: function () { setTimeout(function () { cambiaBlocco(item); }, 120); } });
+      }
+      // la memoria del sito (anche del tuo sito): ricorda o riparte da zero a ogni apertura
+      items.push({ label: 'Memoria del sito', value: memoriaDi(sitoAggiunto(item)) === 'cancella' ? 'Riparte da zero' : 'Ricorda',
+        action: function () { setTimeout(function () { cambiaMemoria(item); }, 120); } });
+      if (item.sid) {
         // la conferma e' un altro menu: si apre dopo che questo si e' chiuso
         items.push({ label: 'Togli questo sito', action: function () { setTimeout(function () { togliSito(item); }, 120); } });
       }
@@ -1129,7 +1145,8 @@
   var NOMI = {
     tema: { notte: 'Notte', grafite: 'Grafite', blu: 'Blu notte', nero: 'Nero' },
     luce: { vivace: 'Vivace', tenue: 'Tenue', spenta: 'Spenta' },
-    ricerca: { google: 'Google', duckduckgo: 'DuckDuckGo', bing: 'Bing', ecosia: 'Ecosia' }
+    ricerca: { google: 'Google', duckduckgo: 'DuckDuckGo', bing: 'Bing', ecosia: 'Ecosia' },
+    memoriaSito: { cancella: 'Riparte da zero', ricorda: 'Ricorda' }
   };
   var serviceState = DEMO ? 'Anteprima sul computer' : 'Controllo…';
 
@@ -1161,6 +1178,8 @@
       { group: 'Il mio sito' },
       { label: 'Nome', text: 'nomeSito', title: 'Nome del sito', placeholder: 'Il mio sito' },
       { label: 'Link', text: 'url', title: 'Link del sito', placeholder: 'https://…', url: true },
+      { label: 'Memoria del sito', cycle: 'memoriaSito', values: ['cancella', 'ricorda'] },
+      { label: TESTO_MEMORIA[opt('memoriaSito') === 'ricorda' ? 'ricorda' : 'cancella'], info: ' ' },
       { label: 'Blocco pubblicità', bool: 'bloccoPubblicita', on: 'Attivo', off: 'Spento' },
       // spento di base: lo accende chi vuole (alcuni siti lo vietano nelle loro condizioni d'uso)
       { label: 'Blocco avanzato', bool: 'bloccoAvanzato', on: 'Acceso', off: 'Spento' },
@@ -1330,13 +1349,46 @@
       }
     });
   }
-  // un sito nuovo come app: un riquadro in piu' uguale al tuo sito, col blocco della pubblicita' scelto
-  function creaSito(nome, url, blocco) {
-    var s = { id: 's' + Date.now().toString(36), nome: nome || UI.hostOf(url), url: url, blocco: blocco === 'completo' ? 'completo' : 'normale' };
+  // un sito nuovo come app: un riquadro in piu' uguale al tuo sito, col blocco della pubblicita' e la memoria scelti
+  function creaSito(nome, url, blocco, memoria) {
+    var s = { id: 's' + Date.now().toString(36), nome: nome || UI.hostOf(url), url: url, blocco: blocco === 'completo' ? 'completo' : 'normale',
+      memoria: memoria === 'cancella' ? 'cancella' : 'ricorda' };
     prefs.siti = altriSiti().concat([s]);
     if (prefs.preferiti) prefs.preferiti = primaDelloStore(favKeysNow(), 'sito:' + s.id);
     applyPrefs();
-    UI.toast(s.nome + ' aggiunto alla home (blocco ' + s.blocco + ')');
+    UI.toast(s.nome + ' aggiunto alla home (blocco ' + s.blocco + (s.memoria === 'cancella' ? ', riparte da zero a ogni apertura' : ', ricorda') + ')');
+  }
+  // dopo il blocco, la memoria: poi il sito va nella home
+  function bloccoEMemoria(nome, fatto) {
+    scegliBlocco(nome, '', function (b) { setTimeout(function () { scegliMemoria(nome, '', function (m) { fatto(b, m); }); }, 120); });
+  }
+  // cosa ricorda il sito (richiesta del 22/11): come un browser, o niente (ogni apertura riparte da zero)
+  function scegliMemoria(nome, attuale, fatto) {
+    UI.openSheet({
+      title: 'Memoria del sito', subtitle: nome + '. Si cambia quando vuoi: OK tenuto premuto sul riquadro.',
+      items: [
+        { label: 'Ricorda', value: attuale === 'ricorda' ? 'scelto' : 'accessi, scelte, Continua a guardare',
+          action: function () { fatto('ricorda'); } },
+        { label: 'Riparti da zero', value: attuale === 'cancella' ? 'scelto' : 'niente cookie n\u00e9 memoria',
+          action: function () { fatto('cancella'); } },
+        { label: 'Cosa cambia?', action: function () { setTimeout(function () {
+          UI.openSheet({ title: 'Ricorda o riparti da zero?', subtitle: 'Ricorda, come un browser: il sito resta come lo lasci ' +
+            '(accessi fatti, scelte, il suo Continua a guardare). Riparti da zero: ogni volta che lo apri dalla home il sito ' +
+            '\u00e8 come nuovo, senza cookie n\u00e9 memoria, e quando torni alla home si cancella. Il Continua a guardare ' +
+            'della home resta comunque.', items: [{ label: 'OK', action: function () { setTimeout(function () { scegliMemoria(nome, attuale, fatto); }, 120); } }] });
+        }, 120); } }
+      ]
+    });
+  }
+  function cambiaMemoria(item) {
+    var s = sitoAggiunto(item);
+    if (item.sid && !s) return;
+    scegliMemoria(item.name, memoriaDi(s), function (m) {
+      if (s) s.memoria = m; else prefs.memoriaSito = m;
+      applyPrefs();
+      rifaiTitolo();
+      UI.toast(item.name + (m === 'cancella' ? ': riparte da zero a ogni apertura' : ': ricorda accessi e scelte'));
+    });
   }
   // quanto bloccare su quel sito: completo come il tuo sito (anche i link verso altri siti, e dalle pagine esterne si
   // torna indietro) o normale come il browser (via la pubblicita', tutti i link funzionano)
@@ -1379,12 +1431,12 @@
       }
     });
   }
-  // il nome del riquadro e il blocco della pubblicita', poi il sito va nella home (anche un sito arrivato dallo Store)
+  // il nome del riquadro, il blocco della pubblicita' e la memoria, poi il sito va nella home
   function nomeNuovoSito(v) {
     var nome = UI.hostOf(v).split('.')[0];
     nome = nome.charAt(0).toUpperCase() + nome.slice(1);
     UI.openEditor({ title: 'Nome del riquadro', value: nome, onSave: function (n) {
-      setTimeout(function () { scegliBlocco(n || nome, '', function (b) { creaSito(n || nome, v, b); }); }, 120);
+      setTimeout(function () { bloccoEMemoria(n || nome, function (b, m) { creaSito(n || nome, v, b, m); }); }, 120);
     } });
   }
   function togliSito(item) {
@@ -1432,7 +1484,7 @@
       UI.openSheet({ title: 'Quale preferito?', subtitle: 'Diventa un riquadro nella home',
         items: lista.slice(0, 40).map(function (p) {
           return { label: p.nome || UI.hostOf(p.url), value: UI.hostOf(p.url), action: function () {
-            setTimeout(function () { scegliBlocco(p.nome || UI.hostOf(p.url), '', function (b) { creaSito(p.nome, p.url, b); }); }, 120);
+            setTimeout(function () { bloccoEMemoria(p.nome || UI.hostOf(p.url), function (b, m) { creaSito(p.nome, p.url, b, m); }); }, 120);
           } };
         }) });
     }
@@ -1659,7 +1711,7 @@
   function syncService() {
     if (DEMO || !ripristinoFatto) return; // si sincronizza appena finito il ripristino
     var out = {
-      url: opt('url'), nomeSito: opt('nomeSito'),
+      url: opt('url'), nomeSito: opt('nomeSito'), memoriaSito: opt('memoriaSito') === 'ricorda' ? 'ricorda' : 'cancella',
       siti: altriSiti().concat(sitiDelloStore()), // gli altri tuoi siti e le app che si aprono come sito: nei siti valgono come il tuo (main.js e liste di filtri)
       bloccoPubblicita: !!opt('bloccoPubblicita'), bloccoAvanzato: !!opt('bloccoAvanzato'), schermoInteroAutomatico: !!opt('schermoInteroAutomatico'),
       apriHomeAllAccensione: !!opt('apriHomeAllAccensione'),

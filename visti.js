@@ -711,6 +711,9 @@ var VistiTV = (function () {
       cerca: function (b, origine) { return comePagina(origine, function () { return cercaVisto(b); }); },
       perHome: function () { return { visti: vistiPerHome(), totale: visti.length }; },
       cambia: cambiaVisti,
+      // due nomi sono lo stesso sito? (nella versione personale anche se cambia la fine: "sito.com" e "sito.biz"). Lo usa
+      // il servizio per i siti senza memoria (richiesta del 22/11)
+      stessoSito: function (a, b) { return !!a && !!b && sitoDi(a) === sitoDi(b); },
       daJellyfin: daJellyfin,
       jellyfin: idJellyfin,
       riproduci: function (url) {

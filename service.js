@@ -543,7 +543,7 @@
   var urlLib = require('url');
 
   var PORT = 8090;
-  var VERSION = '1.3.20';
+  var VERSION = '1.3.21';
   var HAS_TIZEN = typeof tizen !== 'undefined' && !!tizen && !!tizen.application;
   // le altre TV con il servizio in Node.js (LG: lg/servizio/servizio-lg.js prepara HOMETV_PIATTAFORMA e poi carica questo
   // stesso file): le loro app, la loro home, la loro cartella dei dati. Sui Samsung non c'e' e tutto resta com'e'
@@ -650,8 +650,34 @@
     'POST /api/telefono/sotto': true,  // il puntatore e' sopra un campo dove si scrive (tastiera del telefono)
     'POST /api/visti/cerca': true,     // "eri gia' a questo punto?" quando parte un video (Continua a guardare)
     'GET /api/adblock': true,        // le liste di filtri, pronte per il sito che le chiede
-    'GET /api/adblock/ver': true
+    'GET /api/adblock/ver': true,
+    // siti senza memoria (richiesta del 22/11): il numero della visita ai siti e se il sito chiesto e' un'app sito che
+    // riparte da zero. Il numero lo cambia la home quando si apre (e un sito quando il telefono manda un link): un sito
+    // senza memoria che lo vede cambiato riparte da zero. Nessun dato, solo un numero e un si'/no
+    'GET /api/visita': true
   };
+  // la visita nuova la apre solo la home (POST /api/visita con la sua chiave) o il servizio quando consegna un link del
+  // telefono: un sito non puo' far ripartire da zero un altro sito mentre lo usi
+  var visitaSiti = 'v' + Date.now().toString(36), visiteContate = 0;
+  function nuovaVisita() { visitaSiti = 'v' + Date.now().toString(36) + '-' + (++visiteContate); return visitaSiti; }
+  // le app sito che ripartono da zero a ogni apertura: il tuo sito di base (memoriaSito 'ricorda' per tenerla), quelle del
+  // "+" solo se scelto ('cancella'). Lo stesso sito anche se cambia la fine del nome (visti.stessoSito). host: il nome
+  // della pagina in cima (per un riquadro, quella che lo contiene)
+  function senzaMemoria(host) {
+    host = String(host || '').toLowerCase().replace(/^\[|\]$/g, '');
+    if (!host || !/^[a-z0-9.\-:]{1,253}$/.test(host)) return false;
+    var siti = [], i, h;
+    if (typeof prefs.url === 'string' && prefs.url && prefs.memoriaSito !== 'ricorda') siti.push(prefs.url);
+    (Array.isArray(prefs.siti) ? prefs.siti : []).forEach(function (x) { if (x && typeof x.url === 'string' && x.memoria === 'cancella') siti.push(x.url); });
+    for (i = 0; i < siti.length; i++) {
+      try { h = String(urlLib.parse(siti[i]).hostname || '').toLowerCase(); } catch (e) { h = ''; }
+      if (h && (h === host || visti.stessoSito(h, host))) return true;
+    }
+    return false;
+  }
+  function rispostaVisita(query) {
+    return { visita: visitaSiti, senzaMemoria: senzaMemoria(query && (query.cima || query.host)) };
+  }
   // Quello che i siti hanno bisogno di sapere (niente nome, preferiti, app nascoste).
   var PREFS_PUBBLICHE = ['url', 'bloccoPubblicita', 'bloccoAvanzato', 'schermoInteroAutomatico', 'apriHomeAllAccensione',
     'dominiConsentiti', 'paroleBloccate', 'selettoriExtra'];
@@ -1442,6 +1468,12 @@
         scriviJson(FILE_SETTINGS, settings);
         sendJson(req, res, 200, settings);
       })['catch'](fail(req, res, 400));
+      return;
+    }
+    if (route === 'GET /api/visita') { sendJson(req, res, 200, rispostaVisita(url.query), true); return; }
+    if (route === 'POST /api/visita') {
+      try { req.resume(); } catch (e) { /* niente corpo da leggere */ }
+      sendJson(req, res, 200, { visita: nuovaVisita() });
       return;
     }
     // la home riceve tutto (anche la copia di riserva delle sue scelte), i siti solo il necessario
@@ -3077,6 +3109,9 @@
         cerca: function (b, origine) { return comePagina(origine, function () { return cercaVisto(b); }); },
         perHome: function () { return { visti: vistiPerHome(), totale: visti.length }; },
         cambia: cambiaVisti,
+        // due nomi sono lo stesso sito? (nella versione personale anche se cambia la fine: "sito.com" e "sito.biz"). Lo usa
+        // il servizio per i siti senza memoria (richiesta del 22/11)
+        stessoSito: function (a, b) { return !!a && !!b && sitoDi(a) === sitoDi(b); },
         daJellyfin: daJellyfin,
         jellyfin: idJellyfin,
         riproduci: function (url) {
@@ -17600,6 +17635,7 @@
       if (!urlValido(body.url)) return 'indirizzo non valido';
       // il sito aperto col telefono e' voluto: la pagina non lo tratta come una pagina "esterna"
       tel.ultimoLink = { host: hostLink(body.url), at: Date.now() };
+      nuovaVisita(); // un sito scelto dal telefono: una visita nuova (siti senza memoria)
       var ascoltava = inAscolto();
       aggiungiEvento({ tipo: 'link', url: body.url });
       if (!ascoltava) apriHome('link dal telefono'); // sul TV c'e' un'altra app: prima si torna qui
@@ -17609,6 +17645,7 @@
       if (!urlValido(body.url)) return 'indirizzo non valido';
       visti.riproduci(body.url);
       tel.ultimoLink = { host: hostLink(body.url), at: Date.now() };
+      nuovaVisita();
       var ascoltavaVideo = inAscolto();
       aggiungiEvento({ tipo: 'link', url: body.url, riproduci: true });
       if (!ascoltavaVideo) apriHome('video dal telefono');
@@ -17622,6 +17659,7 @@
       if (!cambiaSchede({ azione: 'apri', id: testo(body.id, 40) }).ok || !schedaAttiva()) return 'scheda non trovata';
       var sa = schedaAttiva();
       tel.ultimoLink = { host: hostLink(sa.url), at: Date.now() };
+      nuovaVisita();
       var ascoltavaScheda = inAscolto();
       aggiungiEvento({ tipo: 'link', url: sa.url });
       if (!ascoltavaScheda) apriHome('scheda dal telefono');
@@ -18558,7 +18596,10 @@
     var blocco = prefs.bloccoPubblicita !== false;
     var h = String(query.host || '').toLowerCase().replace(/^\[|\]$/g, '');
     if (!/^[a-z0-9.\-:]{1,253}$/.test(h)) { sendJson(req, res, 400, { error: 'host non valido' }, true); return; }
-    var testa = inByte('{"blocco":' + blocco + ',"sicuri":' + JSON.stringify(adbSicuri()) + (adb.dati && blocco ? ',' : ',"ver":""}'));
+    // con le liste anche il numero della visita (siti senza memoria): il sito lo sa nella stessa attesa, prima di partire
+    var testa = inByte('{"blocco":' + blocco + ',"visita":' + JSON.stringify(visitaSiti) + ',"senzaMemoria":' + senzaMemoria(query.cima || h) +
+      ',"sicuri":' + JSON.stringify(adbSicuri()) +
+      (adb.dati && blocco ? ',' : ',"ver":""}'));
     var corpo = adb.dati && blocco ? adbRisposta(h) : [], lung = testa.length, i;
     for (i = 0; i < corpo.length; i++) lung += corpo[i].length;
     var h2 = headers(req, 'application/json; charset=utf-8', null, true);

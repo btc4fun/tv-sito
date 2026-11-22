@@ -934,6 +934,14 @@ var UI = (function () {
     setTimeout(prova, dalMac ? 1000 : 8000);
   }
 
+  // siti senza memoria (richiesta del 22/11): aprire una pagina della home chiude la visita ai siti, cosi' il prossimo sito
+  // scelto da qui (riquadro, browser, Continua a guardare, link dal telefono) riparte da zero (main.js, memoriaDelSito)
+  // (anche quando la pagina torna dalla cache del browser, con Indietro da un sito)
+  if (!DEMO) {
+    service('/api/visita', {}).then(null, function () {});
+    try { window.addEventListener('pageshow', function (ev) { if (ev.persisted) service('/api/visita', {}).then(null, function () {}); }); } catch (e) {}
+  }
+
   return {
     SERVICE: SERVICE, ON_TV: ON_TV, DEMO: DEMO, preferitiIniziali: preferitiIniziali, preferitiBrowser: preferitiBrowser,
     $: $, load: load, save: save, esc: esc, hostOf: hostOf, validUrl: validUrl, hash: hash,

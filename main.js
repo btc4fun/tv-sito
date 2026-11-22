@@ -504,7 +504,7 @@
   ProfiloTV.ripara(window);
   var MOTORE = ProfiloTV.motore(window);
 
-  var VERSIONE = '1.3.20';
+  var VERSIONE = '1.3.21';
   var SERVIZIO = 'http://127.0.0.1:8090';
   var IN_FRAME = false;
   try { IN_FRAME = window.top !== window.self; } catch (e) { IN_FRAME = true; }
@@ -791,6 +791,7 @@
       Element.prototype.attachShadow = comeOriginale(function () {
         var r = origOmbra.apply(this, arguments);
         try { this.__hometvOmbra = true; } catch (e) {} // ha dentro una parte nascosta: non e' uno strato vuoto
+        try { Object.defineProperty(this, '__hometvRadice', { value: r, configurable: true }); } catch (e) {}
         try {
           ascoltaSicuro(r, 'loadedmetadata', function (ev) {
             var v = ev.target;
@@ -844,10 +845,20 @@
   function righe(s) { return typeof s === 'string' && s ? s.split('\n') : []; }
 
   // true = risposta letta (anche "niente liste"); false = da riprovare
+  var VISITA = null, SENZA_MEMORIA = false; // la visita ai siti e se questo sito riparte da zero, dal servizio (memoriaDelSito)
+  // il nome della pagina in cima (per un riquadro, quella che lo contiene): decide lei se il sito ha memoria
+  function cimaHost() {
+    if (!IN_FRAME) return HOST;
+    var a = null;
+    try { a = location.ancestorOrigins; } catch (e) {}
+    return a && a.length ? hostOf(String(a[a.length - 1]) + '/') : '';
+  }
+  function chiDomanda() { var c = cimaHost(); return 'host=' + encodeURIComponent(HOST) + (c && c !== HOST ? '&cima=' + encodeURIComponent(c) : ''); }
   function leggiListe(testo) {
     var j;
     try { j = JSON.parse(testo); } catch (e) { return false; }
     if (!j || typeof j !== 'object') return false;
+    if (typeof j.visita === 'string') { VISITA = j.visita; SENZA_MEMORIA = j.senzaMemoria === true; }
     if (j.blocco === false) { bloccoAttivo = false; return true; } // blocco spento nelle impostazioni del TV
     if (Array.isArray(j.sicuri)) SICURI = j.sicuri.map(function (d) { return dominioBase(String(d)); });
     if (!j.ver || j.off) return true; // liste non ancora pronte, oppure sito da lasciare stare (lo dicono le liste)
@@ -872,7 +883,7 @@
     if (!bloccoAttivo || PICCOLO || NASCOSTO || typeof XMLHttpRequest !== 'function') return false;
     try {
       var x = new XMLHttpRequest();
-      origXHROpen.call(x, 'GET', SERVIZIO + '/api/adblock?host=' + encodeURIComponent(HOST), false); // attesa voluta
+      origXHROpen.call(x, 'GET', SERVIZIO + '/api/adblock?' + chiDomanda(), false); // attesa voluta
       origXHRSend.call(x, null);
       return x.status === 200 && leggiListe(x.responseText);
     } catch (e) { return false; }
@@ -883,7 +894,7 @@
   function riprovaListe(tentativo) {
     if (listePronte || !bloccoAttivo || PICCOLO || NASCOSTO || typeof window.fetch !== 'function') return;
     setTimeout(function () {
-      origFetchListe(SERVIZIO + '/api/adblock?host=' + encodeURIComponent(HOST), { cache: 'no-store' })
+      origFetchListe(SERVIZIO + '/api/adblock?' + chiDomanda(), { cache: 'no-store' })
         .then(function (r) { return r.text(); })
         .then(function (t) {
           listePronte = leggiListe(t);
@@ -1036,6 +1047,266 @@
   if (riquadroPubblicitario()) { fermaRiquadro(); return; }
   listePronte = caricaListe();
   if (LISTE && riquadroPubblicitario()) { fermaRiquadro(); return; }
+
+  /* ================================================================ siti senza memoria (richiesta del 22/11)
+   * Le app sito scelte "senza memoria" (il tuo sito di base; quelle del "+" se lo scegli quando le crei, o dopo con OK
+   * tenuto premuto) ripartono da zero a ogni apertura: niente cookie e niente memoria del sito (localStorage,
+   * sessionStorage, IndexedDB, cache, service worker), quindi niente "Continua a guardare" del sito, accessi o scelte
+   * vecchie. Restano le nostre cose (le chiavi "hometv-") e il Continua a guardare della Home, che sta sul TV. Tutto il
+   * resto (browser, link, gli altri siti, le app dello Store) ricorda come sempre.
+   * Una visita comincia quando si apre (o si torna a) una pagina della Home, che lo dice al servizio (POST /api/visita),
+   * o quando il servizio consegna un link del telefono. Il servizio dice a ogni pagina e a ogni riquadro il numero della
+   * visita e se il sito (per un riquadro, la pagina in cima) e' senza memoria, prima del codice del sito (con le liste,
+   * nella stessa attesa voluta; senza liste lo si chiede apposta; i riquadri piccoli o nascosti lo sanno dalla pagina di
+   * sopra, senza chiedere niente): un sito senza memoria che vede la visita cambiata si svuota prima di partire.
+   * All'uscita verso la Home (Indietro, Verde, il telefono) la pagina si svuota di nuovo, subito prima di andare, anche
+   * dei cookie che non vede (quelli "protetti" del server): cosi' alla visita dopo arriva pulita. Se l'uscita non c'e'
+   * stata (TV spento sul sito) li si toglie all'arrivo e la pagina si ricarica una volta, pulita.
+   * Mai toccati: i servizi con un account e i loro riquadri (YouTube, Google, Facebook, i controlli anti-robot...: sui
+   * TV la memoria di un riquadro e' quella del sito vero, e svuotarla farebbe uscire da YouTube o da Google), le app
+   * dello Store e la home. Un riquadro non tocca mai i cookie (sono quelli del suo sito, ovunque).
+   */
+  var MEMORIA_DI_SERVIZI = /(^|\.)(youtube|youtube-nocookie|youtu|google|googleapis|gstatic|googlevideo|googlesyndication|doubleclick|recaptcha|gmail|facebook|fbcdn|instagram|twitter|x|twimg|disqus|cloudflare|hcaptcha|vimeo|vimeocdn|dailymotion|dmcdn|spotify|twitch|apple|icloud|microsoft|live|amazon|paypal|stripe|github|netflix|disneyplus|primevideo|tiktok|whatsapp|telegram)\.[a-z.]+$/i;
+  function origineDiCasa(o) {
+    o = String(o || '').toLowerCase();
+    return /^https:\/\/[a-z0-9-]+\.github\.io$/.test(o) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(o) ||
+      (!!LAUNCHER_HOST && hostOf(o + '/') === LAUNCHER_HOST);
+  }
+  // dentro una pagina della home (lo Store e le sue app): mai
+  function dentroCasa() {
+    var a = null, i;
+    try { a = location.ancestorOrigins; } catch (e) {}
+    if (a) for (i = 0; i < a.length; i++) if (origineDiCasa(a[i])) return true;
+    return false;
+  }
+  // i cookie si leggono e scrivono con document.cookie vero (preso prima del sito: i gestori del consenso lo sostituiscono)
+  var cookieVero = null;
+  try { cookieVero = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie') || Object.getOwnPropertyDescriptor(HTMLDocument.prototype, 'cookie'); } catch (e) {}
+  function leggiCookie() { try { return String((cookieVero && cookieVero.get ? cookieVero.get.call(document) : document.cookie) || ''); } catch (e) { return ''; } }
+  function scriviCookie(t) { try { if (cookieVero && cookieVero.set) cookieVero.set.call(document, t); else document.cookie = t; } catch (e) {} }
+  function nomiCookie() {
+    var c = leggiCookie(), out = [], parti = c ? c.split(';') : [], i, n;
+    for (i = 0; i < parti.length; i++) {
+      n = parti[i].split('=')[0].replace(/^\s+|\s+$/g, '');
+      if (n && n.indexOf('hometv-') !== 0 && out.indexOf(n) === -1) out.push(n);
+    }
+    return out;
+  }
+  // i cookie del sito (solo la pagina in cima: un riquadro non li tocca mai). Quelli che la pagina vede si cancellano per
+  // nome; con "tutti" anche quelli che non vede (protetti, di altre cartelle o sottodomini): il browser ne tiene al
+  // massimo 180 per sito e butta i piu' vecchi, quindi se ne mettono 200 finti e poi si tolgono, e i vecchi vanno con loro
+  function svuotaCookie(tutti) {
+    if (IN_FRAME) return 0;
+    var scadi = '=; expires=Thu, 01 Jan 1970 00:00:00 GMT', host = location.hostname, domini = [''], i, j;
+    var att = location.protocol === 'https:' ? '; Secure' : '';
+    var parti = host.split('.');
+    if (!/^[\d.]+$/.test(host)) for (j = 0; j < parti.length - 1 && j < 3; j++) domini.push('; domain=' + parti.slice(j).join('.'));
+    var nomi = nomiCookie();
+    for (i = 0; i < nomi.length && i < 60; i++) for (j = 0; j < domini.length; j++) scriviCookie(nomi[i] + scadi + '; path=/' + domini[j]);
+    if (tutti) {
+      for (i = 0; i < 200; i++) scriviCookie('hometv-x' + i + '=1; path=/' + att);
+      for (i = 0; i < 200; i++) scriviCookie('hometv-x' + i + scadi + '; path=/' + att);
+    }
+    return nomi.length;
+  }
+  // i nomi dei database aperti dal sito, per cancellarli anche dove il browser non li elenca (i TV fino al 2020)
+  function dbAnnotati() {
+    try { var l = JSON.parse(localStorage.getItem('hometv-db') || '[]'); return Array.isArray(l) ? l : []; } catch (e) { return []; }
+  }
+  function annotaDatabase() {
+    try {
+      var F = window.IDBFactory && IDBFactory.prototype, apri = F && F.open;
+      if (!apri || apri.__hometv) return;
+      var nuovo = comeOriginale(function (nome) {
+        try {
+          var l = dbAnnotati(), k = String(nome);
+          if (l.indexOf(k) === -1 && l.length < 30) { l.push(k); localStorage.setItem('hometv-db', JSON.stringify(l)); }
+        } catch (e) {}
+        return apri.apply(this, arguments);
+      }, 'open');
+      try { Object.defineProperty(nuovo, '__hometv', { value: true }); } catch (e) {}
+      F.open = nuovo;
+    } catch (e) {}
+  }
+  // la memoria del sito (tranne le chiavi "hometv-"); quante voci c'erano. poi(quantiDatabase) quando anche database,
+  // cache e service worker sono andati (al massimo 1 s)
+  function svuotaMemoria(poi) {
+    var tolte = 0, liste = [], st, i, k, j;
+    try { liste.push(window.localStorage); } catch (e) {}
+    try { liste.push(window.sessionStorage); } catch (e) {}
+    for (j = 0; j < liste.length; j++) {
+      st = liste[j];
+      if (!st) continue;
+      try {
+        for (i = st.length - 1; i >= 0; i--) {
+          k = st.key(i);
+          if (k !== null && k.indexOf('hometv-') !== 0) { st.removeItem(k); tolte++; }
+        }
+      } catch (e) {}
+    }
+    // database, cache e service worker: in sottofondo (le richieste del sito arrivano dopo le nostre, e il browser le fa
+    // in ordine); si conta quando sono finiti
+    var aperti = 1, db = 0, finito = false, tempo = setTimeout(fatto, 1000), tolti = {};
+    function fatto() { if (finito) return; finito = true; clearTimeout(tempo); if (poi) poi(db); }
+    function uno() { if (--aperti <= 0) fatto(); }
+    function togliDb(nome) {
+      if (!nome || tolti[nome]) return;
+      tolti[nome] = 1;
+      try {
+        var rq = indexedDB.deleteDatabase(nome);
+        db++; aperti++;
+        rq.onsuccess = rq.onerror = rq.onblocked = uno;
+      } catch (e) {}
+    }
+    var noti = dbAnnotati();
+    for (var n = 0; window.indexedDB && n < noti.length; n++) togliDb(noti[n]);
+    try { localStorage.removeItem('hometv-db'); } catch (e) {}
+    try {
+      if (window.indexedDB && typeof indexedDB.databases === 'function') {
+        aperti++;
+        indexedDB.databases().then(function (l) {
+          for (var d = 0; d < l.length; d++) if (l[d] && l[d].name) togliDb(l[d].name);
+          uno();
+        })['catch'](uno);
+      }
+    } catch (e) {}
+    try {
+      if (window.caches && typeof caches.keys === 'function') {
+        aperti++;
+        caches.keys().then(function (nn) {
+          var tutte = [];
+          for (var c = 0; c < nn.length; c++) tutte.push(caches['delete'](nn[c]));
+          return Promise.all(tutte);
+        }).then(uno, uno);
+      }
+    } catch (e) {}
+    try {
+      if (navigator.serviceWorker && typeof navigator.serviceWorker.getRegistrations === 'function') {
+        aperti++;
+        navigator.serviceWorker.getRegistrations().then(function (r) {
+          var tutte = [];
+          for (var w = 0; w < r.length; w++) tutte.push(r[w].unregister());
+          return Promise.all(tutte);
+        }).then(uno, uno);
+      }
+    } catch (e) {}
+    uno();
+    return tolte;
+  }
+  function leggiVisita(t) {
+    var j = null;
+    try { j = JSON.parse(t); } catch (e) {}
+    if (j && typeof j.visita === 'string') { VISITA = j.visita; SENZA_MEMORIA = j.senzaMemoria === true; }
+  }
+  function chiediVisita() {
+    if (VISITA !== null || typeof XMLHttpRequest !== 'function') return;
+    try {
+      var x = new XMLHttpRequest();
+      origXHROpen.call(x, 'GET', SERVIZIO + '/api/visita?' + chiDomanda(), false); // attesa voluta, come per le liste: prima del sito
+      origXHRSend.call(x, null);
+      if (x.status === 200) leggiVisita(x.responseText);
+    } catch (e) {}
+  }
+  // si arriva da un'altra pagina dello stesso sito (anche un altro sottodominio): la visita e' la stessa
+  function dalloStessoSito() {
+    var r = hostOf(document.referrer || '');
+    return !!r && dominioBase(r) === dominioBase(HOST);
+  }
+  function stessaOrigineDa() {
+    var m = /^(https?:\/\/[^\/?#]+)/i.exec(document.referrer || '');
+    return !!m && m[1].toLowerCase() === (location.protocol + '//' + location.host).toLowerCase();
+  }
+  // una ricarica sola ogni 30 s, qualsiasi cosa faccia il sito
+  function puoRicaricare() {
+    var prima = 0;
+    try { prima = +sessionStorage.getItem('hometv-ricaricato') || 0; } catch (e) {}
+    return !(Date.now() - prima < 30000);
+  }
+  function ricaricaUnaVolta(perche) {
+    if (!puoRicaricare()) return false;
+    try { sessionStorage.setItem('hometv-ricaricato', String(Date.now())); } catch (e) {}
+    log('sito senza memoria: ' + perche + ', la pagina riparte pulita');
+    try { location.reload(); } catch (e) { return false; }
+    return true;
+  }
+  var senzaMemoria = false; // questo sito riparte da zero a ogni visita
+  // dopo: la risposta e' arrivata piu' tardi (un riquadro piccolo o nascosto, dalla pagina di sopra)
+  function memoriaDelSito(dopo) {
+    if (dentroCasa() || MEMORIA_DI_SERVIZI.test(HOST)) return '';
+    if (VISITA === null && !dopo) {
+      if (PICCOLO || NASCOSTO) return ''; // lo dira' la pagina di sopra (inviaImpostazioni)
+      chiediVisita();
+    }
+    // i nomi dei database si annotano su tutti i siti (una scrittura per nome nuovo): sui TV fino al 2020 il browser non li
+    // elenca, e un sito che passa da "Ricorda" a "Riparti da zero" deve poter cancellare anche quelli di prima
+    if (!dopo && VISITA !== null) annotaDatabase();
+    if (VISITA === null || !SENZA_MEMORIA) return ''; // servizio vecchio o muto, o un sito che ricorda
+    senzaMemoria = true;
+    var vista = null, pulito = false;
+    try { vista = localStorage.getItem('hometv-visita'); pulito = localStorage.getItem('hometv-pulito') === '1'; } catch (e) { senzaMemoria = false; return ''; }
+    if (vista === VISITA) return ''; // gia' svuotato in questa visita
+    // da un'altra pagina di questa stessa origine (il sito ha cancellato lui la sua memoria, o il servizio e' ripartito):
+    // la visita e' la stessa, non si tocca niente
+    if (!IN_FRAME && stessaOrigineDa()) { try { localStorage.setItem('hometv-visita', VISITA); } catch (e) {} return ''; }
+    // a meta' visita da un altro sottodominio dello stesso sito: si svuota solo la memoria di questa origine, prima del
+    // sito; niente cookie (sono di tutto il sito, gia' a posto) e niente ricarica
+    var meta = !IN_FRAME && dalloStessoSito(), sporco = !pulito && !IN_FRAME && !meta, cookie = 0, tolte = 0;
+    tolte = svuotaMemoria(sporco ? function (db) {
+      // database trovati solo adesso (il conto e' in sottofondo): via anche i cookie, e la pagina riparte pulita
+      if (db && !cookie && !tolte) { svuotaCookie(true); ricaricaUnaVolta(db + ' database'); }
+    } : null);
+    try {
+      localStorage.setItem('hometv-visita', VISITA);
+      if (!meta) localStorage.setItem('hometv-pulito', '0');
+    } catch (e) {}
+    // all'ultima uscita il sito non si e' svuotato (TV spento qui, o la prima volta): anche i cookie, e la pagina si
+    // ricarica una volta, pulita (il server l'aveva preparata coi cookie vecchi), quando anche i database sono andati
+    if (sporco) {
+      cookie = nomiCookie().length;
+      if (cookie || tolte) {
+        svuotaCookie(true);
+        // (si ferma la pagina solo se si ricarica davvero: col freno delle ricariche si va avanti, gia' pulita)
+        if (puoRicaricare()) {
+          try { window.stop(); } catch (e) {}
+          svuotaMemoria(function () { ricaricaUnaVolta('tolte ' + tolte + ' voci e ' + cookie + ' cookie'); });
+          return 'ricarica';
+        }
+      }
+    }
+    if (tolte && DEBUG) log('sito senza memoria: tolte ' + tolte + ' voci');
+    return tolte ? 'tolta' : '';
+  }
+  // un riquadro piccolo o nascosto: visita e risposta arrivano dalla pagina di sopra. Se c'era qualcosa, ricomincia pulito
+  function visitaDaSopra(visita, senza) {
+    if (VISITA !== null || typeof visita !== 'string') return;
+    VISITA = visita;
+    SENZA_MEMORIA = senza === true;
+    if (memoriaDelSito(true) === 'tolta') ricaricaUnaVolta('riquadro con memoria vecchia');
+  }
+  // all'uscita verso la Home: tutto via, cookie protetti compresi (nei riquadri solo la memoria, che lo sanno con un
+  // messaggio)
+  function svuotaPerUscita(poi) {
+    if (!senzaMemoria) { if (poi) poi(); return; }
+    svuotaCookie(true);
+    try { localStorage.setItem('hometv-pulito', '1'); } catch (e) {}
+    svuotaMemoria(poi ? function () { poi(); } : null);
+  }
+  function svuotaRiquadri(w) {
+    var f = null, i;
+    try { f = w.frames; } catch (e) { return; }
+    for (i = 0; f && i < f.length && i < 30; i++) { try { f[i].postMessage({ hometv: 'svuota' }, '*'); } catch (e) {} }
+  }
+  // si esce dal sito: un attimo ai riquadri, poi la pagina si svuota subito prima di andare (anche di quello che il sito
+  // ha scritto intanto)
+  function esciSenzaMemoria(vai) {
+    if (!senzaMemoria || IN_FRAME) { vai(); return; }
+    var fatto = false;
+    function va() { if (!fatto) { fatto = true; vai(); } }
+    svuotaRiquadri(window);
+    setTimeout(function () { svuotaPerUscita(va); }, 200);
+    setTimeout(va, 1500); // mai bloccati qui
+  }
+  if (memoriaDelSito() === 'ricarica') return;
 
   // Arrivati da un altro sito (pubblicita' al click, reindirizzamenti) su una pagina
   // che le liste conoscono come pubblicitaria: la si ferma subito e si torna indietro.
@@ -1850,7 +2121,7 @@
   // le schede del browser: la galleria (o, con nuova, il browser con la ricerca pronta per una scheda nuova)
   function vaiSchede(nuova) {
     if (IN_FRAME) { try { window.top.postMessage({ hometv: 'home' }, '*'); } catch (e) {} return; }
-    if (BASE) location.href = BASE + 'browser.html#' + (nuova ? 'nuova' : 'schede');
+    if (BASE) esciSenzaMemoria(function () { location.href = BASE + 'browser.html#' + (nuova ? 'nuova' : 'schede'); });
     else vaiHome();
   }
   // dalla prima pagina di un sito: indietro nella cronologia solo se si e' arrivati da una pagina della home (la home o il suo
@@ -1860,9 +2131,10 @@
   // servizio fermo, un sito mai visto), come prima
   function tornaDaNoi() {
     var r = document.referrer;
-    if (r && LAUNCHER_HOST && hostOf(r) === LAUNCHER_HOST && history.length > 1) { history.back(); return; }
-    if (BASE) { location.replace(BASE); return; }
-    if (history.length > 1) history.back(); else vaiHome();
+    // si torna alla Home: il sito si svuota prima (siti senza memoria)
+    if (r && LAUNCHER_HOST && hostOf(r) === LAUNCHER_HOST && history.length > 1) { esciSenzaMemoria(function () { history.back(); }); return; }
+    if (BASE) { esciSenzaMemoria(function () { location.replace(BASE); }); return; }
+    if (history.length > 1) esciSenzaMemoria(function () { history.back(); }); else vaiHome();
   }
   function vaiHome() {
     if (IN_FRAME) {
@@ -1870,7 +2142,7 @@
       try { window.top.postMessage({ hometv: 'home' }, '*'); } catch (e) {}
       return;
     }
-    if (BASE) { location.href = BASE; return; }
+    if (BASE) { esciSenzaMemoria(function () { location.href = BASE; }); return; }
     // l'indirizzo della home non si sa ancora (un sito mai visto, col servizio del TV fermo o non ancora sentito): lo si chiede
     // al servizio, al massimo 1,5 s. Fermo, la sua strada (/casa) sarebbe una pagina d'errore, dove Indietro chiude TizenBrew
     // (31/10): indietro nella cronologia, che di solito e' la home o il suo browser; senza niente dietro si resta qui e lo si dice
@@ -1880,8 +2152,8 @@
       fatto = true;
       clearTimeout(t);
       if (u) impostaCasa(u);
-      if (BASE) location.href = BASE;
-      else if (history.length > 1) history.back();
+      if (BASE) esciSenzaMemoria(function () { location.href = BASE; });
+      else if (history.length > 1) esciSenzaMemoria(function () { history.back(); });
       else toast('Il servizio del TV non risponde: Home TV si riapre da TizenBrew', 4000);
     }
     try {
@@ -2648,7 +2920,7 @@
       el.style.setProperty('display', 'none', 'important');
       return;
     }
-    if ((tipo === 'truffa' || tipo === 'di nuovo') && el.tagName !== 'IFRAME') {
+    if ((tipo === 'truffa' || tipo === 'di nuovo' || tipo === 'qr') && el.tagName !== 'IFRAME') {
       var f = firmaDi(el);
       if (f && firme.indexOf(f) === -1 && firme.length < 30) firme.push(f);
     }
@@ -2709,10 +2981,12 @@
     if (!IN_FRAME || riquadroDetto || riquadroPieno || !bloccoAttivo || YT_TV || !document.body) return false;
     var t = testoSenzaCodice(document.body).replace(/\s+/g, ' ');
     if (t.length > 5000) { riquadroPieno = true; return false; }
-    if (!eTruffa(t) || tuttiIVideo().length || document.getElementsByTagName('*').length > 150 ||
+    var truffa = eTruffa(t);
+    if (!(truffa || (t.length <= QR_TESTO && qrQui() && documentoQr(document, t))) || tuttiIVideo().length ||
+      document.getElementsByTagName('*').length > 150 ||
       document.querySelector('video, audio, iframe, object, embed, input, textarea, select, form')) return false;
     riquadroDetto = true;
-    try { window.parent.postMessage({ hometv: 'truffa' }, '*'); } catch (e) {}
+    try { window.parent.postMessage({ hometv: truffa ? 'truffa' : 'qr' }, '*'); } catch (e) {}
     return true;
   }
   // un pezzo di testo nuovo che potrebbe essere di un pannello truffa (il testo arriva a pezzi): si guarda intorno
@@ -2726,6 +3000,173 @@
     }
     return false;
   }
+  /* Il banner col codice QR sui tuoi siti (il tuo sito e quelli del "+"; richiesta del 2/11): dove guardi i film non serve
+   * mai e si toglie del tutto, qualsiasi cosa dica (scarica l'app, guarda sul telefono, offerte, "non sei un robot").
+   * Un pannello con dentro un disegno quadrato da codice QR (un'immagine, una tela, un disegno vettoriale, da 48 a 720
+   * punti): lo dice il disegno (indirizzo, nome, testo alternativo) o il testo del pannello (QR, inquadra, scansiona).
+   * Mai un pannello con un modulo da compilare o col video, mai un accesso col QR. Sopra la pagina, sopra il video o in
+   * mezzo alla pagina; anche in una parte "shadow", in un riquadro senza indirizzo o in un riquadro tutto suo. Sugli
+   * altri siti valgono le regole di sempre (i pannelli truffa) */
+  var QR_PAROLE = /\bq\s?r\b|qr-?code|codice\s*qr|\bscansiona(te)?\b|\binquadr(a|ate)\b|\bscan\b|scannerizza/i;
+  var QR_NOME = /(^|[^a-z])qr|qrcode|qr-?code|api\.qrserver|quickchart\.io\/qr|chart\.googleapis\.com\/chart\?[^ ]*cht=qr/i;
+  // un accesso col QR (il sito ti fa entrare dal telefono): resta, ma non sulle pagine col film (li' e' sempre pubblicita')
+  var QR_ACCESSO = /\baccedi\b|log\s?-?in|sign\s?-?in|entra con|attiva (il|la|questo|questa)|codice di attivazione|activate/i;
+  var SEL_QR = 'img, canvas, svg, picture, [style*="url("]';
+  var QR_TESTO = 1500; // un banner, non una pagina
+  // e' uno dei tuoi siti? Lo dicono le impostazioni; prima che arrivino, com'era l'ultima volta (lo si ricorda qui)
+  var sitoAppQui = false;
+  try { sitoAppQui = localStorage.getItem('hometv-sito-app') === '1'; } catch (e) {}
+  function qrQui() { return sitoAppQui && bloccoAttivo && !YT_TV && !paginaDiCasa(); }
+  // i servizi ufficiali (anche installati dallo Store come sito, Disney+) tengono i loro QR: sono accessi veri
+  var QR_UFFICIALI = /(^|\.)(disneyplus|netflix|primevideo|amazon|youtube|dazn|raiplay|mediasetinfinity|nowtv|tv\.apple|spotify|paramountplus|max|hbomax|skyshowtime|crunchyroll|twitch|discoveryplus|timvision|rakuten)\.[a-z.]+$/i;
+  // le impostazioni sono arrivate: si ricorda se e' uno dei tuoi siti e, la prima volta, si cerca in tutta la pagina
+  var qrCercatoTutto = false;
+  function ricordaSitoApp() {
+    if (!cfgCaricata) return;
+    var si = sitoApp() && !QR_UFFICIALI.test(hostPagina());
+    if (si !== sitoAppQui) {
+      sitoAppQui = si;
+      try { if (si) localStorage.setItem('hometv-sito-app', '1'); else localStorage.removeItem('hometv-sito-app'); } catch (e) {}
+    }
+    if (si && !qrCercatoTutto) { qrCercatoTutto = true; setTimeout(function () { try { cercaQrDappertutto(); } catch (e) {} }, 0); }
+  }
+  // 0 = non e' un codice QR; 1 = potrebbe esserlo (quadrato della misura giusta); 2 = lo dice lui
+  function disegnoQr(g) {
+    var r = g.getBoundingClientRect(), w = r.width, h = r.height;
+    if (w < 48 || h < 48 || w > 720 || h > 720 || w > h * 1.34 || h > w * 1.34) return 0;
+    var nome = [g.getAttribute('src'), g.getAttribute('srcset'), g.getAttribute('data-src'), g.getAttribute('alt'), g.getAttribute('class'),
+      g.id, g.getAttribute('title'), g.getAttribute('aria-label')].join(' ');
+    if (QR_NOME.test(nome)) return 2;
+    // un riquadro col disegno come sfondo: conta solo se lo sfondo e' un'immagine
+    if (!/^(IMG|CANVAS|svg|PICTURE)$/.test(g.tagName)) {
+      var sf = g.getAttribute('style') || '';
+      if (!/url\(/i.test(sf)) return 0;
+      return QR_NOME.test(sf) ? 2 : 1;
+    }
+    return 1;
+  }
+  function conVideoOModulo(el) {
+    if (/^(VIDEO|AUDIO|INPUT|TEXTAREA|SELECT|FORM)$/.test(el.tagName)) return true;
+    return !!el.querySelector('video, audio, input, textarea, select, form, object, embed');
+  }
+  function testoCorto(el) { return testoSenzaCodice(el).replace(/\s+/g, ' ').replace(/^ | $/g, ''); }
+  // gia' guardato com'e' (stessa misura, stesso testo accanto) e non era un banner: non si rifa' il giro
+  function firmaQr(g) { var p = g.parentNode; return g.clientWidth + 'x' + g.clientHeight + '|' + (p && p.textContent ? p.textContent.length : 0); }
+  // dal disegno al banner che lo contiene, e via (anche da dentro una parte "shadow": si esce dal suo ospite)
+  function togliQrDa(g) {
+    if (!g || !g.isConnected) return false;
+    var forza = disegnoQr(g); // (prima la misura, che costa poco: quasi nessuna immagine e' quadrata)
+    if (!forza || g.__hometvQrNo === firmaQr(g)) return false;
+    var pan = null, a = g, k, t, testoPan = -1;
+    // il pannello: il piu' piccolo che dice QR (o il disegno stesso se lo dice lui), senza video ne' moduli
+    for (k = 0; a && a.nodeType === 1 && k < 12 && !pan; k++, a = contenitoreDi(a)) {
+      if (a === document.body || a === document.documentElement || intoccabile(a)) break;
+      if (a !== g && (a.childElementCount > 200 || conVideoOModulo(a) || a.querySelector('iframe'))) break;
+      t = testoCorto(a);
+      if (t.length > QR_TESTO) break;
+      if (forza === 2 || QR_PAROLE.test(t) || eTruffa(t)) { pan = a; testoPan = t.length; }
+    }
+    if (!pan) { g.__hometvQrNo = firmaQr(g); return false; }
+    // poi su, finche' il testo resta quello (lo sfondo scuro, la cornice con la X)
+    var cima = pan;
+    for (a = contenitoreDi(pan), k = 0; a && a.nodeType === 1 && k < 8; a = contenitoreDi(a), k++) {
+      if (a === document.body || a === document.documentElement || intoccabile(a) || a.childElementCount > 200) break;
+      if (conVideoOModulo(a) || a.querySelector('iframe')) break;
+      if (testoCorto(a).length > testoPan + 40) break;
+      cima = a;
+    }
+    // un accesso col QR (entra dal telefono, attiva il TV): resta, tranne che sulle pagine col film
+    t = testoCorto(cima);
+    if (QR_ACCESSO.test(t) && !eTruffa(t) && !paginaConVideo()) { g.__hometvQrNo = firmaQr(g); return false; }
+    if (intoccabile(cima) || cima.__hometvTolto) return false;
+    cima.__hometvTruffa = true;
+    togliPannello(cima, 'qr');
+    return true;
+  }
+  // un pezzo nuovo della pagina: i disegni che ha dentro (anche nella sua parte "shadow")
+  function togliQr(n) {
+    if (!n || n.nodeType !== 1 || !n.parentNode || NON_PANNELLO.test(n.tagName) || n.__hometvTolto || !qrQui()) return false;
+    var l = /^(IMG|CANVAS|svg|PICTURE)$/.test(n.tagName) ? [n] : n.querySelectorAll(SEL_QR), i;
+    for (i = 0; i < l.length && i < 40; i++) if (togliQrDa(l[i])) return true;
+    var r = n.shadowRoot || n.__hometvRadice;
+    if (r) { l = r.querySelectorAll(SEL_QR); for (i = 0; i < l.length && i < 40; i++) if (togliQrDa(l[i])) return true; }
+    return false;
+  }
+  // la pagina del film (un video, o il riquadro del lettore)
+  function paginaConVideo() {
+    return !!(tuttiIVideo().length || document.querySelector('iframe[allowfullscreen], iframe[allow*="fullscreen"], iframe[src*="embed"], iframe[src*="player"]'));
+  }
+  // un documento (un riquadro) che e' tutto un banner col QR
+  function documentoQr(d, t) {
+    var l = d.querySelectorAll(SEL_QR);
+    for (var i = 0; i < l.length && i < 20; i++) {
+      var f = disegnoQr(l[i]);
+      if (f === 2 || (f === 1 && QR_PAROLE.test(t))) return !QR_ACCESSO.test(t) || eTruffa(t) || paginaConVideo();
+    }
+    return false;
+  }
+  // un riquadro senza indirizzo (o col contenuto scritto da uno script) che e' un banner col QR: via il riquadro
+  function riquadroQr(el) {
+    if (el.__hometvVideo || el === fsEl || el.__hometvTolto || !qrQui()) return false;
+    var s = el.getAttribute('src');
+    if (s && !/^\s*(about:|javascript:|blob:)/i.test(s)) return false; // con un indirizzo: ci pensa il nostro codice la' dentro
+    var d = null;
+    try { d = el.contentDocument; } catch (e) { d = null; }
+    if (!d || !d.body || !d.body.firstChild || d.getElementsByTagName('*').length > 150 ||
+      d.querySelector('video, audio, object, embed, input, textarea, select, form')) return false;
+    var t = testoCorto(d.body);
+    if (t.length > QR_TESTO || !documentoQr(d, t)) return false;
+    el.__hometvTruffa = true;
+    togliPannello(el, 'qr');
+    return true;
+  }
+  // in tutta la pagina (la prima volta, e ogni tanto per quelli che il sito fa comparire senza aggiungerli): le immagini e
+  // le tele quadrate, i riquadri senza indirizzo e le parti "shadow" appese alla pagina
+  var ultimaRicercaQr = 0;
+  function cercaQrDappertutto() {
+    ultimaRicercaQr = Date.now();
+    if (!qrQui() || !document.body) return;
+    var l = document.querySelectorAll('img, canvas'), i;
+    for (i = 0; i < l.length && i < 400; i++) { try { togliQrDa(l[i]); } catch (e) {} }
+    var f = document.getElementsByTagName('iframe');
+    for (i = 0; i < f.length && i < 40; i++) { try { riquadroQr(f[i]); } catch (e) {} }
+    var radici = document.body.children;
+    for (i = 0; i < radici.length && i < 80; i++) if (radici[i].shadowRoot || radici[i].__hometvRadice) { try { togliQr(radici[i]); } catch (e) {} }
+  }
+  // un testo nuovo che parla di QR (il pannello si scrive a pezzi): il disegno accanto, fino a 6 contenitori su
+  function qrVicino(el) {
+    for (var a = el, k = 0; a && a.nodeType === 1 && k < 6 && a !== document.body; a = contenitoreDi(a), k++) {
+      if (a.childElementCount > 80) return;
+      if (a.querySelector(SEL_QR)) { guardaQrPoi(a); return; }
+    }
+  }
+  function riguardaRiquadroQr(fr) {
+    [150, 800].forEach(function (t) { setTimeout(function () { try { riquadroQr(fr); } catch (e) {} }, t); });
+  }
+  // I pezzi nuovi e le immagini appena caricate si guardano tutti insieme al prossimo disegno della pagina, prima che si
+  // vedano: le misure costano poco solo li' (mentre il sito sta costruendo la pagina ogni misura la ricalcolerebbe tutta)
+  var qrCoda = [], qrInCoda = false;
+  function guardaQrPoi(n) {
+    if (qrCoda.length < 300) qrCoda.push(n);
+    if (qrInCoda) return;
+    qrInCoda = true;
+    var fai = function () {
+      qrInCoda = false;
+      var l = qrCoda;
+      qrCoda = [];
+      if (!qrQui()) return;
+      for (var i = 0; i < l.length; i++) {
+        try { if (/^(IMG|CANVAS|svg|PICTURE)$/.test(l[i].tagName)) togliQrDa(l[i]); else togliQr(l[i]); } catch (e) {}
+      }
+    };
+    if (window.requestAnimationFrame) window.requestAnimationFrame(fai); else setTimeout(fai, 16);
+  }
+  // un'immagine arrivata dopo (il disegno del QR si carica quando il pannello c'e' gia')
+  ascoltaSicuro(document, 'load', function (ev) {
+    var g = ev.target;
+    if (g && g.tagName === 'IMG' && qrQui()) guardaQrPoi(g);
+  }, true);
+
   // ogni tanto (anche a schermo intero): quello che fosse scappato
   function pulisciPannelli() {
     if (fsEl) controllaTardivi();
@@ -2734,18 +3175,22 @@
     for (r = 0; r < radici.length; r++) for (i = 0; i < radici[r].children.length && i < 80; i++) l.push(radici[r].children[i]);
     var fr = document.getElementsByTagName('iframe');
     for (i = 0; i < fr.length && i < 40; i++) l.push(fr[i]);
+    var qr = qrQui();
     for (i = 0; i < l.length; i++) {
       var el = l[i];
       if (!el.parentNode || el === document.body || el === document.head) continue;
       var tipo = pannelloPubblicita(el);
       if (tipo) { togliPannello(el, tipo); continue; }
       guardaStile(el);
+      if (qr && el.tagName === 'IFRAME' && riquadroQr(el)) continue;
       if (el.tagName !== 'IFRAME' && !el.__hometvGrande && el.childElementCount < 80) {
         // i contenitori di tutta la pagina non si rileggono ogni volta (un pannello nuovo li' dentro lo vede l'osservatore)
         if ((el.textContent || '').length > 20000) el.__hometvGrande = true;
-        else togliTruffa(el);
+        else if (!togliTruffa(el) && qr) togliQr(el);
       }
     }
+    // (a schermo intero si vede solo il film: si riguarda tutto all'uscita)
+    if (qr && !fsEl && Date.now() - ultimaRicercaQr > 3000) cercaQrDappertutto();
     riquadroTruffa();
   }
   // stili cambiati: un riquadro vuoto che diventa grande e sopra tutto, uno strato che si allarga. Si guardano solo i
@@ -2810,6 +3255,7 @@
             if (nodo.nodeType === 3) {
               var pe = nodo.parentElement;
               if (pe && pe !== document.head && !NON_PANNELLO.test(pe.tagName) && TRUFFA_PEZZO.test(nodo.data || '')) truffaDa(pe);
+              if (pe && pe !== document.head && QR_PAROLE.test(nodo.data || '') && qrQui()) qrVicino(pe);
               continue;
             }
             if (nodo.nodeType !== 1 || !nodo.parentNode) continue; // gia' tolto
@@ -2827,6 +3273,13 @@
             if (nodo.parentNode && !NON_PANNELLO.test(nodo.tagName) && nodo.parentNode !== document.head && nodo.childElementCount < 80) {
               var tn = nodo.textContent || '';
               if (tn.length <= 4000 && TRUFFA_PEZZO.test(tn) && !togliTruffa(nodo)) truffaDa(nodo.parentElement);
+            }
+            if (nodo.parentNode && qrQui()) {
+              if (nodo.tagName === 'IFRAME') {
+                // il riquadro senza indirizzo si riempie subito dopo: lo si riguarda a contenuto arrivato
+                if (!riquadroQr(nodo)) riguardaRiquadroQr(nodo);
+              } else if (nodo.parentNode !== document.head && (/^(IMG|CANVAS|svg|PICTURE)$/.test(nodo.tagName) ||
+                (nodo.firstElementChild && nodo.querySelector(SEL_QR)) || nodo.shadowRoot || nodo.__hometvRadice)) guardaQrPoi(nodo);
             }
           } catch (e) {}
         }
@@ -2875,7 +3328,8 @@
   function inviaImpostazioni(frame) {
     try {
       // ok: da quanto hai premuto OK qui (un lettore che parte in un riquadro appena aperto sa che l'hai chiesto tu)
-      frame.contentWindow.postMessage({ hometv: 'cfg', bloccoSpento: !bloccoAttivo, cfg: CFG, ok: Date.now() - ultimoOk }, '*');
+      frame.contentWindow.postMessage({ hometv: 'cfg', bloccoSpento: !bloccoAttivo, cfg: CFG, ok: Date.now() - ultimoOk,
+        visita: VISITA, senzaMemoria: SENZA_MEMORIA }, '*');
     } catch (e) {}
   }
   // OK o un clic qui: lo sanno anche i riquadri (un lettore in un riquadro fatto partire da questa pagina)
@@ -2984,6 +3438,11 @@
     try { window.parent.postMessage({ hometv: 'video' }, '*'); } catch (e) {}
   }
   if (IN_FRAME) {
+    // un video lungo qui dentro: la pagina di sopra sa che questo riquadro non e' un trailer
+    ascoltaSicuro(document, 'loadedmetadata', function (ev) {
+      var v = ev.target;
+      if (v && v.tagName === 'VIDEO' && v.duration >= 600 && isFinite(v.duration)) { try { window.parent.postMessage({ hometv: 'durata', durata: v.duration }, '*'); } catch (e) {} }
+    }, true);
     ascoltaSicuro(document, 'loadedmetadata', function (ev) { if (ev.target && ev.target.tagName === 'VIDEO') diciVideo(); }, true);
     ascoltaSicuro(document, 'play', function (ev) { if (ev.target && ev.target.tagName === 'VIDEO') diciVideo(); }, true);
     ascoltaSicuro(window, 'load', function () { if (tuttiIVideo().length) diciVideo(); });
@@ -3005,9 +3464,82 @@
   var LETTORE_SITO = /player|plyr|jw|vjs|video-js|shaka|bmpui|clappr|mejs|fluid|vds|media-/i;
   // riquadri che non sono mai il video da guardare: commenti, social, mappe, accessi, pannelli dei siti
   var NON_LETTORE = /disqus|comments|commenti|facebook\.com\/plugins|platform\.twitter|instagram\.com|recaptcha|google\.[a-z.]+\/maps|accounts\.google|ogs\.google/i;
+  /* Il trailer non e' il film (richiesta del 22/11: "parte il trailer e non il film"). Sulla pagina di un film c'e'
+   * spesso il trailer accanto al lettore vero: un video muto che parte da solo in ripetizione (lo sfondo grande della
+   * pagina) o un riquadro di YouTube. Un trailer non e' mai il lettore scelto da solo se c'e' altro, non va a schermo
+   * intero da solo (neanche subito dopo un OK su "Riproduci") e non riprende l'audio; quando parte il film vero il trailer
+   * si ferma e lascia lo schermo intero al film. Lo si guarda solo se lo scegli tu (OK sul trailer o su "Trailer"). */
+  var RE_TRAILER = /trailer|teaser|anteprima|preview|promo|bg-?video|video-?bg|background-?video|video-?background|hero-?video|video-?hero|backdrop-?video/i;
+  var RE_TRAILER_DOVE = /(^|\.)(youtube(-nocookie)?\.com|youtu\.be|vimeo\.com|dailymotion\.com)$/i;
+  function nomiTrailer(el, livelli) {
+    var t = '';
+    for (var n = el, i = 0; n && n.nodeType === 1 && i < (livelli || 3) && n !== document.body; n = n.parentElement, i++) {
+      t += ' ' + (typeof n.className === 'string' ? n.className : '') + ' ' + n.id + ' ' + (n.getAttribute('aria-label') || '') + ' ' + (n.getAttribute('title') || '');
+    }
+    return t;
+  }
+  function eTrailer(el) {
+    if (!el || el.nodeType !== 1) return false;
+    var ora = Date.now();
+    if (el.__hometvTrailerA && ora - el.__hometvTrailerA < 1500) return el.__hometvTrailer;
+    var si = false;
+    if (el.tagName === 'VIDEO') {
+      // in ripetizione, o detto nei nomi o nell'indirizzo, o corto e muto fuori dal lettore del sito. Mai un video di 10
+      // minuti o piu', e mai solo perche' parte muto da solo (tanti lettori veri lo fanno)
+      var d = el.duration, lungo = isFinite(d) && d >= 600, corto = isFinite(d) && d > 0 && d < 240, lettore = dentroUnLettore(el);
+      si = !lungo && ((el.loop && !lettore) || RE_TRAILER.test(el.currentSrc || el.src || '') || RE_TRAILER.test(nomiTrailer(el)) ||
+        (corto && el.muted && !lettore));
+    } else if (el.tagName === 'IFRAME') {
+      // un riquadro di YouTube (o Vimeo) su un sito che non e' YouTube: sui siti dei film e' il trailer. Non se il nostro
+      // codice la' dentro ha visto un video lungo (un film messo su Vimeo)
+      si = !(el.__hometvDurata >= 600) && ((!suYoutube() && RE_TRAILER_DOVE.test(hostOf(el.src || ''))) || RE_TRAILER.test(nomiTrailer(el)) ||
+        /trailer/i.test(el.src || ''));
+    }
+    try { el.__hometvTrailer = si; el.__hometvTrailerA = ora; } catch (e) {}
+    return si;
+  }
+  // il trailer l'hai scelto tu: l'ultimo OK (o clic) era sul trailer, dentro di lui, sul Play disegnato sopra di lui, o su
+  // un pulsante "Trailer". Cosa dice la cosa scelta si guarda una volta sola, al clic
+  var sceltoEl = null, sceltoA = 0, sceltoTrailer = false, sceltoFilm = false;
+  var RE_PULS_FILM = /guarda|riproduci|watch|film|episodio|puntata|stagione/i;
+  function segnaScelto(el) {
+    sceltoEl = el; sceltoA = Date.now();
+    var piccolo = false;
+    try { piccolo = el.getElementsByTagName('*').length < 40; } catch (e) {}
+    var t = (piccolo ? testoBreve(el).slice(0, 60) : '') + ' ' + nomiTrailer(el, 2);
+    sceltoTrailer = /trailer|teaser/i.test(t);
+    sceltoFilm = !sceltoTrailer && RE_PULS_FILM.test(t);
+  }
+  function trailerVoluto(el) {
+    if (!sceltoEl || Date.now() - sceltoA > 15000) return false;
+    if (sceltoTrailer) return true;
+    if (sceltoEl === el || (el.contains && el.contains(sceltoEl)) || (sceltoEl.contains && sceltoEl.contains(el))) return true;
+    if (sceltoFilm || !el.parentElement || sceltoEl.parentElement !== el.parentElement || el.parentElement === document.body) return false;
+    var a = el.getBoundingClientRect(), b = sceltoEl.getBoundingClientRect();
+    return b.left >= a.left - 2 && b.right <= a.right + 2 && b.top >= a.top - 2 && b.bottom <= a.bottom + 2;
+  }
+  // parte il film vero: i trailer della pagina si fermano (e restano muti), quelli nei riquadri anche
+  function fermaTrailer(tranne) {
+    var vs = tuttiIVideo(), fr = document.querySelectorAll('iframe'), i;
+    for (i = 0; i < vs.length; i++) {
+      if (vs[i] === tranne || !eTrailer(vs[i])) continue;
+      try { vs[i].muted = true; if (!vs[i].paused) vs[i].pause(); } catch (e) {}
+    }
+    for (i = 0; i < fr.length; i++) {
+      if (fr[i] === tranne || !fr[i].__hometvPronto || !eTrailer(fr[i])) continue;
+      try { fr[i].contentWindow.postMessage({ hometv: 'taci' }, '*'); } catch (e) {}
+    }
+  }
+  // nel riquadro del trailer: tutti i video fermi e muti (anche nei suoi riquadri)
+  function taciTutto() {
+    var vs = tuttiIVideo(), fr = document.querySelectorAll('iframe'), i;
+    for (i = 0; i < vs.length; i++) { try { vs[i].muted = true; if (!vs[i].paused) vs[i].pause(); } catch (e) {} }
+    for (i = 0; i < fr.length; i++) { try { fr[i].contentWindow.postMessage({ hometv: 'taci' }, '*'); } catch (e) {} }
+  }
   function punteggioPlayer(el) {
     var a = areaVisibile(el);
     if (a <= 200 * 150) return 0;
+    if (eTrailer(el) && !trailerVoluto(el)) a *= 0.05;  // il trailer: solo se non c'e' altro
     // un riquadro alto migliaia di punti (i commenti) non vale piu' di uno schermo; uno fuori dallo schermo vale meno
     var r = el.getBoundingClientRect(), H = window.innerHeight || 1;
     if (r.height > H) a = a / r.height * H;
@@ -3111,6 +3643,7 @@
     }
     document.documentElement.classList.add('hometv-fs-on');
     guardaClassiFs();
+    if (!eTrailer(el)) fermaTrailer(el); // il film: il trailer della pagina tace
     if (el.tagName === 'VIDEO') attaccaLettore(el);
     // nel riquadro del lettore si entra solo se c'e' anche li' questo codice,
     // che sa riportare il telecomando fuori (tasto Indietro)
@@ -3138,6 +3671,8 @@
     var prima = fsEl;
     staccaLettore();
     fsEl = null;
+    // la pagina torna a vedersi: niente banner col QR comparsi intanto (sui tuoi siti)
+    if (qrQui()) setTimeout(function () { try { cercaQrDappertutto(); } catch (e) {} }, 0);
     if (!silenzioso) {
       esciDalloSchermoInteroDelSito();
       // uscito a mano: questo video non torna a schermo intero da solo (un video nuovo nello stesso lettore si')
@@ -3177,6 +3712,11 @@
     if (!v || v.tagName !== 'VIDEO') return;
     if (fsEl && !fsEl.isConnected) esciSchermoIntero(true); // il sito ha tolto il video di prima
     var appenaPremuto = Date.now() - ultimoOk < 10000;
+    // il trailer che parte (lo sfondo della pagina del film) non va a schermo intero da solo; il film vero che parte
+    // mentre il trailer e' a schermo intero prende il suo posto
+    var trailer = eTrailer(v) && !trailerVoluto(v);
+    if (trailer) return;
+    if (fsEl && fsEl !== v && eTrailer(fsEl)) { esciSchermoIntero(true); fermaTrailer(v); }
     // nel browser solo se l'hai fatto partire tu (come un browser normale); YouTube ha il suo lettore per la TV
     if (fsEl || !CFG.schermoInteroAutomatico || uscitoDa(v, true) || (!sitoApp() && !appenaPremuto) || suYoutube()) return;
     if (areaVisibile(v) < 200 * 150) return;
@@ -3188,7 +3728,7 @@
   }
   document.addEventListener('playing', suPlaying, true);
   // un clic vero (mouse o tocco) vale come un OK appena premuto
-  ascoltaSicuro(document, 'click', function (ev) { if (ev.isTrusted) { ultimoOk = Date.now(); premutoAiRiquadri(); } }, true);
+  ascoltaSicuro(document, 'click', function (ev) { if (ev.isTrusted) { ultimoOk = Date.now(); premutoAiRiquadri(); if (ev.target && ev.target.nodeType === 1) segnaScelto(ev.target); } }, true);
 
   // il video "vero" della pagina, non un'anteprima o uno sfondo: lungo, non in ripetizione, grande
   function videoPrincipale(v) {
@@ -3226,10 +3766,13 @@
     if (fsEl) rimettiClassiFs(); // anche senza MutationObserver
     var v = videoAttivo();
     if (!v || v === fsEl || v.paused || v.ended || v.readyState < 3 || uscitoDa(v, false) || areaVisibile(v) < 200 * 150) return;
+    if (eTrailer(v) && !trailerVoluto(v)) return; // il trailer di sfondo: mai a schermo intero da solo
     var appena = Date.now() - ultimoOk < 10000;
     if (fsEl) {
-      if (fsEl.tagName !== 'VIDEO' || !(fsEl.paused || fsEl.ended)) return;
-      esciSchermoIntero(true);
+      // a schermo intero c'era il trailer e ora va il film: tocca al film
+      if (eTrailer(fsEl)) { esciSchermoIntero(true); fermaTrailer(v); }
+      else if (fsEl.tagName !== 'VIDEO' || !(fsEl.paused || fsEl.ended)) return;
+      else esciSchermoIntero(true);
     } else if (!CFG.schermoInteroAutomatico || (!sitoApp() && !appena) || suYoutube() ||
       (v.muted && !appena && v !== videoZittito && !videoPrincipale(v))) return;
     entraSchermoIntero(v, appena);
@@ -3248,17 +3791,20 @@
     // comandi per questa pagina: solo dal riquadro del lettore in uso (a schermo intero, scelto, sotto il puntatore,
     // o appena fatto partire da noi), non da un riquadro qualsiasi (una pubblicita')
     var usato = null, dalLettore = false;
-    if (/^(serie\?|vaiEpisodio|home|pannello|esci|playing|statoVideo|cerca)$/.test(d.hometv)) {
+    if (/^(serie\?|vaiEpisodio|puntata|home|pannello|esci|playing|statoVideo|cerca)$/.test(d.hometv)) {
       usato = frame || riquadroDi(ev.source);
       dalLettore = !!usato && (usato === fsEl || usato === document.activeElement || usato === pt.riquadro || usato === corrente ||
         Date.now() < avviaProssimoFinoA);
     }
     if (d.hometv === 'pronto' && frame) {
-      // nel riquadro c'e' questo codice: gli si passano le impostazioni della pagina
+      // nel riquadro c'e' questo codice: gli si passano le impostazioni della pagina. Ogni pagina nuova nel riquadro lo
+      // ridice (il lettore della puntata nuova, anche nello stesso riquadro): si contano
       frame.__hometvPronto = true;
+      frame.__hometvProntoN = (frame.__hometvProntoN || 0) + 1;
+      riquadriPronti++;
       inviaImpostazioni(frame);
-      // puntata nuova appena aperta con il lettore in un riquadro: si fa partire
-      if (Date.now() < avviaProssimoFinoA) try { frame.contentWindow.postMessage({ hometv: 'avvia' }, '*'); } catch (e) {}
+      // puntata nuova appena aperta con il lettore in un riquadro: si fa partire (solo un lettore, mai una pubblicita')
+      if (Date.now() < avviaProssimoFinoA && (frame === fsEl || eLettore(frame))) avviaRiquadro(frame);
     } else if (d.hometv === 'serie?' && !IN_FRAME && ev.source && (dalLettore || (usato && areaVisibile(usato) >= window.innerWidth * window.innerHeight * 0.25))) {
       // il lettore in un riquadro chiede se qui ci sono la puntata dopo e quella prima
       try {
@@ -3289,7 +3835,19 @@
         diciVideo();
       }
     } else if (d.hometv === 'vaiEpisodio' && !IN_FRAME && dalLettore) {
-      vaiEpisodio(trovaEpisodio(d.dir < 0 ? -1 : 1), d.dir < 0 ? -1 : 1);
+      var dirEp = d.dir < 0 ? -1 : 1, ep = trovaEpisodio(dirEp);
+      if (ep) vaiEpisodio(ep, dirEp);
+      else toast('Il sito non ha la puntata ' + (dirEp > 0 ? 'dopo' : 'prima'), 4000);
+    } else if (d.hometv === 'puntata' && dalLettore) {
+      // il lettore nel riquadro ha usato il suo pulsante della puntata dopo (o prima): il sito di solito ricarica questa
+      // pagina o cambia il riquadro, e il lettore nuovo deve partire da solo, dall'inizio. Lo sanno anche le pagine piu' su
+      // (un lettore dentro un riquadro dentro un altro riquadro)
+      segnaProssimo();
+      iniziaPuntata();
+      avviaProssimoFinoA = Date.now() + ATTESA_AVVIO;
+      if (IN_FRAME) { try { window.parent.postMessage({ hometv: 'puntata', dir: d.dir < 0 ? -1 : 1 }, '*'); } catch (e) {} }
+      var primaFr = { riquadro: usato, n: usato.__hometvProntoN || 0, url: location.href, segni: guardaCambio(null) };
+      setTimeout(function () { avviaDopoProssimo(true, primaFr); }, 700);
     } else if (d.hometv === 'azione' && IN_FRAME && ev.source === window.parent && typeof d.azione === 'string' && AL_LETTORE[d.azione] === 1) {
       // un tasto arrivato alla pagina che contiene questo lettore (per esempio dal telefono)
       if (!fsEl && !d.dentro && d.azione !== 'indietro' && d.azione !== 'stop') {
@@ -3317,6 +3875,13 @@
     } else if (d.hometv === 'video' && IN_FRAME && ev.source === window.parent) {
       // dalla sezione Video del telefono, per il lettore che sta qui dentro
       comandoVideo(d);
+    } else if (d.hometv === 'taci' && IN_FRAME && ev.source === window.parent) {
+      // il trailer in questo riquadro: e' partito il film nella pagina di sopra
+      taciTutto();
+    } else if (d.hometv === 'svuota' && IN_FRAME && ev.source === window.parent) {
+      // la pagina di sopra esce verso la Home (siti senza memoria): anche questo riquadro, e i suoi
+      svuotaRiquadri(window);
+      svuotaPerUscita();
     } else if (d.hometv === 'chiudiLettore' && IN_FRAME && ev.source === window.parent) {
       // la pagina che contiene il lettore e' uscita dallo schermo intero: il video si ferma, il lettore si chiude
       if (fsEl) {
@@ -3325,11 +3890,13 @@
         esciSchermoIntero(true);
       }
     } else if (d.hometv === 'avvia' && IN_FRAME && ev.source === window.parent) {
+      if (d.puntata === true) iniziaPuntata();
       avviaDopoProssimo(true);
     } else if (d.hometv === 'cfg' && IN_FRAME && ev.source === window.parent) {
       if (d.bloccoSpento) bloccoSpentoDallaPagina = true;
       if (typeof d.ok === 'number' && d.ok >= 0 && d.ok < 10000) ultimoOk = Math.max(ultimoOk, Date.now() - d.ok);
       if (d.cfg && typeof d.cfg === 'object') { dalTV = d.cfg; daGithub = null; }
+      visitaDaSopra(d.visita, d.senzaMemoria); // siti senza memoria: un riquadro piccolo o nascosto lo sa da qui
       dopoImpostazioni();
       // e si passano ai riquadri dentro questo riquadro
       var figli = document.querySelectorAll('iframe');
@@ -3353,13 +3920,25 @@
         frame.__hometvTruffa = true;
         togliPannello(frame, 'truffa');
       }
+    } else if (d.hometv === 'qr' && frame && qrQui()) {
+      // un riquadro che e' tutto un banner col codice QR (sui tuoi siti): via il riquadro (mai il lettore)
+      if (!frame.__hometvVideo && frame !== fsEl && !eLettore(frame) && !intoccabile(frame)) {
+        frame.__hometvTruffa = true;
+        togliPannello(frame, 'qr');
+      }
     } else if (d.hometv === 'video' && frame) {
       frame.__hometvVideo = true;
+    } else if (d.hometv === 'durata' && frame && typeof d.durata === 'number') {
+      // nel riquadro c'e' un video lungo: non e' un trailer (un film messo su Vimeo o YouTube)
+      if (d.durata > (frame.__hometvDurata || 0)) { frame.__hometvDurata = d.durata; frame.__hometvTrailerA = 0; }
     } else if (d.hometv === 'playing' && frame) {
       frame.__hometvVideo = true;
       frame.__hometvUltimoSrc = typeof d.src === 'string' ? d.src.slice(0, 2000) : '';
       if (fsEl === frame) return;
       if (d.manuale && !dalLettore) d.manuale = false; // "l'ho fatto partire io" vale solo per il lettore in uso
+      // il trailer in un riquadro non va a schermo intero da solo; il film in un riquadro prende il posto del trailer
+      if (!d.manuale && eTrailer(frame) && !trailerVoluto(frame)) return;
+      if (fsEl && fsEl !== frame && eTrailer(fsEl) && !eTrailer(frame)) { esciSchermoIntero(true); fermaTrailer(frame); }
       if (!d.manuale) {
         if (fsEl || !CFG.schermoInteroAutomatico || (!sitoApp() && Date.now() - ultimoOk >= 10000) || frame.__hometvAd ||
           uscitoDa(frame, false) || eAd(frame.src, 'frame')) return;
@@ -3405,6 +3984,7 @@
     for (var i = 0; i < vs.length; i++) {
       var a = areaVisibile(vs[i]);
       if (!vs[i].paused) a *= 4;
+      if (a > 0 && eTrailer(vs[i]) && !trailerVoluto(vs[i])) a *= 0.05; // il trailer di sfondo che va: non e' il video della pagina
       if (a > area) { area = a; best = vs[i]; }
     }
     return best;
@@ -3615,6 +4195,8 @@
       if (v !== lettoreVideo || v.currentTime > 5) return; // il sito riprende gia' da se'
       var r = leggiPosizioni()[chiavePosizione(v)];
       if (!r || !isFinite(v.duration) || r.t > v.duration - 60) return;
+      // la puntata nuova (dopo o prima) parte dall'inizio: la stessa pagina puo' tenere tutte le puntate
+      if (inPuntata()) { proponiRipresa(v, r.t); return; }
       try { v.currentTime = r.t; } catch (e) { return; }
       riprendiFinoA = Date.now() + 8000;
       avvisoLettore('Ripreso da ' + formato(r.t) + '  \u00b7  Gi\u00f9 per ricominciare dall\'inizio', 8000);
@@ -3895,7 +4477,11 @@
       }
       return;
     }
-    if (j.stesso) { if (v.currentTime < 5 && !(Date.now() < riprendiFinoA)) riprendiA(v, j.stesso.posizione, 'Ripreso da '); return; }
+    if (j.stesso) {
+      if (inPuntata()) { if (v.currentTime < PUNTO_RIPRESA) proponiRipresa(v, j.stesso.posizione); return; }
+      if (v.currentTime < 5 && !(Date.now() < riprendiFinoA)) riprendiA(v, j.stesso.posizione, 'Ripreso da ');
+      return;
+    }
     // anche se questo sito ha gia' ripreso da solo: dal suo punto, che puo' essere piu' indietro (se e' lo stesso, niente)
     var p = j.proposta;
     if (!p || Math.abs(v.currentTime - p.posizione) < 60) return;
@@ -4056,7 +4642,7 @@
 
   function nuovaPuntata() {
     serie.succ = null; serie.prec = null; serie.fuoco = 'video'; serie.conto = 0; serie.contoDa = 0;
-    serie.autoAnnullato = false; serie.dopoFine = false; serie.partito = false; serieScan = 0;
+    serie.autoAnnullato = false; serie.dopoFine = false; serie.partito = false; serie.fine = null; serieScan = 0;
     clearTimeout(serie.timer);
   }
   function attaccaLettore(v) {
@@ -4102,9 +4688,13 @@
     // puntata nuova nello stesso video (siti che cambiano puntata senza cambiare pagina)
     ascolta(v, 'loadstart', function () {
       var ora = v.currentSrc || v.src || '';
+      v.__hometvAllInizio = 0; // ricaricato: se e' la puntata nuova, si tiene di nuovo all'inizio
       if (ora === src) return;
       src = ora;
+      // appena finita la puntata il sito ha messo da solo la dopo nello stesso video: la si fa partire, dall'inizio
+      var finita = serie.fine && !serie.partito;
       nuovaPuntata();
+      if (finita) { iniziaPuntata(); avviaProssimoFinoA = Date.now() + ATTESA_AVVIO; setTimeout(function () { avviaDopoProssimo(true); }, 300); }
       v.__hometvMisure = null; v.__hometvBande = null; v.__hometvGiocatori = null; v.__hometvNoTela = false;
       v.__hometvGuardato = 0; v.__hometvTempoPrima = undefined; v.__hometvScelto = false;
       togliFormato(v);
@@ -4113,10 +4703,14 @@
       mostraLettore();
       diciVideo();
       propostaRipresa = null;
+      tieniAllInizio(v);
       cercaVisto(v);
     });
-    riprendi(v);
+    // la puntata nuova arrivata nello stesso video (anche con la stessa sorgente): dall'inizio
+    ascolta(v, 'playing', function () { tieniAllInizio(v); });
     propostaRipresa = null;
+    riprendi(v);
+    tieniAllInizio(v);
     cercaVisto(v);
     applicaFormato(v);
     applicaLingue(v);
@@ -4857,7 +5451,8 @@
 
   // --- serie: episodio prossimo / precedente (solo se esistono davvero sul sito)
   // fuoco: 'video', oppure uno dei pulsanti in basso a destra: 'prec', 'inizio', 'succ'
-  var serie = { succ: null, prec: null, fuoco: 'video', conto: 0, contoDa: 0, timer: null, autoAnnullato: false, dopoFine: false, partito: false };
+  var serie = { succ: null, prec: null, fuoco: 'video', conto: 0, contoDa: 0, timer: null, autoAnnullato: false, dopoFine: false, partito: false,
+    fine: null };
   var serieScan = 0;
   var PULSANTI = ['prec', 'inizio', 'succ'];
   // Come i siti chiamano i pulsanti delle puntate (italiano, inglese e qualche altra lingua).
@@ -5108,11 +5703,12 @@
   // contano 5 secondi. OK va subito, Indietro annulla.
   var CONTO_FINALE = 10;
   function contoFinale(v) {
-    if (serie.dopoFine || serie.autoAnnullato || serie.partito) return;
+    if (serie.dopoFine || serie.autoAnnullato || serie.partito || serie.fine) return; // (finita: ci pensa finePuntata)
     var d = v.duration;
     if (!isFinite(d) || d < 120) return;
     var resta = d - v.currentTime;
-    if (resta > CONTO_FINALE + 0.3 || resta <= 0) {
+    if (resta <= 0) return;
+    if (resta > CONTO_FINALE + 0.3) {
       if (serie.conto > 0) { annullaConto(true); disegnaChips(); mostraLettore(); }
       return;
     }
@@ -5143,13 +5739,26 @@
       }, 800);
     })();
   }
+  // Alcuni lettori passano da soli alla puntata dopo appena finisce: prima di premere il pulsante del sito si guarda un
+  // attimo, e se il sito e' gia' andato avanti si fa solo partire la puntata nuova (due passi salterebbero una puntata)
+  var ATTESA_FINE = 1200;
   function finePuntata(v) {
     if (lettoreVideo !== v || serie.partito) return;
     salvaPosizione(v);
     if (serie.autoAnnullato) { esciSchermoIntero(); return; }
+    if (!serie.fine) serie.fine = { url: location.href, src: v.currentSrc || v.src || '', t: v.currentTime, segni: guardaCambio(v) };
     aggiornaSerie(true);
     if (!serie.succ) { esciSchermoIntero(); return; } // film o ultima puntata: si torna alla pagina
-    if (serie.conto > 0 && serie.conto <= 2 && !serie.dopoFine) { vaiProssimo(); return; }
+    if (serie.conto > 0 && serie.conto <= 2 && !serie.dopoFine) {
+      clearTimeout(serie.timer);
+      serie.timer = setTimeout(function () {
+        if (lettoreVideo !== v || serie.partito || serie.autoAnnullato || !serie.fine) return;
+        // ancora alla fine (o il sito ha ricaricato il video per la puntata dopo): avanti. Tornato indietro: si resta
+        if (serie.fine.segni.video || v.ended || !(v.duration - v.currentTime > 2)) vaiProssimo();
+        else { serie.fine = null; serie.conto = 0; disegnaChips(); }
+      }, ATTESA_FINE);
+      return;
+    }
     clearTimeout(serie.timer);
     serie.dopoFine = true;
     serie.contoDa = 5;
@@ -5168,11 +5777,18 @@
   }
   function vaiProssimo() {
     clearTimeout(serie.timer);
-    var s = serie.succ;
+    var s = serie.succ, f = serie.fine, v = lettoreVideo;
     serie.partito = true;
     serie.conto = 0;
     serie.dopoFine = false;
     disegnaChips();
+    if (f && (f.segni.video || location.href !== f.url || !v || (v.currentSrc || v.src || '') !== f.src)) {
+      // il sito e' gia' passato alla puntata dopo da solo: la si fa solo partire, dall'inizio
+      iniziaPuntata();
+      avviaProssimoFinoA = Date.now() + ATTESA_AVVIO;
+      avviaDopoProssimo(true, { v: v, src: f.src, t: f.t, segni: f.segni });
+      return;
+    }
     vaiEpisodio(s, 1);
   }
   // annullato a mano (Indietro) o perche' si e' tornati indietro nel video
@@ -5181,6 +5797,7 @@
     if (serie.conto > 0 && !daSolo) serie.autoAnnullato = true;
     serie.conto = 0;
     serie.dopoFine = false;
+    serie.fine = null;
   }
 
   // Un clic come quello di una persona (pressione, rilascio, clic) sul pulsante vero: molti
@@ -5244,20 +5861,27 @@
       try { window.top.postMessage({ hometv: 'vaiEpisodio', dir: el.dalSito }, '*'); } catch (e) {}
       return;
     }
-    // la pagina della puntata nuova fara' partire il video da sola
+    // la pagina della puntata nuova fara' partire il video da sola, dall'inizio
     segnaProssimo();
-    avviaProssimoFinoA = Date.now() + 30000;
+    iniziaPuntata();
+    avviaProssimoFinoA = Date.now() + ATTESA_AVVIO;
+    // il pulsante e' quello del lettore in un riquadro: lo deve sapere anche la pagina che lo contiene, che di solito
+    // cambia puntata ricaricandosi o cambiando il riquadro (e questa pagina sparisce prima di far partire niente)
+    if (IN_FRAME) { try { window.parent.postMessage({ hometv: 'puntata', dir: dir || 1 }, '*'); } catch (e) {} }
     var stessaPagina = el.tagName === 'A' && el.href.split('#')[0] === location.href.split('#')[0];
     if (el.tagName === 'A' && /^https?:/i.test(el.href) && !stessaPagina) { location.href = el.href; return; }
     var prima = location.href, v = videoAttivo(), src = v ? (v.currentSrc || v.src) : '', t0 = v ? v.currentTime : 0;
+    var segni = guardaCambio(v);
     cliccaDavvero(el);
     // puntata nuova nella stessa pagina (o la pagina cambia da sola): si controlla che parta
-    setTimeout(function () { avviaDopoProssimo(true, { v: v, src: src, t: t0 }); }, 700);
+    setTimeout(function () { avviaDopoProssimo(true, { v: v, src: src, t: t0, segni: segni }); }, 700);
     if (!dir) return;
-    // dopo un paio di secondi: se non e' cambiato niente (pagina, video), si prova un'altra strada
+    // se dopo qualche secondo non e' cambiato niente (pagina, video, titolo) e il sito non sta lavorando, si prova
+    // un'altra strada. Sul TV i siti sono lenti: un'altra strada mentre il sito sta gia' cambiando puntata farebbe due
+    // passi (o tornerebbe indietro)
     setTimeout(function () {
       var v2 = videoAttivo();
-      if (location.href !== prima || v2 !== v || (v2 && ((v2.currentSrc || v2.src) !== src || v2.currentTime < t0 - 5))) return;
+      if (segni.cambiato() || location.href !== prima || v2 !== v || (v2 && ((v2.currentSrc || v2.src) !== src || v2.currentTime < t0 - 5))) return;
       var altri = [cercaInElenco(dir), cercaPerNumero(dir)];
       for (var i = 0; i < altri.length; i++) {
         var a = altri[i];
@@ -5269,7 +5893,27 @@
       var msg = 'Il sito non apre la puntata ' + (dir > 0 ? 'dopo' : 'prima') + ' (pulsante ' + descriviPulsante(el) + ')';
       log(msg);
       if (lettoreVideo) avvisoLettore(msg, 6000); else toast(msg, 6000);
-    }, 2500);
+    }, ATTESA_ALTRA_STRADA);
+  }
+
+  // I segni che il sito sta cambiando puntata, dal clic in poi: la pagina se ne va, il video si svuota o si ricarica
+  // (anche con la stessa sorgente, come i lettori a flusso), un riquadro carica una pagina nuova (il lettore della
+  // puntata nuova). Si ascoltano per 20 s
+  var riquadriPronti = 0, ATTESA_ALTRA_STRADA = 6000;
+  function guardaCambio(v) {
+    var s = { n: 0, video: 0, titolo: document.title, riquadri: riquadriPronti };
+    function pagina() { s.n++; }
+    function video() { s.n++; s.video++; }
+    var tipi = ['emptied', 'loadstart', 'abort'], i;
+    ascoltaSicuro(window, 'beforeunload', pagina);
+    ascoltaSicuro(window, 'pagehide', pagina);
+    if (v) for (i = 0; i < tipi.length; i++) ascoltaSicuro(v, tipi[i], video);
+    setTimeout(function () {
+      try { window.removeEventListener('beforeunload', pagina); window.removeEventListener('pagehide', pagina); } catch (e) {}
+      if (v) for (var k = 0; k < tipi.length; k++) { try { v.removeEventListener(tipi[k], video); } catch (e) {} }
+    }, 20000);
+    s.cambiato = function () { return s.n > 0 || riquadriPronti !== s.riquadri || document.title !== s.titolo; };
+    return s;
   }
 
   /* ---------------------------------------------------------------- la puntata nuova parte davvero
@@ -5280,7 +5924,46 @@
    * riquadro di un altro sito ci pensa da solo (glielo si chiede).
    */
   var avviaProssimoFinoA = 0, avvioInCorso = 0, videoZittito = null;
+  // quanto si prova a far partire un video (sul TV i siti dei film sono lenti: pagina, lettore, pubblicita')
+  var ATTESA_AVVIO = 45000;
   var MARCA_PROSSIMO = 'hometv-prossimo:';
+  // La puntata dopo (o prima) aperta da qui parte sempre dall'inizio, anche se il sito (o la memoria del TV) la
+  // riprenderebbe da un punto: il punto diventa una proposta ("Eri a 22:15: OK per riprendere"). Cosi' cambiando
+  // puntata si sa sempre dove si parte, e la finestrella "vuoi riprendere?" del sito non ferma il video (richiesta del 2/11)
+  var puntataFinoA = 0, puntataDa = 0, puntoDelSito = null;
+  function inPuntata() { return Date.now() < puntataFinoA; }
+  function iniziaPuntata() { puntataDa = Date.now(); puntataFinoA = puntataDa + ATTESA_AVVIO; puntoDelSito = null; }
+  // da qui in avanti e' una ripresa (prima: una sigla saltata dal lettore, pochi secondi)
+  var PUNTO_RIPRESA = 60;
+  function proponiRipresa(v, s) {
+    if (lettoreVideo !== v || !(s >= PUNTO_RIPRESA) || !isFinite(v.duration) || s > v.duration - 30) return;
+    var frase = 'Dall\'inizio  \u00b7  eri a ' + formato(s) + ': OK per riprendere';
+    propostaRipresa = { secondi: s, fino: Date.now() + 15000, testo: frase };
+    avvisoLettore(frase, 15000);
+    mostraLettore();
+  }
+  // nei primi secondi della puntata nuova: se il sito la porta a un punto (da solo, o perche' alla sua domanda c'era solo
+  // "Riprendi"), si torna all'inizio e si propone il punto. Finche' non premi tu un tasto, e al massimo 4 volte (un
+  // lettore che ci riprova)
+  function tieniAllInizio(v) {
+    if (!inPuntata() || v.__hometvAllInizio === puntataDa) return;
+    v.__hometvAllInizio = puntataDa;
+    var mio = v.__hometvGiroInizio = (v.__hometvGiroInizio || 0) + 1;
+    var giri = 0, fino = Date.now() + 15000, detto = false;
+    (function guarda() {
+      if (v.__hometvGiroInizio !== mio || lettoreVideo !== v || Date.now() > fino || ultimoTasto > puntataDa) return;
+      var t = v.currentTime;
+      if (puntoDelSito && !detto && isFinite(v.duration)) { detto = true; proponiRipresa(v, puntoDelSito.s); }
+      if (isFinite(v.duration) && v.duration >= 300 && t >= PUNTO_RIPRESA && t < v.duration - 30 && giri < 4) {
+        giri++;
+        detto = true;
+        try { v.currentTime = 0; } catch (e) { return; }
+        riprendiFinoA = 0;
+        proponiRipresa(v, t);
+      }
+      setTimeout(guarda, 400);
+    })();
+  }
   function segnaProssimo() {
     try { sessionStorage.setItem('hometv-prossimo', String(Date.now())); } catch (e) {}
     // anche se la puntata dopo sta su un altro indirizzo del sito
@@ -5329,6 +6012,7 @@
       var nome = ((typeof el.className === 'string' ? el.className : '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '')).toLowerCase();
       if (/pause|pausa|playlist|autoplay|playback|speed|velocit|display-?name|replay|trailer/.test(nome + ' ' + testoBreve(el).slice(0, 60).toLowerCase())) continue;
       if (el.id && el.id.indexOf('hometv-') === 0) continue;
+      if (!v && RE_TRAILER.test(nomiTrailer(el, 2))) continue; // il Play del trailer (cercando il Play grande della pagina)
       var r = el.getBoundingClientRect(), a = r.width * r.height;
       if (r.width < 16 || r.height < 16 || !siVede(el)) continue;
       if (a > area) { area = a; migliore = el; }
@@ -5366,6 +6050,12 @@
   var CHIEDE_RIPRESA = /riprendere la visione|riprendi(re)? (la )?visione|vuoi riprendere|vuoi continuare|hai interrotto|interrotto (a|al)|continuare a guardare|resume (watching|playback|the video)|continue watching|you (stopped|left off)|pick up where/i;
   var PULS_DA_CAPO = /dall'?\s*inizio|ricomincia|da capo|start over|from (the )?(start|beginning)|restart/i;
   var PULS_RIPRENDI = /riprendi|continua|resume|continue|^s[i\u00ec]$|^yes$/i;
+  var PULS_NO = /^(no|no,? grazie|annulla|chiudi|non ora|cancel|close|not now|x|\u00d7|\u2715|\u2716)$/i;
+  // "Hai interrotto a 2:36", "Riprendi da 1:02:10": il punto scritto dal sito
+  function puntoScritto(t) {
+    var m = /(?:(\d{1,2}):)?(\d{1,2}):(\d{2})(?!\d)/.exec(t || '');
+    return m ? (+(m[1] || 0)) * 3600 + (+m[2]) * 60 + (+m[3]) : 0;
+  }
   var ripreseRisposte = [];
   function testoDi(el) { return String(el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, ''); }
   function boxRipresa() {
@@ -5398,17 +6088,21 @@
   function rispondiRipresa() {
     var box = boxRipresa();
     if (!box) return false;
-    var c = CFG.continua, daCapo = !!(c && c.fresco === true && c.posizione === 0 && !c.riproduci);
-    var p = pulsantiRipresa(box), scelto = null, altro = null;
+    var c = CFG.continua, puntata = inPuntata(), daCapo = puntata || !!(c && c.fresco === true && c.posizione === 0 && !c.riproduci);
+    var p = pulsantiRipresa(box), scelto = null, altro = null, no = null, riprendiEl = null;
     for (var i = 0; i < p.length; i++) {
       var t = testoDi(p[i]);
       if (PULS_DA_CAPO.test(t)) { if (daCapo) scelto = p[i]; }
-      else if (PULS_RIPRENDI.test(t)) { if (!daCapo && !scelto) scelto = p[i]; }
+      else if (PULS_RIPRENDI.test(t)) { if (!daCapo && !scelto) scelto = p[i]; if (!riprendiEl) riprendiEl = p[i]; }
+      else if (PULS_NO.test(t)) { if (!no) no = p[i]; }
       else if (!altro && !CHIEDE_RIPRESA.test(t)) altro = p[i];
     }
     if (!scelto && !daCapo) scelto = altro; // "Riprendi" fatto con un'icona: l'altro pulsante
+    // la puntata nuova senza "dall'inizio": "no"; se c'e' solo Riprendi, quello (poi si torna all'inizio da soli)
+    if (!scelto && puntata) scelto = no || riprendiEl || altro;
     if (!scelto) return false;
     ripreseRisposte.push(box);
+    if (puntata) { var ps = puntoScritto(box.textContent); if (ps >= PUNTO_RIPRESA) puntoDelSito = { s: ps }; }
     cliccaDavvero(scelto);
     log('il sito chiedeva se riprendere:', daCapo ? "dall'inizio" : 'riprendi');
     return true;
@@ -5416,13 +6110,16 @@
 
   function avviaDopoProssimo(subito, prima, voluto) {
     if (YT_TV) return; // YouTube per la TV fa partire da solo il video di #/watch
-    if (!subito && Date.now() - leggiProssimo() > 30000) return;
-    var mio = ++avvioInCorso, partenza = Date.now(), visto = -1, prove = 0, ultimaProva = 0, chiesto = false;
+    if (!subito) {
+      if (Date.now() - leggiProssimo() > ATTESA_AVVIO) return;
+      iniziaPuntata(); // aperta dalla puntata prima (o dopo): parte dall'inizio
+    }
+    var mio = ++avvioInCorso, partenza = Date.now(), visto = -1, prove = 0, ultimaProva = 0, chiesto = -1, arrivata = !prima;
     // (la puntata dopo che parte da sola non dice quale video: vale come lo stesso)
     if (Date.now() - premutoA >= 7000 || (voluto && premutoPer && voluto !== premutoPer)) premutoA = 0;
     premutoPer = voluto || (premutoA ? premutoPer : null);
     avvioDaTe = voluto || null;
-    avviaProssimoFinoA = Date.now() + 30000;
+    avviaProssimoFinoA = Date.now() + ATTESA_AVVIO;
     ultimoOk = chiestoPlayA = Date.now(); // vale come se avessi premuto Play
     // il Play del sito (o il video) si preme di nuovo solo dopo 7 s, e solo se il video ha gia' una sorgente e non sta
     // caricando: tanti lettori sono interruttori, e una seconda pressione mentre caricano li fermerebbe
@@ -5440,17 +6137,21 @@
       if (risposto) { setTimeout(giro, 900); return; }
       // il video che hai scelto tu (OK su un video), se c'e' ancora; se no il lettore principale della pagina
       var p = voluto && voluto.isConnected ? voluto : trovaPlayer(), v = p && p.tagName === 'VIDEO' ? p : null;
-      // da solo non si prende un'anteprima in ripetizione o dentro un link: si preme il Play del sito (piu' sotto)
+      // da solo non si prende un'anteprima in ripetizione o dentro un link, ne' il trailer: si preme il Play del sito (piu' sotto)
       if (!voluto && v && (v.loop || (v.closest && v.closest('a[href]')))) { p = null; v = null; }
-      // nella stessa pagina: finche' c'e' ancora la puntata di prima si aspetta
-      if (v && prima && v === prima.v && (v.currentSrc || v.src) === prima.src && !(v.currentTime < prima.t - 5)) {
-        if (Date.now() - partenza > 8000) return; // il sito non ha cambiato puntata (ci pensa vaiEpisodio)
-        v = null;
-        p = null;
+      if (!voluto && p && eTrailer(p)) { p = null; v = null; }
+      // nella stessa pagina: finche' c'e' ancora la puntata di prima si aspetta, senza toccare niente (il Play del sito
+      // farebbe ripartire la puntata vecchia). La nuova si riconosce anche quando il lettore tiene la stessa sorgente: il
+      // video si svuota e si ricarica (segni del cambio). Se il sito non cambia niente, ci pensa vaiEpisodio
+      if (!arrivata) {
+        if (!cambiatoDaPrima(prima, p, v)) { setTimeout(giro, 600); return; }
+        arrivata = true;
+        partenza = Date.now();
       }
       if (p && p.tagName === 'IFRAME') {
-        // il lettore e' in un riquadro con questo codice: gli si chiede di partire (fa tutto lui)
-        if (p.__hometvPronto && !chiesto) { chiesto = true; try { p.contentWindow.postMessage({ hometv: 'avvia' }, '*'); } catch (e) {} }
+        // il lettore e' in un riquadro con questo codice: gli si chiede di partire (fa tutto lui), una volta per ogni
+        // pagina nuova del riquadro
+        if (p.__hometvPronto && chiesto !== (p.__hometvProntoN || 0)) { chiesto = p.__hometvProntoN || 0; avviaRiquadro(p); }
         if (fsEl === p) return;
       } else if (v) {
         if (!v.paused && v.readyState >= 3) {
@@ -5487,6 +6188,19 @@
       }
       setTimeout(giro, 600);
     })();
+  }
+  // la puntata di prima e' ancora quella in pagina? (lo stesso video con la stessa sorgente e il tempo che non torna
+  // indietro, nessun segno di cambio; oppure lo stesso riquadro col lettore di prima)
+  function cambiatoDaPrima(prima, p, v) {
+    if (prima.segni && prima.segni.video) return true;
+    if (prima.riquadro) return !prima.riquadro.isConnected || (prima.riquadro.__hometvProntoN || 0) !== prima.n || (!!p && p !== prima.riquadro) ||
+      location.href !== prima.url || document.title !== prima.segni.titolo;
+    if (!prima.v) return true;
+    return !(v && v === prima.v && (v.currentSrc || v.src) === prima.src && !(v.currentTime < prima.t - 5));
+  }
+  // al lettore in un riquadro: parti (e se e' la puntata nuova, dall'inizio)
+  function avviaRiquadro(fr) {
+    try { fr.contentWindow.postMessage({ hometv: 'avvia', puntata: inPuntata() }, '*'); } catch (e) {}
   }
   function suCaricato(ev) {
     var v = ev.target;
@@ -6564,6 +7278,9 @@
     if (af && af.tagName === 'IFRAME' && p.el.contains(af) && !fsEl && !eLettore(af)) { entraNelRiquadro(af); return; }
     ambito = { el: p.el, da: da, voci: p.simili ? p.voci : null, modale: !!p.modale };
     var lista = vociDi(ambito), scelta = null;
+    // la finestra della ricerca che ha gia' il fuoco nel suo campo (dato dal sito o da seguiLente): resta li'
+    var at = attivoVero();
+    if (campoDiTesto(at) && p.el.contains(at)) { setFocus(at, true); return; }
     for (var i = 0; i < lista.length; i++) if (voceAttiva(lista[i]) && raggiungibile(lista[i], rettangolo(lista[i]))) { scelta = lista[i]; break; }
     if (!scelta) scelta = primaVoce(p.voci && p.voci.length ? p.voci : lista, true) || primaVoce(lista, true);
     if (scelta) setFocus(scelta);
@@ -6913,6 +7630,7 @@
 
   function attiva(el, daTelefono) {
     if (!el) return false;
+    segnaScelto(el);
     if (el.tagName === 'VIDEO') {
       if (fsEl) { playPausa(); return true; }
       // un video ancora vuoto si riempie col Play del sito, che a schermo intero sarebbe coperto: prima si preme quello,
@@ -6934,6 +7652,9 @@
       return true;
     }
     if (el.tagName === 'INPUT' && el.type === 'range') return true;
+    // la lente (o "Cerca") di un sito: il campo vuoto accanto si sceglie senza clic (niente ricerca vuota); se no, dopo il
+    // clic, il campo che compare prende il fuoco anche se il sito non glielo da'
+    if (primaDellaLente(el)) return true;
     // tutto il resto: un clic come col mouse, poi si guarda se si e' aperta una tendina
     var naviga = el.tagName === 'A' && /^https?:/i.test(el.href || '') && el.href.split('#')[0] !== location.href.split('#')[0] &&
       !el.hasAttribute('aria-haspopup') && !el.hasAttribute('aria-expanded');
@@ -7171,6 +7892,9 @@
     clicDaNoi = Date.now();
     ultimoTasto = chiestoPlayA = ultimoOk = Date.now(); // il clic puo' essere sul Play del sito: l'hai fatto partire tu
     premutoAiRiquadri();
+    segnaScelto(el);
+    // la lente di un sito toccata dal telefono: come col telecomando (primaDellaLente)
+    if (primaDellaLente(el)) return;
     var libero = lanciaMouse(el, 'pointerdown', x, y, true);
     if (libero) libero = lanciaMouse(el, 'mousedown', x, y, true);
     if (libero) fuocoDalClic(el);
@@ -7632,18 +8356,257 @@
     return dir === 'sx' ? s === 0 : s === v.length;
   }
 
-  // nessun campo selezionato: si cerca la casella di ricerca del sito
-  function trovaCampoRicerca() {
-    var c = document.querySelectorAll('input[type="search"], input[type="text"], input:not([type])');
-    for (var i = 0; i < c.length; i++) {
-      var el = c[i];
+  // l'elemento col fuoco, anche dentro le parti "shadow" dei componenti (li' document.activeElement e' il componente)
+  function attivoVero() {
+    var a = document.activeElement;
+    for (var i = 0; a && a.shadowRoot && a.shadowRoot.activeElement && i < 8; i++) a = a.shadowRoot.activeElement;
+    return a;
+  }
+  // la parte di pagina in cui sta un elemento: il documento, o la parte "shadow" del suo componente
+  function radiceDi(el) {
+    var r = null;
+    try { r = el && el.getRootNode ? el.getRootNode() : null; } catch (e) {}
+    return r && r !== document && r.querySelectorAll ? r : document;
+  }
+
+  /* ---------------------------------------------------------------- la ricerca dei siti (richiesta del 22/11)
+   * Sulla lente o sul "Cerca" di un sito il campo deve diventare scrivibile: col telecomando prende il fuoco (e il TV
+   * apre la sua tastiera), dal telefono compare "Sul TV si scrive qui". Molti siti mostrano il campo senza dargli il
+   * fuoco, lo aprono in una finestra o in una pagina nuova, o hanno la lente come pulsante "invia" accanto al campo
+   * vuoto: in tutti questi casi il campo lo si sceglie qui. E il testo mandato dal telefono senza aver aperto niente
+   * apre da solo la ricerca del sito.
+   */
+  var RE_LENTE = /search|cerca|ricerca|magnif|loupe|(^|[^a-z])lente([^a-z]|$)/i;
+  // non sono lenti: le voci dei risultati e degli elenchi, e i comandi accanto alla ricerca (chiudi, cancella, voce, filtri)
+  var RE_NON_LENTE = /result|risultat|item|list|card|suggest|histor|recent|close|chiudi|clear|cancel|annulla|reset|voice|vocal|(^|[^a-z])mic|filtr|avanzat|advanced|sort|ordina/i;
+  // il link a una pagina di ricerca vuota (/search, /cerca), non a dei risultati (?q=...)
+  function paginaDiRicerca(u) {
+    var m = /^[a-z]+:\/\/[^\/?#]*([^?#]*)(\?[^#]*)?/i.exec(String(u || ''));
+    if (!m || /[?&](q|s|query|keyword|search|term)=[^&]/i.test(m[2] || '')) return false;
+    return /\/(search|cerca|ricerca)(\.[a-z]+)?\/?$/i.test(m[1] || '');
+  }
+  function nomiDi(el) {
+    var c = el.className;
+    c = typeof c === 'string' ? c : (c && c.baseVal) || '';
+    return [el.id, c, el.getAttribute('aria-label'), el.getAttribute('title'), el.getAttribute('alt'), el.getAttribute('data-icon'),
+      el.getAttribute('name'), el.getAttribute('placeholder'), el.getAttribute('data-testid')].join(' ');
+  }
+  function sembraRicerca(el) {
+    return el.type === 'search' || el.getAttribute('role') === 'searchbox' || el.getAttribute('enterkeyhint') === 'search' ||
+      /cerca|search|ricerca|query|keyword|^q$|^s$|titolo|title|cosa vuoi/i.test([el.name, el.id, el.placeholder, el.getAttribute('aria-label'),
+        typeof el.className === 'string' ? el.className : ''].join(' '));
+  }
+  // una lente o un "Cerca": un controllo piccolo con poco testo, che lo dice nei suoi nomi, nel testo o nell'icona dentro
+  // (svg, <i class="fa-search">, <use href="#search">), o un link a una pagina di ricerca vuota. Non le voci di un elenco
+  // (i risultati di una ricerca) e non i comandi accanto (chiudi, voce, filtri)
+  function sembraLente(el) {
+    if (!el || el.nodeType !== 1 || /^(INPUT|TEXTAREA|VIDEO|IFRAME|SELECT|HTML|BODY)$/.test(el.tagName)) return false;
+    var r = el.getBoundingClientRect(), t = testoBreve(el);
+    if (r.width > 260 || r.height > 140 || t.length > 20) return false;
+    var nomi = nomiDi(el);
+    if (RE_NON_LENTE.test(nomi + ' ' + t)) return false;
+    if (RE_LENTE.test(nomi) || (t && RE_LENTE.test(t))) return true;
+    if (el.tagName === 'A' && paginaDiRicerca(el.href)) return true;
+    var dentro = [], j;
+    try { dentro = el.querySelectorAll('svg, i, img, use, span'); } catch (e) {}
+    for (j = 0; j < dentro.length && j < 12; j++) {
+      var d = dentro[j];
+      if (RE_LENTE.test(nomiDi(d)) || RE_LENTE.test(d.getAttribute('href') || d.getAttribute('xlink:href') || d.getAttribute('src') || '')) return true;
+    }
+    return false;
+  }
+  // il controllo toccato (col puntatore si tocca spesso l'icona dentro il pulsante)
+  function controlloDi(el) {
+    var c = null;
+    try { c = el.closest ? el.closest('button, a[href], [role="button"], [onclick]') : null; } catch (e) {}
+    return c || el;
+  }
+  // i campi dove si scrive che si vedono adesso (non le password), nel documento e nella parte del componente indicato
+  function campiVisibili(radice) {
+    var out = [], i, l;
+    try { l = (radice || document).querySelectorAll('input, textarea'); } catch (e) { return out; }
+    for (i = 0; i < l.length && out.length < 80; i++) {
+      var el = l[i];
+      if (!campoDiTesto(el) || String(el.type).toLowerCase() === 'password') continue;
       var r = el.getBoundingClientRect();
-      if (!campoDiTesto(el) || r.width < 20 || r.height < 10 || !visibile(el)) continue;
-      var nomi = [el.name, el.id, el.placeholder, el.getAttribute('aria-label'), el.className].join(' ');
-      if (el.type === 'search' || /cerca|search|ricerca|query|keyword|^q$|^s$/i.test(nomi)) return el;
+      if (r.width < 20 || r.height < 10 || r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth || !siVede(el)) continue;
+      out.push(el);
+    }
+    return out;
+  }
+  // le parti "shadow" aperte della pagina (solo quando serve cercarci: un giro su tutta la pagina)
+  var radiciViste = { t: 0, l: [] };
+  function radiciAperte() {
+    if (Date.now() - radiciViste.t < 2000) return radiciViste.l;
+    var out = [], tutti;
+    radiciViste = { t: Date.now(), l: out };
+    if (!document.body || !document.body.attachShadow) return out;
+    try { tutti = document.body.getElementsByTagName('*'); } catch (e) { return out; }
+    for (var i = 0; i < tutti.length && i < 5000 && out.length < 20; i++) if (tutti[i].shadowRoot) out.push(tutti[i].shadowRoot);
+    return out;
+  }
+  // nessun campo selezionato: si cerca la casella di ricerca del sito (anche nelle parti "shadow")
+  function trovaCampoRicerca() {
+    var radici = [document].concat(radiciAperte());
+    for (var k = 0; k < radici.length; k++) {
+      var c = campiVisibili(radici[k]);
+      for (var i = 0; i < c.length; i++) if (sembraRicerca(c[i])) return c[i];
     }
     return null;
   }
+  // la lente del sito, per aprire la ricerca quando il testo arriva dal telefono: visibile, nella parte alta della pagina
+  function trovaLente() {
+    var sel = ProfiloTV.selettore('button, a[href], [role="button"], [onclick], [tabindex], [class*="search" i], [class*="cerca" i], ' +
+      '[id*="search" i], [id*="cerca" i], [aria-label*="search" i], [aria-label*="cerca" i], [title*="search" i], [title*="cerca" i]');
+    var radici = [document].concat(radiciAperte()), migliore = null, punti = -1, H = window.innerHeight, W = window.innerWidth;
+    for (var k = 0; k < radici.length; k++) {
+      var l;
+      try { l = radici[k].querySelectorAll(sel); } catch (e) { continue; }
+      for (var i = 0; i < l.length && i < 800; i++) {
+        var el = l[i];
+        if (el.id && el.id.indexOf('hometv-') === 0) continue;
+        var r = el.getBoundingClientRect();
+        if (r.width < 12 || r.height < 12 || r.width > W * 0.4 || r.height > 140 || r.top > H * 0.3 || r.bottom < 0) continue;
+        if (!sembraLente(el) || !siVede(el)) continue;
+        // un pulsante vero conta piu' di un contenitore; poi chi sta piu' in alto e piu' a destra
+        var p = (/^(BUTTON|A)$/.test(el.tagName) || el.getAttribute('role') === 'button' ? 2000 : 0) + (r.left / W) * 300 + (1 - r.top / H) * 300;
+        if (p > punti) { punti = p; migliore = el; }
+      }
+    }
+    return migliore;
+  }
+  // un campo di ricerca vuoto accanto alla lente (la lente e' il pulsante "invia" del campo): si sceglie il campo, non si
+  // manda una ricerca vuota
+  function campoAccanto(lente) {
+    var c = campiVisibili(radiceDi(lente)), rl = lente.getBoundingClientRect(), form = lente.closest ? lente.closest('form') : null;
+    for (var i = 0; i < c.length; i++) {
+      var el = c[i];
+      if (String(el.value || '').replace(/\s+/g, '') || !sembraRicerca(el)) continue;
+      if (form && form.contains(el)) return el;
+      var r = el.getBoundingClientRect();
+      if (distanza(r, rl) < 120 && Math.abs((r.top + r.bottom) / 2 - (rl.top + rl.bottom) / 2) < 60) return el;
+    }
+    return null;
+  }
+  // dopo un clic (sulla lente): il primo campo che compare. Chiama fatto(campo) appena c'e' (o il campo che ha gia' il
+  // fuoco, se ce l'ha dato il sito), oppure fatto(null) dopo un paio di secondi (piu' a lungo su una pagina nuova)
+  function aspettaCampo(prima, radice, soloRicerca, lungo, fatto) {
+    var giri = lungo ? [100, 300, 600, 1000, 1600, 2400, 3400, 4600] : [60, 200, 450, 800, 1300, 1900], k = 0;
+    function giro() {
+      if (paginaDiCasa()) { fatto(null); return; }
+      var a = attivoVero();
+      if (campoDiTesto(a)) { fatto(a); return; }
+      var ora = campiVisibili(radice), nuovo = null;
+      for (var i = 0; i < ora.length; i++) {
+        if (prima.indexOf(ora[i]) !== -1) continue;
+        if (sembraRicerca(ora[i])) { nuovo = ora[i]; break; }
+        if (!nuovo && !soloRicerca) nuovo = ora[i];
+      }
+      if (nuovo) { fatto(nuovo); return; }
+      if (++k < giri.length) setTimeout(giro, giri[k] - giri[k - 1]);
+      else fatto(null);
+    }
+    setTimeout(giro, giri[0]);
+  }
+  // col fuoco nel campo il TV apre la sua tastiera e il telefono lo sa (diciCampo)
+  function scegliCampo(c) {
+    if (!c || !c.isConnected) return;
+    if (attivoVero() !== c) setFocus(c, true);
+    try { var n = String(c.value || '').length; c.setSelectionRange(n, n); } catch (e) {}
+    pianificaCampo();
+  }
+  // la lente (o il "Cerca") e' stata premuta col telecomando o toccata dal telefono: se il sito mostra un campo senza
+  // dargli il fuoco, glielo si da' qui. Se la lente porta a una pagina di ricerca, lo si fa li' (dopoLaLente)
+  function seguiLente(da) {
+    var prima = campiVisibili(radiceDi(da));
+    aspettaCampo(prima, radiceDi(da), true, false, function (c) {
+      if (!c) return;
+      if (!campoDiTesto(attivoVero())) scegliCampo(c);
+      else pianificaCampo(); // il fuoco gliel'ha dato il sito: dentro una parte "shadow" la pagina non lo sente
+    });
+  }
+  // prima del clic sulla lente: il campo vuoto accanto (allora niente clic), o la pagina nuova da ricordare
+  function primaDellaLente(el) {
+    el = controlloDi(el);
+    if (!sembraLente(el)) return false;
+    var c = campoAccanto(el);
+    if (c) { scegliCampo(c); return true; }
+    var a = el.closest ? el.closest('a[href]') : null;
+    if (a && /^https?:/i.test(a.href || '') && a.href.split('#')[0] !== location.href.split('#')[0]) {
+      try { sessionStorage.setItem('hometv-dopo-lente', String(Date.now())); } catch (e) {}
+    } else seguiLente(el);
+    return false;
+  }
+  // testo dal telefono senza un campo scelto: si apre la ricerca del sito e il testo ci arriva. Mentre si apre, il testo
+  // piu' recente aspetta (le lettere arrivano una alla volta, poi Invio)
+  var ricercaInApertura = 0, testoInAttesa = null, senzaLenteA = 0;
+  function apriRicercaPer(t, invio) {
+    if (Date.now() - ricercaInApertura < 2500) { testoInAttesa = { t: t, invio: !!invio }; return true; }
+    if (Date.now() - senzaLenteA < 5000) return false;
+    // una pagina d'accesso (c'e' un campo password): il testo non va mai in una ricerca
+    var pw = null;
+    try { pw = document.querySelector('input[type="password"]'); } catch (e) {}
+    if (pw && siVede(pw)) return false;
+    var lente = trovaLente();
+    if (!lente) { senzaLenteA = Date.now(); return false; }
+    testoInAttesa = { t: t, invio: !!invio };
+    ricercaInApertura = Date.now();
+    var a = lente.closest ? lente.closest('a[href]') : null;
+    if (a && /^https?:/i.test(a.href || '') && a.href.split('#')[0] !== location.href.split('#')[0]) {
+      // la ricerca e' una pagina nuova: il testo la segue
+      try { sessionStorage.setItem('hometv-testo-dopo', JSON.stringify({ t: t, invio: !!invio, at: Date.now(), host: location.host })); } catch (e) {}
+      cliccaDavvero(lente);
+      return true;
+    }
+    var c0 = campoAccanto(lente), radice = radiceDi(lente);
+    var prima = campiVisibili(radice);
+    if (!c0) cliccaDavvero(lente);
+    function arrivato(c) {
+      ricercaInApertura = 0;
+      var x = testoInAttesa;
+      testoInAttesa = null;
+      if (!c) { if (x && x.invio) toast('Non trovo la ricerca del sito: aprila col telecomando, poi scrivi', 4000); return; }
+      scegliCampo(c);
+      if (x) scriviIn(c, x.t, x.invio);
+    }
+    if (c0) arrivato(c0);
+    else aspettaCampo(prima, radice, false, false, function (c) { arrivato(c || trovaCampoRicerca()); });
+    return true;
+  }
+  // pagina nuova aperta dalla lente (o col testo del telefono che la segue): il campo di ricerca prende il fuoco
+  function dopoLaLente() {
+    if (IN_FRAME) return;
+    var x = null, lente = 0;
+    try {
+      x = JSON.parse(sessionStorage.getItem('hometv-testo-dopo') || 'null');
+      lente = +sessionStorage.getItem('hometv-dopo-lente') || 0;
+      sessionStorage.removeItem('hometv-testo-dopo');
+      sessionStorage.removeItem('hometv-dopo-lente');
+    } catch (e) {}
+    if (x && (!(Date.now() - x.at < 20000) || x.host !== location.host || typeof x.t !== 'string')) x = null;
+    if (!x && !(Date.now() - lente < 15000)) return;
+    var inizio = Date.now();
+    aspettaCampo([], document, true, true, function (c) {
+      if (!c && x) c = trovaCampoRicerca();
+      if (!c || (!x && ultimoTasto > inizio)) return; // intanto hai fatto altro: il fuoco resta dov'e'
+      if (!x && String(c.value || '').replace(/\s+/g, '')) return;
+      scegliCampo(c);
+      if (x) scriviIn(c, x.t.slice(0, 500), x.invio);
+    });
+  }
+  // OK col telecomando nel campo vuoto (la tastiera del TV si era chiusa): il TV la riapre, e al sito non arriva un Invio
+  // che cercherebbe il vuoto. Il tasto non si ferma (Samsung: mai preventDefault nei campi), si ferma solo l'invio
+  var invioVuoto = 0;
+  function fermaInvioVuoto(ev) {
+    if (!invioVuoto || tastoNostro) return false;
+    if (Date.now() - invioVuoto > 1500) { invioVuoto = 0; return false; }
+    if (ev.type === 'submit') { ev.preventDefault(); ev.stopImmediatePropagation(); return true; } // il modulo non parte
+    if (ev.keyCode !== 13) return false;
+    ev.stopImmediatePropagation(); // il sito non sente l'Invio (il tasto pero' fa il suo lavoro: niente preventDefault)
+    return true;
+  }
+  ascoltaSicuro(window, 'keypress', fermaInvioVuoto, true);
+  ascoltaSicuro(window, 'submit', fermaInvioVuoto, true);
 
   function tastoFinto(el, tipo) {
     var e, ok;
@@ -7678,12 +8641,23 @@
       try { a.contentWindow.postMessage({ hometv: 'testo', testo: t, invio: !!invio }, '*'); } catch (e) {}
       return;
     }
-    var el = campoDiTesto(document.activeElement) ? document.activeElement :
-      (campoDiTesto(corrente) ? corrente : (invio ? trovaCampoRicerca() : null));
+    var av = attivoVero();
+    var el = campoDiTesto(av) ? av : (campoDiTesto(corrente) ? corrente : null);
+    // la ricerca si sta aprendo (testo arrivato senza un campo): aspetta con lei
+    if (!el && testoInAttesa && Date.now() - ricercaInApertura < 2500) { testoInAttesa = { t: t, invio: !!invio }; return; }
     if (!el) {
+      el = trovaCampoRicerca();
+      if (el) scegliCampo(el);
+    }
+    if (!el) {
+      // nessun campo in vista: si apre la ricerca del sito (la lente) e il testo ci arriva
+      if (!IN_FRAME && apriRicercaPer(t, invio)) return;
       if (invio) toast('Seleziona prima un campo di testo sul TV (o apri la ricerca del sito)', 4000);
       return;
     }
+    scriviIn(el, t, invio);
+  }
+  function scriviIn(el, t, invio) {
     var proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     var d = Object.getOwnPropertyDescriptor(proto, 'value');
     // cosi' se ne accorgono anche i siti fatti con React e simili
@@ -7709,7 +8683,7 @@
   }
   function diciCampo(dopo) {
     campoTimer = null;
-    var el = document.activeElement, stato = { attivo: false };
+    var el = attivoVero(), stato = { attivo: false };
     // il fuoco e' in un riquadro col nostro codice: se li' si scrive lo dice lui (si aspetta un attimo la sua notizia)
     if (el && el.tagName === 'IFRAME' && el.__hometvPronto) {
       if (el.__hometvCampo) return;
@@ -7752,6 +8726,9 @@
     return true;
   }
 
+  // un link mandato dal telefono e' un sito scelto da te: una visita nuova (la apre il servizio quando consegna il link):
+  // il sito di adesso si svuota, quello nuovo arriva pulito
+  function apriLinkNuovo(u) { esciSenzaMemoria(function () { location.href = u; }); }
   function ascoltaTelefono() {
     if (IN_FRAME || typeof fetch !== 'function') return;
     var seq = -1, inCorso = false, giroN = 0, partito = 0, richiesta = null;
@@ -7764,7 +8741,7 @@
         eseguiAzione(e.tasto === 'tieni' ? (fsEl || IN_FRAME ? 'ok' : 'blu') : e.tasto, true);
       } else if (e.tipo === 'puntatore') comandoPuntatore(e);
       else if (e.tipo === 'testo') scriviTesto(String(e.testo || ''), e.invio !== false);
-      else if (e.tipo === 'link' && /^https?:\/\//i.test(e.url || '')) location.href = e.url;
+      else if (e.tipo === 'link' && /^https?:\/\//i.test(e.url || '')) apriLinkNuovo(e.url);
       else if (e.tipo === 'video') comandoVideo(e);
       else if (e.tipo === 'home') vaiHome();
       else if (e.tipo === 'schede' || e.tipo === 'nuovaScheda') vaiSchede(e.tipo === 'nuovaScheda');
@@ -7860,6 +8837,11 @@
       { testo: 'Pagina successiva', valore: '', fai: function () { chiudiPannello(); history.forward(); } },
       { testo: 'Ricarica la pagina', valore: '', fai: function () { location.reload(); } },
       YT ? { testo: 'YouTube', valore: YT_TV ? 'Per la TV' : 'Per computer', fai: function () { cambiaYoutube(); } } : null,
+      // siti senza memoria (richiesta del 22/11): si dice soltanto; si cambia dalla Home (OK tenuto premuto sul riquadro)
+      senzaMemoria ? { testo: 'Memoria del sito', valore: 'Riparte da zero', fai: function () {
+        chiudiPannello();
+        toast('Questo sito riparte da zero a ogni apertura. Si cambia dalla Home: OK tenuto premuto sul riquadro', 5000);
+      } } : null,
       { testo: 'Schede del browser', valore: '', fai: function () { vaiSchede(); } },
       { testo: 'Torna alla home', valore: '', fai: function () { vaiHome(); } }
     ].filter(function (v) { return !!v; });
@@ -7943,14 +8925,18 @@
     if (daTelefono && !fsEl && dentro && dentro.tagName === 'IFRAME' && dentro.__hometvPronto && AL_LETTORE[azione] === 1 && siVede(dentro)) {
       try { dentro.contentWindow.postMessage({ hometv: 'azione', azione: azione, telefono: true, dentro: true }, '*'); return true; } catch (e) {}
     }
-    var a = document.activeElement;
-    var staScrivendo = campoDiTesto(a);
+    var a = document.activeElement, campo = attivoVero(); // il campo puo' stare nella parte "shadow" di un componente
+    var staScrivendo = campoDiTesto(campo);
     // in un campo destra e sinistra muovono il cursore del testo; all'inizio (o alla fine) del testo, o nel campo vuoto, si
     // passa alla cosa accanto, come sui TV (dalla casella di Google ai pulsanti di fianco)
-    if (staScrivendo && (azione === 'sx' || azione === 'dx') && alBordoDelTesto(a, azione)) staScrivendo = false;
+    if (staScrivendo && (azione === 'sx' || azione === 'dx') && alBordoDelTesto(campo, azione)) staScrivendo = false;
     if (staScrivendo && (azione === 'sx' || azione === 'dx' || azione === 'ok')) {
-      if (!daTelefono) return false; // la tastiera del TV fa il suo lavoro
-      if (azione === 'ok') premiInvio(a);
+      if (!daTelefono) {
+        // OK nel campo vuoto: il TV riapre la tastiera, al sito non arriva una ricerca vuota (vedi fermaInvioVuoto)
+        if (azione === 'ok' && !String(campo.value || '').replace(/\s+/g, '')) invioVuoto = Date.now();
+        return false; // la tastiera del TV fa il suo lavoro
+      }
+      if (azione === 'ok') premiInvio(campo);
       return true;
     }
 
@@ -7991,7 +8977,7 @@
         else gestito = attiva(scelto, daTelefono);
         break;
       case 'indietro':
-        if (staScrivendo) { a.blur(); break; }
+        if (staScrivendo) { campo.blur(); break; }
         if (esciSchermoIntero()) { fermaAvvio(); break; }
         altroDaTe(null);
         var sc = ambitoAttivo();
@@ -8049,24 +9035,32 @@
   // subito alla pressione. Nel lettore TV, nei riquadri, nelle caselle e nei nostri elenchi OK resta subito
   var okGiu = 0, okTimer = null, keyupOk = false;
   try { keyupOk = localStorage.getItem('hometv-keyup-ok') === '1'; } catch (e) {}
-  function okAlRilascio() { return keyupOk && !IN_FRAME && !fsEl && !tendina && !pannelloAperto() && !campoDiTesto(document.activeElement); }
+  function okAlRilascio() { return keyupOk && !IN_FRAME && !fsEl && !tendina && !pannelloAperto() && !campoDiTesto(attivoVero()); }
   function okSu() { okGiu = 0; clearTimeout(okTimer); okTimer = null; }
 
   window.addEventListener('keydown', function (ev) {
     if (tastoNostro) return;
+    // "Fatto" della tastiera del TV in una ricerca scritta: si cerca, come con Invio (i siti aspettano Invio)
+    if (ev.keyCode === 65376 && !paginaDiCasa()) {
+      var fc = attivoVero();
+      if (campoDiTesto(fc) && fc.tagName !== 'TEXTAREA' && sembraRicerca(fc) && String(fc.value || '').replace(/\s+/g, '')) {
+        setTimeout(function () { if (fc.isConnected) premiInvio(fc); }, 0);
+      }
+      return;
+    }
     var azione = TASTI[ev.keyCode];
     if (!azione || paginaDiCasa()) return;
     // YouTube per la TV: i tasti li usa lui (il nostro menu rapido e la home restano: Blu e Verde)
     if (YT_TV && !pannelloAperto() && azione !== 'blu' && azione !== 'verde') return;
     // le ripetizioni del tasto OK tenuto premuto (quando il TV le segna) non contano mai: ne' come altri clic del
     // puntatore, ne' come play/pausa a raffica nel lettore
-    if (azione === 'ok' && ev.repeat && !campoDiTesto(document.activeElement)) {
+    if (azione === 'ok' && ev.repeat && !campoDiTesto(attivoVero())) {
       if (okGiu) okGiu = Date.now();
       ev.preventDefault(); ev.stopImmediatePropagation(); return;
     }
     // puntatore del telefono in vista: OK clicca dove indica, le frecce lo nascondono (si torna alla selezione)
     if (pt.on) {
-      if (azione === 'ok' && !tendina && !pannelloAperto() && !campoDiTesto(document.activeElement)) {
+      if (azione === 'ok' && !tendina && !pannelloAperto() && !campoDiTesto(attivoVero())) {
         clicPuntatore(); ev.preventDefault(); ev.stopImmediatePropagation(); return;
       }
       if (azione === 'su' || azione === 'giu' || azione === 'sx' || azione === 'dx') nascondiPuntatore();
@@ -8086,9 +9080,10 @@
     if (eseguiAzione(azione, false)) {
       ev.preventDefault();
       ev.stopImmediatePropagation();
-    }
+    } else if (invioVuoto && Date.now() - invioVuoto < 50) ev.stopImmediatePropagation(); // OK nel campo vuoto: solo al TV
   }, true);
   window.addEventListener('keyup', function (ev) {
+    if (fermaInvioVuoto(ev)) return;
     if (tastoNostro || TASTI[ev.keyCode] !== 'ok' || paginaDiCasa() || YT_TV) return;
     if (!keyupOk) { keyupOk = true; try { localStorage.setItem('hometv-keyup-ok', '1'); } catch (e) {} return; }
     var breve = !!okTimer;
@@ -8108,7 +9103,7 @@
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) { nascostoDa = Date.now(); return; }
       if (nascostoDa && Date.now() - nascostoDa > 10 * 60 * 1000 && CFG.apriHomeAllAccensione !== false && !paginaDiCasa()) {
-        location.href = BASE || SERVIZIO + '/casa';
+        esciSenzaMemoria(function () { location.href = BASE || SERVIZIO + '/casa'; });
       }
       nascostoDa = 0;
     });
@@ -8190,6 +9185,7 @@
   function dopoImpostazioni() {
     ricomponi();
     aggiornaAvanzato();
+    ricordaSitoApp();
     // aperta da "Continua a guardare": il video parte da solo (e riprende dal punto della scheda).
     // Anche se il sito ha cambiato indirizzo strada facendo (stesso sito, appena scelta)
     var c = CFG.continua;
@@ -8283,6 +9279,8 @@
     caricaImpostazioni();
     if (!listePronte) riprovaListe(1);
     ascoltaTelefono();
+    // pagina di ricerca aperta dalla lente (o col testo del telefono che la segue): il campo prende il fuoco
+    dopoLaLente();
     // telefono: quando sul TV si sceglie un campo dove si scrive, lo sa subito
     // gli effetti "mouse sopra" del sito: si leggono appena ci sono gli stili, e poi se ne arrivano altri
     setTimeout(controllaStileSopra, 500);
@@ -8296,8 +9294,11 @@
     daScansionare(document.body);
     ascoltaSicuro(window, 'load', function () { setTimeout(function () { daScansionare(document.body); }, 1500); });
     ascoltaSicuro(window, 'scroll', function () { if (corrente) seguiAnello(false); }, { capture: true, passive: true });
-    var riquadroNascosto = 0;
+    var riquadroNascosto = 0, attivoVisto = null;
     setInterval(function () {
+      // il fuoco passato da un campo all'altro dentro la parte "shadow" di un componente non arriva come focusin
+      var av = attivoVero();
+      if (av !== attivoVisto) { attivoVisto = av; if (av && av !== document.activeElement) pianificaCampo(); }
       if (document.hidden || !corrente) return;
       if (!anelloRaf) { try { disegnaAnello(); } catch (e) {} }
       // fuoco in un riquadro: resta li'; se pero' il riquadro e' nascosto da un paio di secondi (un pannello che si e'
